@@ -10,7 +10,15 @@ htmlcov/
 *.log
 models/
 vector_db/
-datasets/raw/*
+
+# Raw source data stays local.
+datasets/raw/**
 !datasets/raw/.gitkeep
-datasets/processed/*
+!datasets/raw/**/
+!datasets/raw/**/.gitkeep
+
+# Generated processed data stays local.
+datasets/processed/**
 !datasets/processed/.gitkeep
+!datasets/processed/**/
+!datasets/processed/**/.gitkeep
