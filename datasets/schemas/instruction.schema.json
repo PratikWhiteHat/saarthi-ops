@@ -1,0 +1,91 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Saarthi Security Instruction",
+  "type": "object",
+  "required": [
+    "id",
+    "category",
+    "instruction",
+    "response",
+    "source",
+    "license",
+    "safety"
+  ],
+  "properties": {
+    "id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "category": {
+      "type": "string",
+      "enum": [
+        "web_security",
+        "api_security",
+        "cloud_security",
+        "active_directory",
+        "linux_security",
+        "windows_security",
+        "reporting",
+        "methodology"
+      ]
+    },
+    "instruction": {
+      "type": "string",
+      "minLength": 5
+    },
+    "context": {
+      "type": "string",
+      "default": ""
+    },
+    "response": {
+      "type": "string",
+      "minLength": 5
+    },
+    "source": {
+      "type": "string",
+      "minLength": 1
+    },
+    "license": {
+      "type": "string",
+      "minLength": 1
+    },
+    "safety": {
+      "type": "object",
+      "required": [
+        "authorized_use_only",
+        "contains_sensitive_data"
+      ],
+      "properties": {
+        "authorized_use_only": {
+          "type": "boolean"
+        },
+        "contains_sensitive_data": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
+    "metadata": {
+      "type": "object",
+      "properties": {
+        "difficulty": {
+          "type": "string",
+          "enum": [
+            "basic",
+            "intermediate",
+            "advanced"
+          ]
+        },
+        "created_by": {
+          "type": "string"
+        },
+        "reviewed": {
+          "type": "boolean",
+          "default": false
+        }
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": false
+}
