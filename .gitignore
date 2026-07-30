@@ -28,3 +28,6 @@ datasets/train/*.jsonl
 datasets/validation/*.jsonl
 datasets/test/*.jsonl
 datasets/processed/split_manifest.json
+
+# Locally collected VAPT evidence
+evidence/
