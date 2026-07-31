@@ -20,8 +20,8 @@ from saarthi_ai.persistence.models import (
     utc_now,
 )
 
-PROJECT_ROOT = Path(__file__).resolve().parents[3]
-DEFAULT_DATABASE_PATH = PROJECT_ROOT / "data/saarthi.db"
+SAARTHI_HOME = Path.home() / ".saarthi"
+DEFAULT_DATABASE_PATH = SAARTHI_HOME / "saarthi.db"
 
 
 class PersistenceError(RuntimeError):
