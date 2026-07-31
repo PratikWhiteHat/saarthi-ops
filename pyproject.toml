@@ -5,6 +5,7 @@ description = "Local foundation for the Saarthi security-specialized AI assistan
 readme = "README.md"
 requires-python = ">=3.12,<3.14"
 dependencies = [
+  "dnspython>=2.8.0",
   "fastapi[standard]>=0.115",
   "httpx>=0.28",
   "ollama>=0.6",

@@ -31,6 +31,9 @@ from saarthi_ai.persistence.database import (
     InvalidStateTransitionError,
     SaarthiDatabase,
 )
+from saarthi_ai.persistence.dns_workflow import (
+    run_tracked_dns_collection,
+)
 from saarthi_ai.persistence.http_workflow import (
     run_tracked_http_collection,
 )
@@ -46,6 +49,7 @@ from saarthi_ai.persistence.projects import (
     ProjectNotFoundError,
     ProjectRepository,
 )
+from saarthi_ai.recon.dns_collector import DnsCollectionError
 from saarthi_ai.schemas import Message
 
 app = typer.Typer(
@@ -68,9 +72,15 @@ evidence_app = typer.Typer(
     help="Inspect collected assessment evidence.",
 )
 
+recon_app = typer.Typer(
+    no_args_is_help=True,
+    help="Run authorized reconnaissance workflows.",
+)
+
 app.add_typer(project_app, name="project")
 app.add_typer(execution_app, name="execution")
 app.add_typer(evidence_app, name="evidence")
+app.add_typer(recon_app, name="recon")
 
 console = Console()
 
@@ -743,3 +753,72 @@ def execution_run_http(
         console.print(f"Evidence path: {result.evidence.path}")
 
     asyncio.run(run())
+
+
+@recon_app.command("dns")
+def recon_dns(
+    execution_id: Annotated[
+        str,
+        typer.Option(
+            "--execution",
+            help="Planned execution identifier.",
+        ),
+    ],
+    domain: Annotated[
+        str,
+        typer.Option(
+            "--domain",
+            help="Authorized domain included in the execution scope.",
+        ),
+    ],
+    approved: Annotated[
+        bool,
+        typer.Option(
+            "--approved",
+            help="Confirm approval to perform controlled DNS queries.",
+        ),
+    ] = False,
+) -> None:
+    """Collect scoped DNS records and register JSON evidence."""
+
+    if not approved:
+        console.print(
+            "[bold yellow]Approval required.[/bold yellow] "
+            "Review the execution and rerun with --approved."
+        )
+        raise typer.Exit(code=1)
+
+    database = get_database()
+
+    console.print("[bold]Starting controlled DNS collection...[/bold]")
+    console.print(f"Execution: {execution_id}")
+    console.print(f"Domain: {domain}")
+
+    try:
+        result = run_tracked_dns_collection(
+            database,
+            execution_id,
+            domain,
+        )
+    except (
+        ExecutionNotFoundError,
+        InvalidStateTransitionError,
+        DnsCollectionError,
+    ) as exc:
+        console.print(f"[bold red]DNS collection failed:[/bold red] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    total_records = sum(len(items) for items in result.collection.records.values())
+
+    console.print()
+    console.print("[bold green]DNS collection completed.[/bold green]")
+    console.print(f"Execution state: {result.execution.state.value}")
+    console.print(f"Domain: {result.collection.domain}")
+    console.print(f"Nameserver: {result.collection.nameserver or '-'}")
+    console.print(f"Records captured: {total_records}")
+
+    for record_type, records in result.collection.records.items():
+        console.print(f"{record_type}: {len(records)}")
+
+    console.print(f"Evidence ID: {result.evidence.evidence_id}")
+    console.print(f"Evidence path: {result.evidence.path}")
