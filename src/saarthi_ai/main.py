@@ -4,6 +4,7 @@ from saarthi_ai.assessments.router import router as assessment_router
 from saarthi_ai.config import get_settings
 from saarthi_ai.execution.router import router as execution_router
 from saarthi_ai.llm import OllamaUnavailableError, SaarthiOllamaClient
+from saarthi_ai.persistence.router import router as persistence_router
 from saarthi_ai.schemas import ChatRequest, ChatResponse
 
 settings = get_settings()
@@ -15,6 +16,7 @@ app = FastAPI(
 
 app.include_router(assessment_router)
 app.include_router(execution_router)
+app.include_router(persistence_router)
 
 llm = SaarthiOllamaClient(settings)
 
