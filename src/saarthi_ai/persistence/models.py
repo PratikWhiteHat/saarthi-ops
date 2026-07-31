@@ -43,6 +43,7 @@ class EvidenceType(StrEnum):
     HTTP_REQUEST = "http_request"
     HTTP_RESPONSE = "http_response"
     DNS_RESULT = "dns_result"
+    SUBDOMAIN_RESULT = "subdomain_result"
     TLS_RESULT = "tls_result"
     TOOL_OUTPUT = "tool_output"
     SCREENSHOT = "screenshot"

@@ -49,7 +49,11 @@ from saarthi_ai.persistence.projects import (
     ProjectNotFoundError,
     ProjectRepository,
 )
+from saarthi_ai.persistence.subdomain_workflow import (
+    run_tracked_subdomain_collection,
+)
 from saarthi_ai.recon.dns_collector import DnsCollectionError
+from saarthi_ai.recon.subdomain_collector import SubdomainCollectionError
 from saarthi_ai.schemas import Message
 
 app = typer.Typer(
@@ -819,6 +823,81 @@ def recon_dns(
 
     for record_type, records in result.collection.records.items():
         console.print(f"{record_type}: {len(records)}")
+
+    console.print(f"Evidence ID: {result.evidence.evidence_id}")
+    console.print(f"Evidence path: {result.evidence.path}")
+
+
+@recon_app.command("subdomains")
+def recon_subdomains(
+    execution_id: Annotated[
+        str,
+        typer.Option(
+            "--execution",
+            help="Planned execution identifier.",
+        ),
+    ],
+    domain: Annotated[
+        str,
+        typer.Option(
+            "--domain",
+            help="Authorized parent domain included in execution scope.",
+        ),
+    ],
+    approved: Annotated[
+        bool,
+        typer.Option(
+            "--approved",
+            help="Confirm approval to perform passive subdomain discovery.",
+        ),
+    ] = False,
+) -> None:
+    """Collect passive subdomain candidates and register JSON evidence."""
+
+    if not approved:
+        console.print(
+            "[bold yellow]Approval required.[/bold yellow] "
+            "Review the execution and rerun with --approved."
+        )
+        raise typer.Exit(code=1)
+
+    database = get_database()
+
+    console.print("[bold]Starting passive subdomain collection...[/bold]")
+    console.print(f"Execution: {execution_id}")
+    console.print(f"Domain: {domain}")
+
+    try:
+        result = run_tracked_subdomain_collection(
+            database,
+            execution_id,
+            domain,
+            actor="cli-subdomain-collector",
+        )
+    except (
+        ExecutionNotFoundError,
+        InvalidStateTransitionError,
+        SubdomainCollectionError,
+    ) as exc:
+        console.print(f"[bold red]Subdomain collection failed:[/bold red] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    console.print()
+    console.print("[bold green]Subdomain collection completed.[/bold green]")
+    console.print(f"Execution state: {result.execution.state.value}")
+    console.print(f"Domain: {result.collection.domain}")
+    console.print(f"Source: {result.collection.source}")
+    console.print(f"Candidates discovered: {len(result.collection.candidates)}")
+    console.print(f"Raw CT entries: {result.collection.raw_entry_count}")
+    console.print(f"Rejected names: {len(result.collection.rejected_names)}")
+
+    for candidate in result.collection.candidates[:20]:
+        wildcard_marker = " (wildcard certificate)" if candidate.wildcard_source else ""
+        console.print(f"- {candidate.hostname}{wildcard_marker}")
+
+    if len(result.collection.candidates) > 20:
+        remaining = len(result.collection.candidates) - 20
+        console.print(f"... and {remaining} more")
 
     console.print(f"Evidence ID: {result.evidence.evidence_id}")
     console.print(f"Evidence path: {result.evidence.path}")

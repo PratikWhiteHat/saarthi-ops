@@ -171,3 +171,125 @@ def test_recon_dns_rejects_unknown_execution(
 
     assert result.exit_code == 1
     assert "DNS collection failed" in result.stdout
+
+
+def test_recon_subdomains_requires_explicit_approval(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    """Subdomain reconnaissance must require explicit CLI approval."""
+
+    configure_test_storage(monkeypatch, tmp_path)
+
+    database = cli.get_database()
+    execution = database.create_execution(
+        cli.ExecutionCreate(
+            assessment_name="Authorized Subdomain Test",
+            asset_types=["web"],
+            targets=["https://example.com"],
+            authorization_confirmed=True,
+            active_testing_allowed=True,
+            intrusive_testing_allowed=False,
+        )
+    )
+
+    result = runner.invoke(
+        cli.app,
+        [
+            "recon",
+            "subdomains",
+            "--execution",
+            execution.execution_id,
+            "--domain",
+            "example.com",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "Approval required" in result.stdout
+
+
+def test_recon_subdomains_command(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    """Approved passive subdomain collection should display results."""
+
+    configure_test_storage(monkeypatch, tmp_path)
+
+    database = cli.get_database()
+    execution = database.create_execution(
+        cli.ExecutionCreate(
+            assessment_name="Authorized Subdomain Test",
+            asset_types=["web"],
+            targets=["https://example.com"],
+            authorization_confirmed=True,
+            active_testing_allowed=True,
+            intrusive_testing_allowed=False,
+        )
+    )
+
+    def fake_tracked_subdomain_collection(
+        database,
+        execution_id: str,
+        domain: str,
+        *,
+        actor: str,
+    ):
+        assert execution_id == execution.execution_id
+        assert domain == "example.com"
+        assert actor == "cli-subdomain-collector"
+
+        return SimpleNamespace(
+            execution=SimpleNamespace(
+                state=cli.ExecutionState.COMPLETED,
+            ),
+            collection=SimpleNamespace(
+                domain="example.com",
+                source="multi-provider",
+                candidates=[
+                    SimpleNamespace(
+                        hostname="api.example.com",
+                        wildcard_source=False,
+                    ),
+                    SimpleNamespace(
+                        hostname="wild.example.com",
+                        wildcard_source=True,
+                    ),
+                ],
+                raw_entry_count=5,
+                rejected_names=["outside.test"],
+            ),
+            evidence=SimpleNamespace(
+                evidence_id="evidence-subdomain-test",
+                path="evidence/subdomains/test.json",
+            ),
+        )
+
+    monkeypatch.setattr(
+        cli,
+        "run_tracked_subdomain_collection",
+        fake_tracked_subdomain_collection,
+    )
+
+    result = runner.invoke(
+        cli.app,
+        [
+            "recon",
+            "subdomains",
+            "--execution",
+            execution.execution_id,
+            "--domain",
+            "example.com",
+            "--approved",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "Subdomain collection completed" in result.stdout
+    assert "Execution state: completed" in result.stdout
+    assert "Source: multi-provider" in result.stdout
+    assert "Candidates discovered: 2" in result.stdout
+    assert "api.example.com" in result.stdout
+    assert "wildcard certificate" in result.stdout
+    assert "Evidence ID: evidence-subdomain-test" in result.stdout
