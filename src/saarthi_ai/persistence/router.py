@@ -4,12 +4,21 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
+from saarthi_ai.execution.http_collector import (
+    HttpCollectionNetworkError,
+    HttpCollectionScopeError,
+)
+from saarthi_ai.execution.http_models import HttpMetadataCollectionRequest
 from saarthi_ai.persistence.database import (
     DEFAULT_DATABASE_PATH,
     ExecutionNotFoundError,
     InvalidStateTransitionError,
     PersistenceError,
     SaarthiDatabase,
+)
+from saarthi_ai.persistence.http_workflow import (
+    TrackedHttpCollectionResponse,
+    run_tracked_http_collection,
 )
 from saarthi_ai.persistence.models import (
     AuditEventRecord,
@@ -212,5 +221,45 @@ async def list_evidence_endpoint(
     except ExecutionNotFoundError as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+        ) from exc
+
+
+@router.post(
+    "/{execution_id}/http-metadata",
+    response_model=TrackedHttpCollectionResponse,
+)
+async def run_tracked_http_collection_endpoint(
+    execution_id: str,
+    request: HttpMetadataCollectionRequest,
+    database: DatabaseDependency,
+) -> TrackedHttpCollectionResponse:
+    """Run HTTP metadata collection with execution-state tracking."""
+
+    try:
+        return await run_tracked_http_collection(
+            database,
+            execution_id,
+            request,
+            actor="api-http-collector",
+        )
+    except ExecutionNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+        ) from exc
+    except InvalidStateTransitionError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(exc),
+        ) from exc
+    except HttpCollectionScopeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
+    except HttpCollectionNetworkError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
             detail=str(exc),
         ) from exc

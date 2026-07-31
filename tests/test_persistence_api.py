@@ -203,3 +203,28 @@ def test_missing_execution_returns_not_found(
     response = client.get("/v1/executions/execution-missing")
 
     assert response.status_code == 404
+
+
+def test_tracked_http_endpoint_rejects_unknown_execution(
+    client: TestClient,
+) -> None:
+    """Tracked collection should reject an unknown execution."""
+
+    response = client.post(
+        "/v1/executions/execution-missing/http-metadata",
+        json={
+            "assessment": {
+                "name": "Authorized Web VAPT",
+                "targets": [
+                    {
+                        "asset_type": "web",
+                        "value": "https://example.com",
+                    }
+                ],
+                "authorization_confirmed": True,
+            },
+            "target": "https://example.com",
+        },
+    )
+
+    assert response.status_code == 404
