@@ -31,3 +31,8 @@ datasets/processed/split_manifest.json
 
 # Locally collected VAPT evidence
 evidence/
+
+# Local Saarthi execution database
+data/*.db
+data/*.db-shm
+data/*.db-wal
