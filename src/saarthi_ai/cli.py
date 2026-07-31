@@ -19,6 +19,8 @@ from saarthi_ai.assessments.scope import (
     validate_assessment,
 )
 from saarthi_ai.config import get_settings
+from saarthi_ai.execution.http_collector import HttpCollectionError
+from saarthi_ai.execution.http_models import HttpMetadataCollectionRequest
 from saarthi_ai.llm import (
     OllamaUnavailableError,
     SaarthiOllamaClient,
@@ -26,7 +28,11 @@ from saarthi_ai.llm import (
 from saarthi_ai.persistence.database import (
     DEFAULT_DATABASE_PATH,
     ExecutionNotFoundError,
+    InvalidStateTransitionError,
     SaarthiDatabase,
+)
+from saarthi_ai.persistence.http_workflow import (
+    run_tracked_http_collection,
 )
 from saarthi_ai.persistence.models import (
     EvidenceType,
@@ -613,3 +619,127 @@ def evidence_list(
         )
 
     console.print(table)
+
+
+@execution_app.command("run-http")
+def execution_run_http(
+    execution_id: Annotated[
+        str,
+        typer.Argument(
+            help="Planned execution identifier.",
+        ),
+    ],
+    approved: Annotated[
+        bool,
+        typer.Option(
+            "--approved",
+            help=("Confirm approval to send the controlled HTTP metadata request."),
+        ),
+    ] = False,
+) -> None:
+    """Run tracked HTTP metadata collection for an execution."""
+
+    if not approved:
+        console.print(
+            "[bold yellow]Approval required.[/bold yellow] "
+            "Review the execution and rerun with --approved."
+        )
+        raise typer.Exit(code=1)
+
+    database = get_database()
+
+    try:
+        execution = database.get_execution(execution_id)
+    except ExecutionNotFoundError as exc:
+        console.print(f"[bold red]Failed:[/bold red] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    if len(execution.targets) != 1:
+        console.print(
+            "[bold red]Unsupported execution.[/bold red] "
+            "The initial HTTP workflow requires exactly one target."
+        )
+        raise typer.Exit(code=1)
+
+    if len(execution.asset_types) != 1:
+        console.print(
+            "[bold red]Unsupported execution.[/bold red] "
+            "The initial HTTP workflow requires one asset type."
+        )
+        raise typer.Exit(code=1)
+
+    try:
+        asset_type = AssetType(execution.asset_types[0])
+    except ValueError as exc:
+        console.print(f"[bold red]Unsupported asset type:[/bold red] {execution.asset_types[0]}")
+        raise typer.Exit(code=1) from exc
+
+    if asset_type not in {AssetType.WEB, AssetType.API}:
+        console.print(
+            "[bold red]Unsupported asset type.[/bold red] "
+            "HTTP collection currently supports Web and API targets."
+        )
+        raise typer.Exit(code=1)
+
+    target = execution.targets[0]
+
+    raw_rate_limit = execution.metadata.get(
+        "rate_limit_per_second",
+        2,
+    )
+
+    try:
+        rate_limit = int(raw_rate_limit)
+    except (TypeError, ValueError):
+        rate_limit = 2
+
+    rate_limit = max(1, min(rate_limit, 100))
+
+    assessment = AssessmentRequest(
+        name=execution.assessment_name,
+        targets=[
+            AssessmentTarget(
+                asset_type=asset_type,
+                value=target,
+            )
+        ],
+        authorization_confirmed=(execution.authorization_confirmed),
+        allow_active_testing=(execution.active_testing_allowed),
+        allow_intrusive_testing=(execution.intrusive_testing_allowed),
+        rate_limit_per_second=rate_limit,
+    )
+
+    request = HttpMetadataCollectionRequest(
+        assessment=assessment,
+        target=target,
+    )
+
+    async def run() -> None:
+        console.print("[bold cyan]Starting controlled HTTP collection...[/bold cyan]")
+        console.print(f"Execution: {execution_id}")
+        console.print(f"Target: {target}")
+
+        try:
+            result = await run_tracked_http_collection(
+                database,
+                execution_id,
+                request,
+                actor="cli-http-collector",
+            )
+        except (
+            HttpCollectionError,
+            InvalidStateTransitionError,
+        ) as exc:
+            console.print(f"[bold red]Collection failed:[/bold red] {exc}")
+            raise typer.Exit(code=1) from exc
+
+        console.print("\n[bold green]HTTP collection completed.[/bold green]")
+        console.print(f"Execution state: {result.execution.state.value}")
+        console.print(f"HTTP status: {result.collection.status_code}")
+        console.print(f"Final URL: {result.collection.final_url}")
+        console.print(f"Captured bytes: {result.collection.body_bytes_captured}")
+        console.print(f"Body truncated: {result.collection.body_truncated}")
+        console.print(f"Evidence ID: {result.evidence.evidence_id}")
+        console.print(f"Evidence path: {result.evidence.path}")
+
+    asyncio.run(run())

@@ -129,3 +129,105 @@ def test_create_authorized_assessment(
     assert result.exit_code == 0
     assert "Assessment created" in result.stdout
     assert "State: planned" in result.stdout
+
+
+def test_run_http_requires_explicit_approval(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    """HTTP collection must require explicit CLI approval."""
+
+    configure_test_storage(monkeypatch, tmp_path)
+
+    database = cli.get_database()
+    execution = database.create_execution(
+        cli.ExecutionCreate(
+            assessment_name="Authorized HTTP Test",
+            asset_types=["web"],
+            targets=["https://example.com/"],
+            authorization_confirmed=True,
+        )
+    )
+
+    result = runner.invoke(
+        cli.app,
+        [
+            "execution",
+            "run-http",
+            execution.execution_id,
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "Approval required" in result.stdout
+
+
+def test_run_http_command(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    """Approved HTTP collection should display tracked results."""
+
+    from types import SimpleNamespace
+
+    configure_test_storage(monkeypatch, tmp_path)
+
+    database = cli.get_database()
+    execution = database.create_execution(
+        cli.ExecutionCreate(
+            assessment_name="Authorized HTTP Test",
+            asset_types=["web"],
+            targets=["https://example.com/"],
+            authorization_confirmed=True,
+            metadata={
+                "rate_limit_per_second": 2,
+            },
+        )
+    )
+
+    async def fake_tracked_collection(
+        database,
+        execution_id,
+        request,
+        *,
+        actor,
+    ):
+        assert request.target == "https://example.com/"
+        assert actor == "cli-http-collector"
+
+        return SimpleNamespace(
+            execution=SimpleNamespace(
+                state=cli.ExecutionState.COMPLETED,
+            ),
+            collection=SimpleNamespace(
+                status_code=200,
+                final_url="https://example.com/",
+                body_bytes_captured=5,
+                body_truncated=False,
+            ),
+            evidence=SimpleNamespace(
+                evidence_id="evidence-test",
+                path="evidence/http/test.json",
+            ),
+        )
+
+    monkeypatch.setattr(
+        cli,
+        "run_tracked_http_collection",
+        fake_tracked_collection,
+    )
+
+    result = runner.invoke(
+        cli.app,
+        [
+            "execution",
+            "run-http",
+            execution.execution_id,
+            "--approved",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "HTTP collection completed" in result.stdout
+    assert "Execution state: completed" in result.stdout
+    assert "Evidence ID: evidence-test" in result.stdout
