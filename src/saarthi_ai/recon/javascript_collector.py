@@ -56,16 +56,77 @@ SOURCE_MAP_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
-PARAMETER_PATTERN = re.compile(
-    r"""(?:
-        [?"'&]
-        |
-        \b(?:params?|query|searchParams|body|payload)\s*[\[.(]
-    )
-    (?P<name>[A-Za-z_][A-Za-z0-9_.-]{1,63})
-    """,
-    re.VERBOSE,
+QUERY_PARAMETER_PATTERN = re.compile(
+    r"[?&](?P<name>[A-Za-z_][A-Za-z0-9_.-]{0,63})=",
 )
+
+SEARCH_PARAM_PATTERN = re.compile(
+    r"""(?ix)
+    \.
+    (?:get|set|append|delete|has|getAll)
+    \(
+    \s*["']
+    (?P<name>[A-Za-z_][A-Za-z0-9_.-]{0,63})
+    ["']
+    """
+)
+
+BRACKET_PARAMETER_PATTERN = re.compile(
+    r"""(?ix)
+    \b(?:params?|query|searchParams|body|payload)
+    \s*\[
+    \s*["']
+    (?P<name>[A-Za-z_][A-Za-z0-9_.-]{0,63})
+    ["']
+    \s*\]
+    """
+)
+
+OBJECT_PARAMETER_PATTERN = re.compile(
+    r"""(?isx)
+    \b(?:params?|query|body|payload)
+    \s*[:=]
+    \s*\{
+    (?P<body>.{0,2000}?)
+    \}
+    """
+)
+
+OBJECT_KEY_PATTERN = re.compile(
+    r"""(?ix)
+    (?:
+        ["'](?P<quoted>[A-Za-z_][A-Za-z0-9_.-]{0,63})["']
+        |
+        (?P<plain>[A-Za-z_][A-Za-z0-9_.-]{0,63})
+    )
+    \s*:
+    """
+)
+
+PARAMETER_STOP_WORDS = {
+    "function",
+    "object",
+    "string",
+    "boolean",
+    "number",
+    "null",
+    "undefined",
+    "default",
+    "void",
+    "class",
+    "new",
+    "delete",
+    "return",
+    "this",
+    "true",
+    "false",
+    "error",
+    "document",
+    "window",
+    "prototype",
+    "constructor",
+}
+
 
 SECRET_PATTERNS: tuple[tuple[str, re.Pattern[str], str], ...] = (
     (
@@ -441,16 +502,41 @@ def _extract_parameters(
     text: str,
     source_url: str,
 ) -> list[JavaScriptParameterRecord]:
-    """Extract bounded candidate parameter names."""
+    """Extract high-confidence request parameter names."""
 
-    names = {match.group("name") for match in PARAMETER_PATTERN.finditer(text)}
+    names: set[str] = set()
+
+    for pattern in (
+        QUERY_PARAMETER_PATTERN,
+        SEARCH_PARAM_PATTERN,
+        BRACKET_PARAMETER_PATTERN,
+    ):
+        for match in pattern.finditer(text):
+            names.add(match.group("name"))
+
+    for object_match in OBJECT_PARAMETER_PATTERN.finditer(text):
+        object_body = object_match.group("body")
+
+        for key_match in OBJECT_KEY_PATTERN.finditer(object_body):
+            name = key_match.group("quoted") or key_match.group("plain")
+
+            if name:
+                names.add(name)
+
+    filtered_names = sorted(
+        name
+        for name in names
+        if name.lower() not in PARAMETER_STOP_WORDS
+        and not name.startswith("__")
+        and "." not in name
+    )
 
     return [
         JavaScriptParameterRecord(
             name=name,
             source_url=source_url,
         )
-        for name in sorted(names)[:MAX_PARAMETERS_PER_ASSET]
+        for name in filtered_names[:MAX_PARAMETERS_PER_ASSET]
     ]
 
 

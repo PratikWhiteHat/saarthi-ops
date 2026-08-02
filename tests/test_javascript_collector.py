@@ -262,3 +262,51 @@ async def test_no_valid_javascript_urls_raises(
             source,
             evidence_root=tmp_path,
         )
+
+
+def test_parameter_extraction_rejects_javascript_noise() -> None:
+    """Only high-confidence request parameter names should be returned."""
+
+    from saarthi_ai.recon.javascript_collector import (
+        _extract_parameters,
+    )
+
+    javascript = """
+    function example() {
+        const value = null;
+        const type = "string";
+        const query = "?userId=123&includeDisabled=true";
+        searchParams.get("page");
+        searchParams.set("limit", "20");
+        params["tenantId"] = "example";
+        const payload = {
+            username: "alice",
+            "rememberMe": true
+        };
+        Object.defineProperty(module, "__esModule", {
+            value: true
+        });
+    }
+    """
+
+    records = _extract_parameters(
+        javascript,
+        "https://example.com/app.js",
+    )
+
+    names = {record.name for record in records}
+
+    assert names == {
+        "includeDisabled",
+        "limit",
+        "page",
+        "rememberMe",
+        "tenantId",
+        "userId",
+        "username",
+    }
+
+    assert "function" not in names
+    assert "null" not in names
+    assert "string" not in names
+    assert "__esModule" not in names
