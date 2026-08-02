@@ -45,6 +45,7 @@ class EvidenceType(StrEnum):
     DNS_RESULT = "dns_result"
     SUBDOMAIN_RESULT = "subdomain_result"
     HTTP_INTELLIGENCE_RESULT = "http_intelligence_result"
+    CRAWL_RESULT = "crawl_result"
     TLS_RESULT = "tls_result"
     TOOL_OUTPUT = "tool_output"
     SCREENSHOT = "screenshot"
