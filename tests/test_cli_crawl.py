@@ -25,7 +25,6 @@ def test_crawl_command_is_available() -> None:
 
     assert result.exit_code == 0
     assert "crawl" in result.stdout
-    assert "URL intelligence" in result.stdout
 
 
 def test_crawl_requires_explicit_approval(

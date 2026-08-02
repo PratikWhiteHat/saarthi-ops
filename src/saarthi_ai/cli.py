@@ -44,6 +44,9 @@ from saarthi_ai.persistence.http_intelligence_workflow import (
 from saarthi_ai.persistence.http_workflow import (
     run_tracked_http_collection,
 )
+from saarthi_ai.persistence.javascript_workflow import (
+    run_tracked_javascript_intelligence,
+)
 from saarthi_ai.persistence.models import (
     EvidenceType,
     ExecutionCreate,
@@ -63,6 +66,9 @@ from saarthi_ai.recon.crawl_collector import CrawlCollectionError
 from saarthi_ai.recon.dns_collector import DnsCollectionError
 from saarthi_ai.recon.http_intelligence_collector import (
     HttpIntelligenceCollectionError,
+)
+from saarthi_ai.recon.javascript_collector import (
+    JavaScriptCollectionError,
 )
 from saarthi_ai.recon.subdomain_collector import SubdomainCollectionError
 from saarthi_ai.schemas import Message
@@ -1068,6 +1074,96 @@ def recon_crawl(
 
     if len(result.collection.urls) > 20:
         remaining = len(result.collection.urls) - 20
+        console.print(f"... and {remaining} more")
+
+    console.print(f"Evidence ID: {result.evidence.evidence_id}")
+    console.print(f"Evidence path: {result.evidence.path}")
+
+
+@recon_app.command("javascript-intelligence")
+def recon_javascript_intelligence(
+    execution_id: Annotated[
+        str,
+        typer.Option(
+            "--execution",
+            help="Planned execution identifier.",
+        ),
+    ],
+    source_evidence: Annotated[
+        Path,
+        typer.Option(
+            "--source-evidence",
+            help="Phase 3D crawl evidence JSON file.",
+        ),
+    ],
+    approved: Annotated[
+        bool,
+        typer.Option(
+            "--approved",
+            help=("Confirm approval to fetch and analyze in-scope JavaScript assets."),
+        ),
+    ] = False,
+) -> None:
+    """Analyze scoped JavaScript assets and register intelligence evidence."""
+
+    if not approved:
+        console.print(
+            "[bold yellow]Approval required.[/bold yellow] "
+            "Review the execution and rerun with --approved."
+        )
+        raise typer.Exit(code=1)
+
+    database = get_database()
+
+    console.print("[bold]Starting controlled JavaScript intelligence collection...[/bold]")
+    console.print(f"Execution: {execution_id}")
+    console.print(f"Source evidence: {source_evidence}")
+
+    try:
+        result = run_tracked_javascript_intelligence(
+            database,
+            execution_id,
+            source_evidence,
+            actor="cli-javascript-intelligence-collector",
+            evidence_root=(Path.cwd() / "evidence" / "javascript-intelligence"),
+        )
+    except (
+        ExecutionNotFoundError,
+        InvalidStateTransitionError,
+        JavaScriptCollectionError,
+    ) as exc:
+        console.print(f"[bold red]JavaScript intelligence collection failed:[/bold red] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    console.print()
+    console.print("[bold green]JavaScript intelligence collection completed.[/bold green]")
+    console.print(f"Execution state: {result.execution.state.value}")
+    console.print(f"Domain: {result.collection.domain}")
+    console.print(f"JavaScript inputs: {result.collection.input_javascript_count}")
+    console.print(f"JavaScript fetched: {result.collection.fetched_javascript_count}")
+    console.print(f"Failed fetches: {result.collection.failed_fetch_count}")
+    console.print(f"Endpoints discovered: {result.collection.endpoint_count}")
+    console.print(f"Parameters discovered: {result.collection.parameter_count}")
+    console.print(f"WebSocket URLs: {result.collection.websocket_count}")
+    console.print(f"Source maps: {result.collection.source_map_count}")
+    console.print(f"Redacted secret candidates: {result.collection.secret_candidate_count}")
+    console.print(f"Rejected inputs: {len(result.collection.rejected_inputs)}")
+
+    displayed_assets = 0
+
+    for asset in result.collection.assets:
+        if asset.fetch.status_code is None:
+            continue
+
+        console.print(f"- [{asset.fetch.status_code}] {asset.fetch.url}")
+        displayed_assets += 1
+
+        if displayed_assets >= 20:
+            break
+
+    remaining = result.collection.fetched_javascript_count - displayed_assets
+
+    if remaining > 0:
         console.print(f"... and {remaining} more")
 
     console.print(f"Evidence ID: {result.evidence.evidence_id}")

@@ -1,8 +1,9 @@
-"""CLI tests for Phase 3C live-host intelligence."""
+"""CLI tests for Phase 3E JavaScript intelligence."""
 
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 from typer.testing import CliRunner
 
@@ -11,8 +12,8 @@ from saarthi_ai.cli import app
 runner = CliRunner()
 
 
-def test_live_hosts_command_is_available() -> None:
-    """Recon help should expose the Phase 3C command."""
+def test_javascript_intelligence_command_is_available() -> None:
+    """Recon help should expose the Phase 3E command."""
 
     result = runner.invoke(
         app,
@@ -23,17 +24,18 @@ def test_live_hosts_command_is_available() -> None:
     )
 
     assert result.exit_code == 0
-    assert "live-hosts" in result.stdout
+    assert "javascript-intelligence" in result.stdout
+    assert "JavaScript assets" in result.stdout
 
 
-def test_live_hosts_requires_explicit_approval(
+def test_javascript_intelligence_requires_explicit_approval(
     tmp_path: Path,
 ) -> None:
-    """The CLI must not start probing without explicit approval."""
+    """The CLI must not fetch JavaScript without approval."""
 
-    source_evidence = tmp_path / "subdomains.json"
+    source_evidence = tmp_path / "crawl.json"
     source_evidence.write_text(
-        '{"domain": "example.com", "candidates": []}',
+        '{"domain": "example.com", "urls": []}',
         encoding="utf-8",
     )
 
@@ -41,7 +43,7 @@ def test_live_hosts_requires_explicit_approval(
         app,
         [
             "recon",
-            "live-hosts",
+            "javascript-intelligence",
             "--execution",
             "execution-test",
             "--source-evidence",
@@ -53,19 +55,17 @@ def test_live_hosts_requires_explicit_approval(
     assert "Approval required" in result.stdout
 
 
-def test_live_hosts_uses_project_evidence_directory(
+def test_javascript_intelligence_uses_project_evidence_directory(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    """CLI evidence must be written outside the virtual environment."""
-
-    from types import SimpleNamespace
+    """Phase 3E evidence must use the project-local directory."""
 
     import saarthi_ai.cli as cli_module
 
-    source_evidence = tmp_path / "subdomains.json"
+    source_evidence = tmp_path / "crawl.json"
     source_evidence.write_text(
-        '{"domain": "example.com", "candidates": []}',
+        '{"domain": "example.com", "urls": []}',
         encoding="utf-8",
     )
 
@@ -90,12 +90,23 @@ def test_live_hosts_uses_project_evidence_directory(
             ),
             collection=SimpleNamespace(
                 domain="example.com",
-                input_count=0,
-                live_service_count=0,
-                malformed_line_count=0,
+                input_javascript_count=2,
+                fetched_javascript_count=1,
+                failed_fetch_count=1,
+                endpoint_count=3,
+                parameter_count=2,
+                websocket_count=1,
+                source_map_count=1,
+                secret_candidate_count=0,
                 rejected_inputs=[],
-                rejected_results=[],
-                records=[],
+                assets=[
+                    SimpleNamespace(
+                        fetch=SimpleNamespace(
+                            status_code=200,
+                            url=("https://example.com/assets/app.js"),
+                        )
+                    )
+                ],
             ),
             evidence=SimpleNamespace(
                 evidence_id="evidence-test",
@@ -111,7 +122,7 @@ def test_live_hosts_uses_project_evidence_directory(
     )
     monkeypatch.setattr(
         cli_module,
-        "run_tracked_http_intelligence",
+        "run_tracked_javascript_intelligence",
         fake_workflow,
     )
 
@@ -119,7 +130,7 @@ def test_live_hosts_uses_project_evidence_directory(
         app,
         [
             "recon",
-            "live-hosts",
+            "javascript-intelligence",
             "--execution",
             "execution-test",
             "--source-evidence",
@@ -129,4 +140,11 @@ def test_live_hosts_uses_project_evidence_directory(
     )
 
     assert result.exit_code == 0
-    assert captured["evidence_root"] == (tmp_path / "evidence" / "http-intelligence")
+    assert captured["execution_id"] == "execution-test"
+    assert captured["source_evidence_path"] == source_evidence
+    assert captured["actor"] == "cli-javascript-intelligence-collector"
+    assert captured["evidence_root"] == (tmp_path / "evidence" / "javascript-intelligence")
+
+    assert "JavaScript intelligence collection completed" in result.stdout
+    assert "Endpoints discovered: 3" in result.stdout
+    assert "Source maps: 1" in result.stdout
