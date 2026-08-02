@@ -106,7 +106,11 @@ class ReadOnlySaarthiRepository:
             columns,
             "created_at",
             "started_at",
+        )
+        updated_column = self._pick(
+            columns,
             "updated_at",
+            "modified_at",
         )
         completed_column = self._pick(
             columns,
@@ -114,7 +118,12 @@ class ReadOnlySaarthiRepository:
             "finished_at",
         )
 
-        order_sql = f'ORDER BY "{created_column}" DESC' if created_column else ""
+        order_sql = execution_order_sql(
+            updated_column,
+            completed_column,
+            created_column,
+        )
+
         rows = connection.execute(
             f'SELECT * FROM "{execution_table}" {order_sql} LIMIT 6'
         ).fetchall()
@@ -334,6 +343,30 @@ class ReadOnlySaarthiRepository:
             )
             activity.append(f"{stamp:<19} INF  {row[message_column]}")
         return activity or ["[INF] No activity recorded."]
+
+
+def execution_order_sql(
+    updated_column: str | None,
+    completed_column: str | None,
+    created_column: str | None,
+) -> str:
+    """Order executions by their latest workflow activity."""
+
+    columns = [
+        column
+        for column in (
+            updated_column,
+            completed_column,
+            created_column,
+        )
+        if column is not None
+    ]
+
+    if not columns:
+        return ""
+
+    expression = ", ".join(f'"{column}" DESC' for column in columns)
+    return f"ORDER BY {expression}"
 
 
 def parse_datetime(value: str) -> datetime | None:

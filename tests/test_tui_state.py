@@ -1,6 +1,7 @@
 from saarthi_ai.tui.app import (
     calculate_duration,
     compact_timestamp,
+    execution_order_sql,
     infer_phase,
     infer_phase_short,
     progress_for_state,
@@ -125,3 +126,21 @@ def test_duration_calculation() -> None:
 
 def test_compact_timestamp() -> None:
     assert compact_timestamp("2026-08-01T01:54:00+04:00") == "2026-08-01 01:54:00"
+
+
+def test_execution_order_prefers_latest_activity() -> None:
+    assert execution_order_sql(
+        "updated_at",
+        "completed_at",
+        "created_at",
+    ) == ('ORDER BY "updated_at" DESC, "completed_at" DESC, "created_at" DESC')
+
+
+def test_execution_order_handles_legacy_schema() -> None:
+    assert execution_order_sql(
+        None,
+        "finished_at",
+        "started_at",
+    ) == ('ORDER BY "finished_at" DESC, "started_at" DESC')
+
+    assert execution_order_sql(None, None, None) == ""
