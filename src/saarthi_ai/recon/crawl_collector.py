@@ -517,6 +517,8 @@ def collect_crawl_intelligence(
             "-no-color",
             "-depth",
             "2",
+            "-crawl-duration",
+            "20s",
             "-js-crawl",
             "-form-extraction",
             "-field-scope",

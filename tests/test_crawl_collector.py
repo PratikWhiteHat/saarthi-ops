@@ -332,3 +332,53 @@ def test_katana_nonzero_exit_raises(
             source,
             evidence_root=tmp_path,
         )
+
+
+def test_katana_execution_uses_bounded_arguments(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Katana must use explicit crawl, rate and concurrency limits."""
+
+    source = write_http_intelligence_evidence(tmp_path / "http-intelligence.json")
+
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(
+        crawl_collector,
+        "resolve_executable",
+        lambda profile: "/approved/katana",
+    )
+
+    def fake_run_tool(profile, arguments):
+        captured["profile"] = profile
+        captured["arguments"] = arguments
+        return tool_result("")
+
+    monkeypatch.setattr(
+        crawl_collector,
+        "run_tool",
+        fake_run_tool,
+    )
+
+    result = collect_crawl_intelligence(
+        source,
+        evidence_root=tmp_path / "evidence",
+    )
+
+    arguments = captured["arguments"]
+
+    assert "-crawl-duration" in arguments
+    assert arguments[arguments.index("-crawl-duration") + 1] == "20s"
+
+    assert arguments[arguments.index("-depth") + 1] == "2"
+
+    assert arguments[arguments.index("-rate-limit") + 1] == "2"
+
+    assert arguments[arguments.index("-concurrency") + 1] == "5"
+
+    assert arguments[arguments.index("-parallelism") + 1] == "2"
+
+    assert arguments[arguments.index("-timeout") + 1] == "10"
+
+    assert result.discovered_url_count == 0

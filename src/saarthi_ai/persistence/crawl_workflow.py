@@ -79,6 +79,7 @@ def run_tracked_crawl(
             "source_evidence_path": str(source_evidence_path),
             "mode": "active-low-risk",
             "depth": 2,
+            "crawl_duration": "20s",
             "rate_limit": 2,
         },
     )

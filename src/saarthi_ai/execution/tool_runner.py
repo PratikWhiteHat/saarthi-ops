@@ -88,7 +88,7 @@ KATANA_PROFILE = ToolProfile(
         "/usr/local/bin/katana",
         str(Path.home() / "go/bin/katana"),
     ),
-    timeout_seconds=600,
+    timeout_seconds=240,
     max_output_bytes=10_000_000,
 )
 
