@@ -45,9 +45,7 @@ class ReadOnlySaarthiRepository:
 
     @staticmethod
     def _tables(connection: sqlite3.Connection) -> set[str]:
-        rows = connection.execute(
-            "SELECT name FROM sqlite_master WHERE type='table'"
-        ).fetchall()
+        rows = connection.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
         return {str(row["name"]) for row in rows}
 
     @staticmethod
@@ -220,11 +218,7 @@ class ReadOnlySaarthiRepository:
         """Return normalized evidence types associated with an execution."""
 
         table = next(
-            (
-                name
-                for name in ("evidence", "evidence_items")
-                if name in tables
-            ),
+            (name for name in ("evidence", "evidence_items") if name in tables),
             None,
         )
         if table is None:
@@ -259,9 +253,7 @@ class ReadOnlySaarthiRepository:
         ).fetchall()
 
         return {
-            str(row[type_column]).strip().lower()
-            for row in rows
-            if row[type_column] is not None
+            str(row[type_column]).strip().lower() for row in rows if row[type_column] is not None
         }
 
     def _count_related(
@@ -278,13 +270,10 @@ class ReadOnlySaarthiRepository:
         columns = self._columns(connection, table)
         execution_column = self._pick(columns, "execution_id", "execution")
         if execution_column is None:
-            row = connection.execute(
-                f'SELECT COUNT(*) AS total FROM "{table}"'
-            ).fetchone()
+            row = connection.execute(f'SELECT COUNT(*) AS total FROM "{table}"').fetchone()
         else:
             row = connection.execute(
-                f'SELECT COUNT(*) AS total FROM "{table}" '
-                f'WHERE "{execution_column}" = ?',
+                f'SELECT COUNT(*) AS total FROM "{table}" WHERE "{execution_column}" = ?',
                 (execution_id,),
             ).fetchone()
         return int(row["total"])
@@ -296,11 +285,7 @@ class ReadOnlySaarthiRepository:
         execution_id: str,
     ) -> list[str]:
         table = next(
-            (
-                name
-                for name in ("audit_events", "audit_log", "events")
-                if name in tables
-            ),
+            (name for name in ("audit_events", "audit_log", "events") if name in tables),
             None,
         )
         if table is None:
@@ -334,9 +319,7 @@ class ReadOnlySaarthiRepository:
             where_sql = f'WHERE "{execution_column}" = ?'
             parameters = (execution_id,)
 
-        order_sql = (
-            f'ORDER BY "{timestamp_column}" DESC' if timestamp_column else ""
-        )
+        order_sql = f'ORDER BY "{timestamp_column}" DESC' if timestamp_column else ""
         rows = connection.execute(
             f'SELECT * FROM "{table}" {where_sql} {order_sql} LIMIT 12',
             parameters,
@@ -389,12 +372,11 @@ def infer_phase(
     """Infer the latest completed workflow from execution evidence."""
 
     normalized = state.lower()
-    normalized_evidence = {
-        evidence_type.strip().lower()
-        for evidence_type in evidence_types
-    }
+    normalized_evidence = {evidence_type.strip().lower() for evidence_type in evidence_types}
 
     if normalized == "completed":
+        if "crawl_result" in normalized_evidence:
+            return "3D — CRAWLING & URL INTELLIGENCE"
         if "http_intelligence_result" in normalized_evidence:
             return "3C — LIVE HOST INTELLIGENCE"
         if "subdomain_result" in normalized_evidence:
@@ -406,6 +388,10 @@ def infer_phase(
         return "3B — SUBDOMAIN ENUMERATION"
 
     if normalized in {"running", "analyzing"}:
+        if "crawl_result" in normalized_evidence:
+            return "3E — JAVASCRIPT INTELLIGENCE"
+        if "http_intelligence_result" in normalized_evidence:
+            return "3D — CRAWLING & URL INTELLIGENCE"
         if "subdomain_result" in normalized_evidence:
             return "3C — LIVE HOST INTELLIGENCE"
         if "dns_result" in normalized_evidence:
@@ -429,6 +415,10 @@ def infer_phase_short(
 
     phase = infer_phase(state, evidence_types)
 
+    if phase.startswith("3E"):
+        return "3E"
+    if phase.startswith("3D"):
+        return "3D"
     if phase.startswith("3C"):
         return "3C"
     if phase.startswith("3B"):
@@ -463,20 +453,20 @@ def demo_snapshot(activity: list[str] | None = None) -> DashboardSnapshot:
         target_scope="*.authorized-example.test",
         authorization="CONFIRMED",
         mode="LOCAL / SAFE + SMART",
-        current_phase="3C — LIVE HOST INTELLIGENCE",
+        current_phase="3D — CRAWLING & URL INTELLIGENCE",
         phase_progress=100,
-        evidence_count=2,
+        evidence_count=3,
         finding_count=0,
         execution_state="completed",
         recent_executions=[
             {
                 "execution_id": "execution-demo-read-only",
-                "phase": "3C",
+                "phase": "3D",
                 "target": "*.authorized-example.test",
                 "status": "COMPLETED",
                 "started": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 "duration": "00:03:24",
-                "evidence": "2",
+                "evidence": "3",
                 "findings": "0",
             }
         ],
@@ -486,6 +476,8 @@ def demo_snapshot(activity: list[str] | None = None) -> DashboardSnapshot:
             "2026-08-01 01:50:18 INF  Subdomain enumeration completed.",
             "2026-08-02 09:42:10 INF  Live-host intelligence completed.",
             "2026-08-02 09:42:11 INF  HTTP intelligence evidence registered.",
+            "2026-08-02 20:15:57 INF  URL crawling completed.",
+            "2026-08-02 20:15:57 INF  Crawl evidence registered.",
         ],
     )
 
@@ -494,8 +486,8 @@ PHASES = [
     ("✓", "3A", "DNS Intelligence", "DONE", "2026-07-31 12:48"),
     ("✓", "3B", "Subdomain Enumeration", "DONE", "2026-07-31 13:05"),
     ("✓", "3C", "Live Host Intelligence", "DONE", "2026-08-02 09:42"),
-    ("→", "3D", "Crawling & URL Intelligence", "NEXT", "—"),
-    ("·", "3E", "JavaScript Intelligence", "PLANNED", "—"),
+    ("✓", "3D", "Crawling & URL Intelligence", "DONE", "2026-08-02 20:15"),
+    ("→", "3E", "JavaScript Intelligence", "NEXT", "—"),
     ("·", "4A", "Direct Vulnerability Checks", "PLANNED", "—"),
     ("·", "4B", "Blind Validation", "PLANNED", "—"),
     ("·", "4C", "OAST Manager", "PLANNED", "—"),
@@ -508,7 +500,7 @@ TOOLS = [
     ("assetfinder", "Passive Asset Discovery", "ENABLED"),
     ("crt.sh", "Certificate Transparency", "ENABLED"),
     ("httpx", "Live Host & Service Probe", "ENABLED"),
-    ("katana", "Web Crawler", "NEXT"),
+    ("katana", "Web Crawler", "ENABLED"),
     ("nuclei", "Template-based Scanning", "PLANNED"),
     ("sqlmap", "SQL Injection Testing", "PHASE 4"),
     ("ghauri", "Blind SQLi Cross-check", "PHASE 4"),
@@ -653,14 +645,11 @@ class SaarthiDashboard(App[None]):
                     "Data Handling      : LOCAL ONLY",
                     f"Mode               : {snapshot.mode}",
                     f"Current Phase      : {snapshot.current_phase}",
-                    "Evidence / Findings: "
-                    f"{snapshot.evidence_count} / {snapshot.finding_count}",
+                    f"Evidence / Findings: {snapshot.evidence_count} / {snapshot.finding_count}",
                 ]
             )
         )
-        self.query_one("#phase-progress", ProgressBar).update(
-            progress=snapshot.phase_progress
-        )
+        self.query_one("#phase-progress", ProgressBar).update(progress=snapshot.phase_progress)
 
         phase_table = self.query_one("#phase-table", DataTable)
         phase_table.clear()

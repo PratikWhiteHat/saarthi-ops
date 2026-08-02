@@ -11,6 +11,13 @@ def test_phase_inference() -> None:
     assert (
         infer_phase(
             "completed",
+            {"crawl_result"},
+        )
+        == "3D — CRAWLING & URL INTELLIGENCE"
+    )
+    assert (
+        infer_phase(
+            "completed",
             {"http_intelligence_result"},
         )
         == "3C — LIVE HOST INTELLIGENCE"
@@ -39,6 +46,20 @@ def test_active_phase_inference() -> None:
     assert (
         infer_phase(
             "running",
+            {"crawl_result"},
+        )
+        == "3E — JAVASCRIPT INTELLIGENCE"
+    )
+    assert (
+        infer_phase(
+            "running",
+            {"http_intelligence_result"},
+        )
+        == "3D — CRAWLING & URL INTELLIGENCE"
+    )
+    assert (
+        infer_phase(
+            "running",
             {"subdomain_result"},
         )
         == "3C — LIVE HOST INTELLIGENCE"
@@ -53,6 +74,20 @@ def test_active_phase_inference() -> None:
 
 
 def test_compact_phase_inference() -> None:
+    assert (
+        infer_phase_short(
+            "completed",
+            {"crawl_result"},
+        )
+        == "3D"
+    )
+    assert (
+        infer_phase_short(
+            "running",
+            {"crawl_result"},
+        )
+        == "3E"
+    )
     assert (
         infer_phase_short(
             "completed",
@@ -89,7 +124,4 @@ def test_duration_calculation() -> None:
 
 
 def test_compact_timestamp() -> None:
-    assert (
-        compact_timestamp("2026-08-01T01:54:00+04:00")
-        == "2026-08-01 01:54:00"
-    )
+    assert compact_timestamp("2026-08-01T01:54:00+04:00") == "2026-08-01 01:54:00"
