@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 from typing import Annotated
 
 import typer
@@ -34,6 +35,9 @@ from saarthi_ai.persistence.database import (
 from saarthi_ai.persistence.dns_workflow import (
     run_tracked_dns_collection,
 )
+from saarthi_ai.persistence.http_intelligence_workflow import (
+    run_tracked_http_intelligence,
+)
 from saarthi_ai.persistence.http_workflow import (
     run_tracked_http_collection,
 )
@@ -53,6 +57,9 @@ from saarthi_ai.persistence.subdomain_workflow import (
     run_tracked_subdomain_collection,
 )
 from saarthi_ai.recon.dns_collector import DnsCollectionError
+from saarthi_ai.recon.http_intelligence_collector import (
+    HttpIntelligenceCollectionError,
+)
 from saarthi_ai.recon.subdomain_collector import SubdomainCollectionError
 from saarthi_ai.schemas import Message
 
@@ -897,6 +904,83 @@ def recon_subdomains(
 
     if len(result.collection.candidates) > 20:
         remaining = len(result.collection.candidates) - 20
+        console.print(f"... and {remaining} more")
+
+    console.print(f"Evidence ID: {result.evidence.evidence_id}")
+    console.print(f"Evidence path: {result.evidence.path}")
+
+
+@recon_app.command("live-hosts")
+def recon_live_hosts(
+    execution_id: Annotated[
+        str,
+        typer.Option(
+            "--execution",
+            help="Planned execution identifier.",
+        ),
+    ],
+    source_evidence: Annotated[
+        Path,
+        typer.Option(
+            "--source-evidence",
+            help="Phase 3B subdomain evidence JSON file.",
+        ),
+    ],
+    approved: Annotated[
+        bool,
+        typer.Option(
+            "--approved",
+            help="Confirm approval to perform low-risk HTTP probing.",
+        ),
+    ] = False,
+) -> None:
+    """Probe scoped Phase 3B hosts and register HTTP intelligence evidence."""
+
+    if not approved:
+        console.print(
+            "[bold yellow]Approval required.[/bold yellow] "
+            "Review the execution and rerun with --approved."
+        )
+        raise typer.Exit(code=1)
+
+    database = get_database()
+
+    console.print("[bold]Starting controlled live-host intelligence...[/bold]")
+    console.print(f"Execution: {execution_id}")
+    console.print(f"Source evidence: {source_evidence}")
+
+    try:
+        result = run_tracked_http_intelligence(
+            database,
+            execution_id,
+            source_evidence,
+            actor="cli-http-intelligence-collector",
+        )
+    except (
+        ExecutionNotFoundError,
+        InvalidStateTransitionError,
+        HttpIntelligenceCollectionError,
+    ) as exc:
+        console.print(f"[bold red]HTTP intelligence collection failed:[/bold red] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    console.print()
+    console.print("[bold green]HTTP intelligence collection completed.[/bold green]")
+    console.print(f"Execution state: {result.execution.state.value}")
+    console.print(f"Domain: {result.collection.domain}")
+    console.print(f"Inputs probed: {result.collection.input_count}")
+    console.print(f"Live services: {result.collection.live_service_count}")
+    console.print(f"Malformed output lines: {result.collection.malformed_line_count}")
+    console.print(f"Rejected inputs: {len(result.collection.rejected_inputs)}")
+    console.print(f"Rejected results: {len(result.collection.rejected_results)}")
+
+    for record in result.collection.records[:20]:
+        status = record.status_code if record.status_code is not None else "-"
+        title = record.title or "-"
+        console.print(f"- [{status}] {record.url} — {title}")
+
+    if len(result.collection.records) > 20:
+        remaining = len(result.collection.records) - 20
         console.print(f"... and {remaining} more")
 
     console.print(f"Evidence ID: {result.evidence.evidence_id}")
