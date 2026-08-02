@@ -80,6 +80,18 @@ PD_HTTPX_PROFILE = ToolProfile(
     timeout_seconds=240,
 )
 
+
+KATANA_PROFILE = ToolProfile(
+    name="projectdiscovery-katana",
+    executable_candidates=(
+        "/opt/homebrew/bin/katana",
+        "/usr/local/bin/katana",
+        str(Path.home() / "go/bin/katana"),
+    ),
+    timeout_seconds=600,
+    max_output_bytes=10_000_000,
+)
+
 NUCLEI_PROFILE = ToolProfile(
     name="nuclei",
     executable_candidates=(
