@@ -955,6 +955,7 @@ def recon_live_hosts(
             execution_id,
             source_evidence,
             actor="cli-http-intelligence-collector",
+            evidence_root=Path.cwd() / "evidence" / "http-intelligence",
         )
     except (
         ExecutionNotFoundError,
