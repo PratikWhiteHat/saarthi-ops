@@ -2,15 +2,73 @@ from saarthi_ai.tui.app import (
     calculate_duration,
     compact_timestamp,
     infer_phase,
+    infer_phase_short,
     progress_for_state,
 )
 
 
 def test_phase_inference() -> None:
+    assert (
+        infer_phase(
+            "completed",
+            {"http_intelligence_result"},
+        )
+        == "3C — LIVE HOST INTELLIGENCE"
+    )
+    assert (
+        infer_phase(
+            "completed",
+            {"subdomain_result"},
+        )
+        == "3B — SUBDOMAIN ENUMERATION"
+    )
+    assert (
+        infer_phase(
+            "completed",
+            {"dns_result"},
+        )
+        == "3A — DNS INTELLIGENCE"
+    )
     assert infer_phase("completed") == "3B — SUBDOMAIN ENUMERATION"
     assert infer_phase("running") == "ACTIVE WORKFLOW"
     assert infer_phase("planned") == "PLANNING"
     assert infer_phase("failed") == "EXECUTION REVIEW"
+
+
+def test_active_phase_inference() -> None:
+    assert (
+        infer_phase(
+            "running",
+            {"subdomain_result"},
+        )
+        == "3C — LIVE HOST INTELLIGENCE"
+    )
+    assert (
+        infer_phase(
+            "analyzing",
+            {"dns_result"},
+        )
+        == "3B — SUBDOMAIN ENUMERATION"
+    )
+
+
+def test_compact_phase_inference() -> None:
+    assert (
+        infer_phase_short(
+            "completed",
+            {"http_intelligence_result"},
+        )
+        == "3C"
+    )
+    assert (
+        infer_phase_short(
+            "completed",
+            {"subdomain_result"},
+        )
+        == "3B"
+    )
+    assert infer_phase_short("planned") == "PLAN"
+    assert infer_phase_short("failed") == "REVIEW"
 
 
 def test_progress_mapping() -> None:

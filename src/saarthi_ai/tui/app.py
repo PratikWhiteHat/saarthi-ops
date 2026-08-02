@@ -137,11 +137,19 @@ class ReadOnlySaarthiRepository:
         for row in rows:
             started = value(row, created_column, "—")
             completed = value(row, completed_column, "")
+            row_execution_id = value(row, id_column, "unknown")
+            row_evidence_types = self._evidence_types(
+                connection,
+                tables,
+                row_execution_id,
+            )
+
             recent_executions.append(
                 {
-                    "execution_id": value(row, id_column, "unknown"),
+                    "execution_id": row_execution_id,
                     "phase": infer_phase_short(
-                        value(row, state_column, "unknown")
+                        value(row, state_column, "unknown"),
+                        row_evidence_types,
                     ),
                     "target": value(row, target_column, "Authorized target"),
                     "status": value(
@@ -160,6 +168,11 @@ class ReadOnlySaarthiRepository:
             connection,
             tables,
             ("evidence", "evidence_items"),
+            execution_id,
+        )
+        evidence_types = self._evidence_types(
+            connection,
+            tables,
             execution_id,
         )
         finding_count = self._count_related(
@@ -182,7 +195,10 @@ class ReadOnlySaarthiRepository:
             target_scope=value(latest, target_column, "Authorized scope"),
             authorization="CONFIRMED",
             mode="LOCAL / SAFE + SMART",
-            current_phase=infer_phase(execution_state),
+            current_phase=infer_phase(
+                execution_state,
+                evidence_types,
+            ),
             phase_progress=progress_for_state(execution_state),
             evidence_count=evidence_count,
             finding_count=finding_count,
@@ -194,6 +210,59 @@ class ReadOnlySaarthiRepository:
                 execution_id,
             ),
         )
+
+    def _evidence_types(
+        self,
+        connection: sqlite3.Connection,
+        tables: set[str],
+        execution_id: str,
+    ) -> set[str]:
+        """Return normalized evidence types associated with an execution."""
+
+        table = next(
+            (
+                name
+                for name in ("evidence", "evidence_items")
+                if name in tables
+            ),
+            None,
+        )
+        if table is None:
+            return set()
+
+        columns = self._columns(connection, table)
+        type_column = self._pick(
+            columns,
+            "evidence_type",
+            "type",
+            "kind",
+        )
+        execution_column = self._pick(
+            columns,
+            "execution_id",
+            "execution",
+        )
+
+        if type_column is None:
+            return set()
+
+        where_sql = ""
+        parameters: tuple[Any, ...] = ()
+
+        if execution_column is not None:
+            where_sql = f'WHERE "{execution_column}" = ?'
+            parameters = (execution_id,)
+
+        rows = connection.execute(
+            f'SELECT "{type_column}" FROM "{table}" {where_sql}',
+            parameters,
+        ).fetchall()
+
+        return {
+            str(row[type_column]).strip().lower()
+            for row in rows
+            if row[type_column] is not None
+        }
 
     def _count_related(
         self,
@@ -313,29 +382,66 @@ def compact_timestamp(value: str) -> str:
     return parsed.strftime("%Y-%m-%d %H:%M:%S")
 
 
-def infer_phase(state: str) -> str:
+def infer_phase(
+    state: str,
+    evidence_types: Iterable[str] = (),
+) -> str:
+    """Infer the latest completed workflow from execution evidence."""
+
     normalized = state.lower()
+    normalized_evidence = {
+        evidence_type.strip().lower()
+        for evidence_type in evidence_types
+    }
+
     if normalized == "completed":
+        if "http_intelligence_result" in normalized_evidence:
+            return "3C — LIVE HOST INTELLIGENCE"
+        if "subdomain_result" in normalized_evidence:
+            return "3B — SUBDOMAIN ENUMERATION"
+        if "dns_result" in normalized_evidence:
+            return "3A — DNS INTELLIGENCE"
+
+        # Preserve compatibility with executions created before evidence-aware TUI.
         return "3B — SUBDOMAIN ENUMERATION"
+
     if normalized in {"running", "analyzing"}:
+        if "subdomain_result" in normalized_evidence:
+            return "3C — LIVE HOST INTELLIGENCE"
+        if "dns_result" in normalized_evidence:
+            return "3B — SUBDOMAIN ENUMERATION"
         return "ACTIVE WORKFLOW"
+
     if normalized in {"planned", "created"}:
         return "PLANNING"
+
     if normalized == "failed":
         return "EXECUTION REVIEW"
+
     return "CURRENT WORKFLOW"
 
 
-def infer_phase_short(state: str) -> str:
-    normalized = state.lower()
-    if normalized == "completed":
+def infer_phase_short(
+    state: str,
+    evidence_types: Iterable[str] = (),
+) -> str:
+    """Return the compact phase label used by the execution table."""
+
+    phase = infer_phase(state, evidence_types)
+
+    if phase.startswith("3C"):
+        return "3C"
+    if phase.startswith("3B"):
         return "3B"
-    if normalized in {"running", "analyzing"}:
+    if phase.startswith("3A"):
+        return "3A"
+    if phase == "ACTIVE WORKFLOW":
         return "ACTIVE"
-    if normalized in {"planned", "created"}:
+    if phase == "PLANNING":
         return "PLAN"
-    if normalized == "failed":
+    if phase == "EXECUTION REVIEW":
         return "REVIEW"
+
     return "—"
 
 
@@ -357,7 +463,7 @@ def demo_snapshot(activity: list[str] | None = None) -> DashboardSnapshot:
         target_scope="*.authorized-example.test",
         authorization="CONFIRMED",
         mode="LOCAL / SAFE + SMART",
-        current_phase="3B — SUBDOMAIN ENUMERATION",
+        current_phase="3C — LIVE HOST INTELLIGENCE",
         phase_progress=100,
         evidence_count=2,
         finding_count=0,
@@ -365,7 +471,7 @@ def demo_snapshot(activity: list[str] | None = None) -> DashboardSnapshot:
         recent_executions=[
             {
                 "execution_id": "execution-demo-read-only",
-                "phase": "3B",
+                "phase": "3C",
                 "target": "*.authorized-example.test",
                 "status": "COMPLETED",
                 "started": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -378,7 +484,8 @@ def demo_snapshot(activity: list[str] | None = None) -> DashboardSnapshot:
         or [
             "2026-08-01 01:50:02 INF  DNS intelligence collected.",
             "2026-08-01 01:50:18 INF  Subdomain enumeration completed.",
-            "2026-08-01 01:50:19 INF  Evidence registered.",
+            "2026-08-02 09:42:10 INF  Live-host intelligence completed.",
+            "2026-08-02 09:42:11 INF  HTTP intelligence evidence registered.",
         ],
     )
 
@@ -386,8 +493,8 @@ def demo_snapshot(activity: list[str] | None = None) -> DashboardSnapshot:
 PHASES = [
     ("✓", "3A", "DNS Intelligence", "DONE", "2026-07-31 12:48"),
     ("✓", "3B", "Subdomain Enumeration", "DONE", "2026-07-31 13:05"),
-    ("→", "3C", "Live Host Intelligence", "NEXT", "—"),
-    ("·", "3D", "Crawling & URL Intelligence", "PLANNED", "—"),
+    ("✓", "3C", "Live Host Intelligence", "DONE", "2026-08-02 09:42"),
+    ("→", "3D", "Crawling & URL Intelligence", "NEXT", "—"),
     ("·", "3E", "JavaScript Intelligence", "PLANNED", "—"),
     ("·", "4A", "Direct Vulnerability Checks", "PLANNED", "—"),
     ("·", "4B", "Blind Validation", "PLANNED", "—"),
@@ -400,8 +507,8 @@ TOOLS = [
     ("amass", "Passive Asset Discovery", "ENABLED"),
     ("assetfinder", "Passive Asset Discovery", "ENABLED"),
     ("crt.sh", "Certificate Transparency", "ENABLED"),
-    ("httpx", "Live Host & Service Probe", "NEXT"),
-    ("katana", "Web Crawler", "PLANNED"),
+    ("httpx", "Live Host & Service Probe", "ENABLED"),
+    ("katana", "Web Crawler", "NEXT"),
     ("nuclei", "Template-based Scanning", "PLANNED"),
     ("sqlmap", "SQL Injection Testing", "PHASE 4"),
     ("ghauri", "Blind SQLi Cross-check", "PHASE 4"),
