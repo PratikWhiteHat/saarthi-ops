@@ -1,0 +1,37 @@
+from saarthi_ai.tui.app import (
+    calculate_duration,
+    compact_timestamp,
+    infer_phase,
+    progress_for_state,
+)
+
+
+def test_phase_inference() -> None:
+    assert infer_phase("completed") == "3B — SUBDOMAIN ENUMERATION"
+    assert infer_phase("running") == "ACTIVE WORKFLOW"
+    assert infer_phase("planned") == "PLANNING"
+    assert infer_phase("failed") == "EXECUTION REVIEW"
+
+
+def test_progress_mapping() -> None:
+    assert progress_for_state("planned") == 20
+    assert progress_for_state("running") == 55
+    assert progress_for_state("analyzing") == 80
+    assert progress_for_state("completed") == 100
+
+
+def test_duration_calculation() -> None:
+    assert (
+        calculate_duration(
+            "2026-08-01T01:00:00+04:00",
+            "2026-08-01T01:02:05+04:00",
+        )
+        == "00:02:05"
+    )
+
+
+def test_compact_timestamp() -> None:
+    assert (
+        compact_timestamp("2026-08-01T01:54:00+04:00")
+        == "2026-08-01 01:54:00"
+    )

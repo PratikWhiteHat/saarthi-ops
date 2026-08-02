@@ -1,0 +1,188 @@
+Screen {
+    background: #010810;
+    color: #d6e9ec;
+    layout: vertical;
+}
+
+Footer {
+    height: 1;
+    background: #06141d;
+    color: #d4e8eb;
+}
+
+#hero {
+    grid-size: 3;
+    grid-columns: 1fr 1.5fr 1fr;
+    height: 9;
+    border: round #77c9d2;
+    background: #020c14;
+    padding: 0 1;
+    margin-bottom: 1;
+}
+
+#brand-block {
+    height: 100%;
+    align: left middle;
+}
+
+#brand-title {
+    color: #6fe3eb;
+    text-style: bold;
+}
+
+#brand-tagline {
+    color: #69c7cf;
+}
+
+#hero-center {
+    height: 100%;
+    align: center middle;
+}
+
+#hero-title {
+    color: #37e9a2;
+    text-style: bold;
+    text-align: center;
+}
+
+#hero-subtitle {
+    color: #ddd7cf;
+    text-align: center;
+}
+
+#runtime-panel {
+    height: 100%;
+    padding: 0 0 0 2;
+    border-left: solid #879296;
+    color: #d7e7e9;
+    content-align: left middle;
+}
+
+#top-grid {
+    grid-size: 3;
+    grid-columns: 0.95fr 1.18fr 1.18fr;
+    grid-gutter: 1;
+    height: 26;
+    margin-bottom: 1;
+}
+
+.panel {
+    border: round #47bac5;
+    background: #020d15;
+    padding: 0 1;
+}
+
+.panel-title {
+    color: #73dfe8;
+    text-style: bold;
+}
+
+#scope-content {
+    height: 17;
+    padding-top: 1;
+}
+
+.section-label {
+    color: #84d0d7;
+}
+
+ProgressBar {
+    height: 1;
+}
+
+ProgressBar > .bar--bar {
+    color: #2de17f;
+}
+
+ProgressBar > .bar--complete {
+    color: #2de17f;
+}
+
+DataTable {
+    background: #020d15;
+    color: #d5e8eb;
+    border: none;
+}
+
+DataTable > .datatable--header {
+    background: #06202a;
+    color: #7ce5ec;
+    text-style: bold;
+}
+
+DataTable > .datatable--cursor {
+    background: #173a44;
+    color: #ffffff;
+}
+
+DataTable > .datatable--odd-row {
+    background: #05151d;
+}
+
+#tools-note {
+    height: 2;
+    color: #72d8e0;
+    padding-top: 1;
+    text-align: center;
+}
+
+#executions-panel {
+    height: 11;
+    margin-bottom: 1;
+}
+
+#activity-panel {
+    height: 1fr;
+    min-height: 10;
+    margin-bottom: 1;
+}
+
+#activity-heading {
+    height: 2;
+}
+
+#activity-caption {
+    width: 1fr;
+    color: #72d0d8;
+    text-align: right;
+}
+
+#activity-log {
+    height: 1fr;
+    background: #01070c;
+    color: #c9e6e9;
+    border: none;
+}
+
+#system-status {
+    grid-size: 6;
+    grid-columns: auto auto auto auto auto 1fr;
+    height: 2;
+    border: round #355d66;
+    background: #031019;
+    padding: 0 1;
+    margin-bottom: 0;
+}
+
+.system-key {
+    color: #6fd5dd;
+    margin-right: 1;
+}
+
+.system-ok {
+    color: #50e985;
+    margin-right: 3;
+}
+
+.system-value {
+    color: #d7e5e7;
+    margin-right: 3;
+}
+
+.system-warn {
+    color: #d8b65f;
+}
+
+Log {
+    scrollbar-size: 1 1;
+}
