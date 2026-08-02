@@ -23,6 +23,7 @@ dev = [
 ]
 
 [project.scripts]
+saarthi-tui = "saarthi_ai.tui.app:run"
 saarthi = "saarthi_ai.cli:app"
 
 [build-system]
