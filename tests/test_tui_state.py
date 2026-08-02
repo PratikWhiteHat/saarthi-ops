@@ -12,6 +12,13 @@ def test_phase_inference() -> None:
     assert (
         infer_phase(
             "completed",
+            {"javascript_intelligence_result"},
+        )
+        == "3E — JAVASCRIPT INTELLIGENCE"
+    )
+    assert (
+        infer_phase(
+            "completed",
             {"crawl_result"},
         )
         == "3D — CRAWLING & URL INTELLIGENCE"
@@ -47,6 +54,13 @@ def test_active_phase_inference() -> None:
     assert (
         infer_phase(
             "running",
+            {"javascript_intelligence_result"},
+        )
+        == "4A — DIRECT VULNERABILITY CHECKS"
+    )
+    assert (
+        infer_phase(
+            "running",
             {"crawl_result"},
         )
         == "3E — JAVASCRIPT INTELLIGENCE"
@@ -75,6 +89,20 @@ def test_active_phase_inference() -> None:
 
 
 def test_compact_phase_inference() -> None:
+    assert (
+        infer_phase_short(
+            "completed",
+            {"javascript_intelligence_result"},
+        )
+        == "3E"
+    )
+    assert (
+        infer_phase_short(
+            "running",
+            {"javascript_intelligence_result"},
+        )
+        == "4A"
+    )
     assert (
         infer_phase_short(
             "completed",

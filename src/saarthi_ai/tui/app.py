@@ -408,6 +408,8 @@ def infer_phase(
     normalized_evidence = {evidence_type.strip().lower() for evidence_type in evidence_types}
 
     if normalized == "completed":
+        if "javascript_intelligence_result" in normalized_evidence:
+            return "3E — JAVASCRIPT INTELLIGENCE"
         if "crawl_result" in normalized_evidence:
             return "3D — CRAWLING & URL INTELLIGENCE"
         if "http_intelligence_result" in normalized_evidence:
@@ -421,6 +423,8 @@ def infer_phase(
         return "3B — SUBDOMAIN ENUMERATION"
 
     if normalized in {"running", "analyzing"}:
+        if "javascript_intelligence_result" in normalized_evidence:
+            return "4A — DIRECT VULNERABILITY CHECKS"
         if "crawl_result" in normalized_evidence:
             return "3E — JAVASCRIPT INTELLIGENCE"
         if "http_intelligence_result" in normalized_evidence:
@@ -448,6 +452,8 @@ def infer_phase_short(
 
     phase = infer_phase(state, evidence_types)
 
+    if phase.startswith("4A"):
+        return "4A"
     if phase.startswith("3E"):
         return "3E"
     if phase.startswith("3D"):
@@ -486,7 +492,7 @@ def demo_snapshot(activity: list[str] | None = None) -> DashboardSnapshot:
         target_scope="*.authorized-example.test",
         authorization="CONFIRMED",
         mode="LOCAL / SAFE + SMART",
-        current_phase="3D — CRAWLING & URL INTELLIGENCE",
+        current_phase="3E — JAVASCRIPT INTELLIGENCE",
         phase_progress=100,
         evidence_count=3,
         finding_count=0,
@@ -494,7 +500,7 @@ def demo_snapshot(activity: list[str] | None = None) -> DashboardSnapshot:
         recent_executions=[
             {
                 "execution_id": "execution-demo-read-only",
-                "phase": "3D",
+                "phase": "3E",
                 "target": "*.authorized-example.test",
                 "status": "COMPLETED",
                 "started": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -511,6 +517,8 @@ def demo_snapshot(activity: list[str] | None = None) -> DashboardSnapshot:
             "2026-08-02 09:42:11 INF  HTTP intelligence evidence registered.",
             "2026-08-02 20:15:57 INF  URL crawling completed.",
             "2026-08-02 20:15:57 INF  Crawl evidence registered.",
+            "2026-08-02 22:35:00 INF  JavaScript intelligence completed.",
+            "2026-08-02 22:35:00 INF  JavaScript evidence registered.",
         ],
     )
 
@@ -520,8 +528,8 @@ PHASES = [
     ("✓", "3B", "Subdomain Enumeration", "DONE", "2026-07-31 13:05"),
     ("✓", "3C", "Live Host Intelligence", "DONE", "2026-08-02 09:42"),
     ("✓", "3D", "Crawling & URL Intelligence", "DONE", "2026-08-02 20:15"),
-    ("→", "3E", "JavaScript Intelligence", "NEXT", "—"),
-    ("·", "4A", "Direct Vulnerability Checks", "PLANNED", "—"),
+    ("✓", "3E", "JavaScript Intelligence", "DONE", "2026-08-02 22:35"),
+    ("→", "4A", "Direct Vulnerability Checks", "NEXT", "—"),
     ("·", "4B", "Blind Validation", "PLANNED", "—"),
     ("·", "4C", "OAST Manager", "PLANNED", "—"),
     ("·", "4D", "Confirmation Engine", "PLANNED", "—"),
@@ -537,7 +545,7 @@ TOOLS = [
     ("nuclei", "Template-based Scanning", "PLANNED"),
     ("sqlmap", "SQL Injection Testing", "PHASE 4"),
     ("ghauri", "Blind SQLi Cross-check", "PHASE 4"),
-    ("jsecrets", "JavaScript Secret Finder", "PHASE 3E"),
+    ("Saarthi JS", "JavaScript Intelligence", "ENABLED"),
     ("OAST Manager", "Out-of-band Correlation", "PHASE 4"),
 ]
 
