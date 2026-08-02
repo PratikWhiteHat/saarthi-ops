@@ -26,6 +26,9 @@ from saarthi_ai.llm import (
     OllamaUnavailableError,
     SaarthiOllamaClient,
 )
+from saarthi_ai.persistence.crawl_workflow import (
+    run_tracked_crawl,
+)
 from saarthi_ai.persistence.database import (
     DEFAULT_DATABASE_PATH,
     ExecutionNotFoundError,
@@ -56,6 +59,7 @@ from saarthi_ai.persistence.projects import (
 from saarthi_ai.persistence.subdomain_workflow import (
     run_tracked_subdomain_collection,
 )
+from saarthi_ai.recon.crawl_collector import CrawlCollectionError
 from saarthi_ai.recon.dns_collector import DnsCollectionError
 from saarthi_ai.recon.http_intelligence_collector import (
     HttpIntelligenceCollectionError,
@@ -982,6 +986,88 @@ def recon_live_hosts(
 
     if len(result.collection.records) > 20:
         remaining = len(result.collection.records) - 20
+        console.print(f"... and {remaining} more")
+
+    console.print(f"Evidence ID: {result.evidence.evidence_id}")
+    console.print(f"Evidence path: {result.evidence.path}")
+
+
+@recon_app.command("crawl")
+def recon_crawl(
+    execution_id: Annotated[
+        str,
+        typer.Option(
+            "--execution",
+            help="Planned execution identifier.",
+        ),
+    ],
+    source_evidence: Annotated[
+        Path,
+        typer.Option(
+            "--source-evidence",
+            help="Phase 3C HTTP intelligence evidence JSON file.",
+        ),
+    ],
+    approved: Annotated[
+        bool,
+        typer.Option(
+            "--approved",
+            help="Confirm approval to perform controlled low-risk crawling.",
+        ),
+    ] = False,
+) -> None:
+    """Crawl scoped Phase 3C services and register URL intelligence evidence."""
+
+    if not approved:
+        console.print(
+            "[bold yellow]Approval required.[/bold yellow] "
+            "Review the execution and rerun with --approved."
+        )
+        raise typer.Exit(code=1)
+
+    database = get_database()
+
+    console.print("[bold]Starting controlled URL crawling...[/bold]")
+    console.print(f"Execution: {execution_id}")
+    console.print(f"Source evidence: {source_evidence}")
+
+    try:
+        result = run_tracked_crawl(
+            database,
+            execution_id,
+            source_evidence,
+            actor="cli-crawl-collector",
+            evidence_root=Path.cwd() / "evidence" / "crawling",
+        )
+    except (
+        ExecutionNotFoundError,
+        InvalidStateTransitionError,
+        CrawlCollectionError,
+    ) as exc:
+        console.print(f"[bold red]Crawl collection failed:[/bold red] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    console.print()
+    console.print("[bold green]URL crawling completed.[/bold green]")
+    console.print(f"Execution state: {result.execution.state.value}")
+    console.print(f"Domain: {result.collection.domain}")
+    console.print(f"Input services: {result.collection.input_service_count}")
+    console.print(f"Crawled services: {result.collection.crawled_service_count}")
+    console.print(f"URLs discovered: {result.collection.discovered_url_count}")
+    console.print(f"Forms discovered: {result.collection.form_count}")
+    console.print(f"Parameters discovered: {result.collection.parameter_count}")
+    console.print(f"JavaScript URLs: {result.collection.javascript_url_count}")
+    console.print(f"WebSocket URLs: {result.collection.websocket_url_count}")
+    console.print(f"Malformed output lines: {result.collection.malformed_line_count}")
+    console.print(f"Rejected inputs: {len(result.collection.rejected_inputs)}")
+    console.print(f"Rejected results: {len(result.collection.rejected_results)}")
+
+    for record in result.collection.urls[:20]:
+        status = record.status_code if record.status_code is not None else "-"
+        console.print(f"- [{status}] {record.method} {record.url}")
+
+    if len(result.collection.urls) > 20:
+        remaining = len(result.collection.urls) - 20
         console.print(f"... and {remaining} more")
 
     console.print(f"Evidence ID: {result.evidence.evidence_id}")
