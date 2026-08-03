@@ -139,3 +139,72 @@ async def test_security_headers_adapter_executes_when_allowed(
     assert result.result is not None
     assert result.result.status_code == 200
     assert "strict-transport-security" in result.result.missing_headers
+
+
+@pytest.mark.asyncio
+async def test_cors_adapter_executes_when_allowed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from saarthi_ai.checks.cors import (
+        CorsCheckResult,
+        CorsFinding,
+    )
+
+    async def fake_run_cors_check(
+        target_url: str,
+    ) -> CorsCheckResult:
+        return CorsCheckResult(
+            target_url=target_url,
+            probes=(),
+            findings=(
+                CorsFinding(
+                    finding_id="arbitrary-origin-reflection",
+                    title="Arbitrary Origin Reflected",
+                    severity="medium",
+                    evidence="Test evidence.",
+                ),
+            ),
+        )
+
+    monkeypatch.setattr(
+        "saarthi_ai.checks.executor.run_cors_check",
+        fake_run_cors_check,
+    )
+
+    result = await execute_direct_check(
+        DirectCheckRequest(
+            execution_id="execution-test",
+            target_url="https://example.com/",
+            check_id="cors-configuration",
+            authorized=True,
+            active_testing=True,
+            explicitly_approved=True,
+            requested_method="GET",
+            requested_requests=3,
+        )
+    )
+
+    assert result.executed is True
+    assert result.policy.decision is CheckDecision.ALLOW
+    assert result.result is not None
+    assert len(result.result.findings) == 1
+
+
+@pytest.mark.asyncio
+async def test_cors_adapter_is_blocked_without_active_testing() -> None:
+    result = await execute_direct_check(
+        DirectCheckRequest(
+            execution_id="execution-test",
+            target_url="https://example.com/",
+            check_id="cors-configuration",
+            authorized=True,
+            active_testing=False,
+            explicitly_approved=True,
+            requested_method="GET",
+            requested_requests=3,
+        )
+    )
+
+    assert result.executed is False
+    assert result.policy.decision is CheckDecision.DENY
+    assert "active-testing" in result.policy.reason.lower()

@@ -2,6 +2,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from saarthi_ai.checks.cors import (
+    CorsCheckResult,
+    run_cors_check,
+)
 from saarthi_ai.checks.models import (
     CheckDecision,
     DirectCheckRequest,
@@ -21,7 +25,7 @@ class DirectCheckExecutionResult:
     target_url: str
     policy: PolicyResult
     executed: bool
-    result: SecurityHeadersResult | None = None
+    result: SecurityHeadersResult | CorsCheckResult | None = None
     error: str | None = None
 
 
@@ -54,6 +58,18 @@ async def execute_direct_check(
 
     if request.check_id == "security-headers":
         result = await run_security_headers_check(request.target_url)
+
+        return DirectCheckExecutionResult(
+            check_id=request.check_id,
+            target_url=request.target_url,
+            policy=policy_result,
+            executed=True,
+            result=result,
+            error=result.error,
+        )
+
+    if request.check_id == "cors-configuration":
+        result = await run_cors_check(request.target_url)
 
         return DirectCheckExecutionResult(
             check_id=request.check_id,
