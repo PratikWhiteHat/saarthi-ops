@@ -19,6 +19,10 @@ from saarthi_ai.assessments.scope import (
     ScopeValidationError,
     validate_assessment,
 )
+from saarthi_ai.blind_validation.models import (
+    BlindValidationRequest,
+    CallbackProtocol,
+)
 from saarthi_ai.checks.models import DirectCheckRequest
 from saarthi_ai.config import get_settings
 from saarthi_ai.execution.http_collector import HttpCollectionError
@@ -26,6 +30,10 @@ from saarthi_ai.execution.http_models import HttpMetadataCollectionRequest
 from saarthi_ai.llm import (
     OllamaUnavailableError,
     SaarthiOllamaClient,
+)
+from saarthi_ai.persistence.blind_validation_workflow import (
+    BlindValidationWorkflowError,
+    run_tracked_blind_validation,
 )
 from saarthi_ai.persistence.crawl_workflow import (
     run_tracked_crawl,
@@ -108,11 +116,17 @@ check_app = typer.Typer(
     help="Run authorized policy-controlled vulnerability checks.",
 )
 
+blind_app = typer.Typer(
+    no_args_is_help=True,
+    help="Manage bounded Phase 4B blind-validation correlations.",
+)
+
 app.add_typer(project_app, name="project")
 app.add_typer(execution_app, name="execution")
 app.add_typer(evidence_app, name="evidence")
 app.add_typer(recon_app, name="recon")
 app.add_typer(check_app, name="check")
+app.add_typer(blind_app, name="blind")
 
 console = Console()
 
@@ -1340,3 +1354,126 @@ def check_direct(
     console.print(f"Evidence ID: {result.evidence.evidence_id}")
     console.print(f"Evidence path: {result.evidence.path}")
     console.print(f"Evidence SHA-256: {result.evidence.sha256}")
+
+
+@blind_app.command("create")
+def blind_create(
+    execution_id: Annotated[
+        str,
+        typer.Option(
+            "--execution",
+            help="Authorized assessment execution identifier.",
+        ),
+    ],
+    target_url: Annotated[
+        str,
+        typer.Option(
+            "--url",
+            help="In-scope HTTP or HTTPS target URL.",
+        ),
+    ],
+    protocol: Annotated[
+        CallbackProtocol,
+        typer.Option(
+            "--protocol",
+            help="Planned callback protocol.",
+            case_sensitive=False,
+        ),
+    ] = CallbackProtocol.HTTPS,
+    poll_attempts: Annotated[
+        int,
+        typer.Option(
+            "--poll-attempts",
+            min=1,
+            help="Bounded number of future correlation checks.",
+        ),
+    ] = 6,
+    poll_interval: Annotated[
+        int,
+        typer.Option(
+            "--poll-interval",
+            min=1,
+            help="Seconds between future correlation checks.",
+        ),
+    ] = 10,
+    approved: Annotated[
+        bool,
+        typer.Option(
+            "--approved",
+            help="Confirm explicit approval for blind validation.",
+        ),
+    ] = False,
+) -> None:
+    """Create a Phase 4B correlation record without sending a payload."""
+
+    if not approved:
+        console.print(
+            "[bold yellow]Approval required.[/bold yellow] "
+            "Review the target and callback settings, then rerun with "
+            "--approved."
+        )
+        raise typer.Exit(code=1)
+
+    database = get_database()
+
+    request = BlindValidationRequest(
+        execution_id=execution_id,
+        target_url=target_url,
+        authorized=True,
+        active_testing=True,
+        explicitly_approved=True,
+        callback_protocol=protocol,
+        requested_poll_attempts=poll_attempts,
+        requested_poll_interval_seconds=poll_interval,
+    )
+
+    console.print(
+        "[bold]Creating bounded Phase 4B correlation record...[/bold]"
+    )
+    console.print(f"Execution: {execution_id}")
+    console.print(f"Target: {target_url}")
+    console.print(f"Protocol: {protocol.value}")
+    console.print(f"Poll attempts: {poll_attempts}")
+    console.print(f"Poll interval: {poll_interval} seconds")
+
+    try:
+        result = run_tracked_blind_validation(
+            database,
+            request,
+            actor="cli-blind-validation-manager",
+            evidence_root=(
+                Path.cwd() / "evidence" / "blind-validation"
+            ),
+        )
+    except (
+        ExecutionNotFoundError,
+        InvalidStateTransitionError,
+        BlindValidationWorkflowError,
+    ) as exc:
+        console.print(
+            f"[bold red]Blind validation failed:[/bold red] {exc}"
+        )
+        raise typer.Exit(code=1) from exc
+
+    console.print()
+    console.print(
+        "[bold green]Correlation record created.[/bold green]"
+    )
+    console.print(f"Execution state: {result.execution.state.value}")
+    console.print(f"Status: {result.status.value}")
+    console.print(f"Token ID: {result.token.token_id}")
+    console.print(f"Token SHA-256: {result.token.token_hash}")
+    console.print(
+        "[bold yellow]One-time raw correlation token:[/bold yellow]"
+    )
+    console.print(result.token.token_value)
+    console.print(
+        "[dim]This raw token is shown once and is not persisted.[/dim]"
+    )
+    console.print(f"Evidence ID: {result.evidence.evidence_id}")
+    console.print(f"Evidence path: {result.evidence.path}")
+    console.print(f"Evidence SHA-256: {result.evidence.sha256}")
+    console.print(
+        "[dim]No payload was sent and no external OAST service "
+        "was contacted.[/dim]"
+    )
