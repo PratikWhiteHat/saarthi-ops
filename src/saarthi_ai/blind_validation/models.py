@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
 from typing import Any
@@ -30,7 +30,7 @@ class BlindValidationDecision(StrEnum):
 @dataclass(frozen=True)
 class CorrelationToken:
     token_id: str
-    token_value: str
+    token_value: str = field(repr=False)
     token_hash: str
     created_at: datetime
     expires_at: datetime

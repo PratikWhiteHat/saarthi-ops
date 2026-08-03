@@ -48,6 +48,7 @@ class EvidenceType(StrEnum):
     CRAWL_RESULT = "crawl_result"
     JAVASCRIPT_INTELLIGENCE_RESULT = "javascript_intelligence_result"
     DIRECT_CHECK_RESULT = "direct_check_result"
+    BLIND_VALIDATION_RESULT = "blind_validation_result"
     TLS_RESULT = "tls_result"
     TOOL_OUTPUT = "tool_output"
     SCREENSHOT = "screenshot"

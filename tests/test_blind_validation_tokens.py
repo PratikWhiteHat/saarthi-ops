@@ -69,3 +69,13 @@ def test_naive_creation_time_is_rejected() -> None:
 def test_empty_token_cannot_be_hashed() -> None:
     with pytest.raises(ValueError, match="must not be empty"):
         hash_token("")
+
+
+def test_raw_token_is_hidden_from_repr() -> None:
+    token = generate_correlation_token()
+
+    rendered = repr(token)
+
+    assert token.token_value not in rendered
+    assert token.token_hash in rendered
+    assert token.token_id in rendered
