@@ -19,6 +19,7 @@ from saarthi_ai.assessments.scope import (
     ScopeValidationError,
     validate_assessment,
 )
+from saarthi_ai.checks.models import DirectCheckRequest
 from saarthi_ai.config import get_settings
 from saarthi_ai.execution.http_collector import HttpCollectionError
 from saarthi_ai.execution.http_models import HttpMetadataCollectionRequest
@@ -34,6 +35,10 @@ from saarthi_ai.persistence.database import (
     ExecutionNotFoundError,
     InvalidStateTransitionError,
     SaarthiDatabase,
+)
+from saarthi_ai.persistence.direct_check_workflow import (
+    DirectCheckWorkflowError,
+    run_tracked_direct_check,
 )
 from saarthi_ai.persistence.dns_workflow import (
     run_tracked_dns_collection,
@@ -98,10 +103,16 @@ recon_app = typer.Typer(
     help="Run authorized reconnaissance workflows.",
 )
 
+check_app = typer.Typer(
+    no_args_is_help=True,
+    help="Run authorized policy-controlled vulnerability checks.",
+)
+
 app.add_typer(project_app, name="project")
 app.add_typer(execution_app, name="execution")
 app.add_typer(evidence_app, name="evidence")
 app.add_typer(recon_app, name="recon")
+app.add_typer(check_app, name="check")
 
 console = Console()
 
@@ -1168,3 +1179,108 @@ def recon_javascript_intelligence(
 
     console.print(f"Evidence ID: {result.evidence.evidence_id}")
     console.print(f"Evidence path: {result.evidence.path}")
+
+
+@check_app.command("direct")
+def check_direct(
+    execution_id: Annotated[
+        str,
+        typer.Option(
+            "--execution",
+            help="Authorized assessment execution identifier.",
+        ),
+    ],
+    target_url: Annotated[
+        str,
+        typer.Option(
+            "--url",
+            help="In-scope HTTP or HTTPS target URL.",
+        ),
+    ],
+    check_id: Annotated[
+        str,
+        typer.Option(
+            "--check",
+            help="Registered Phase 4A direct-check identifier.",
+        ),
+    ] = "security-headers",
+    approved: Annotated[
+        bool,
+        typer.Option(
+            "--approved",
+            help="Confirm approval to execute the selected direct check.",
+        ),
+    ] = False,
+) -> None:
+    """Run one authorized, policy-controlled Phase 4A direct check."""
+
+    if not approved:
+        console.print(
+            "[bold yellow]Approval required.[/bold yellow] "
+            "Review the target and selected check, then rerun with --approved."
+        )
+        raise typer.Exit(code=1)
+
+    database = get_database()
+
+    request = DirectCheckRequest(
+        execution_id=execution_id,
+        target_url=target_url,
+        check_id=check_id,
+        authorized=True,
+        active_testing=False,
+        explicitly_approved=True,
+        requested_method="GET",
+        requested_requests=1,
+    )
+
+    console.print("[bold]Starting policy-controlled Phase 4A direct check...[/bold]")
+    console.print(f"Execution: {execution_id}")
+    console.print(f"Target: {target_url}")
+    console.print(f"Check: {check_id}")
+
+    try:
+        result = run_tracked_direct_check(
+            database,
+            request,
+            actor="cli-direct-check-executor",
+            evidence_root=Path.cwd() / "evidence" / "direct-checks",
+        )
+    except (
+        ExecutionNotFoundError,
+        InvalidStateTransitionError,
+        DirectCheckWorkflowError,
+    ) as exc:
+        console.print(f"[bold red]Direct check failed:[/bold red] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    console.print()
+    console.print("[bold green]Direct check completed.[/bold green]")
+    console.print(f"Execution state: {result.execution.state.value}")
+    console.print(f"Check: {result.check.check_id}")
+    console.print(f"Target: {result.check.target_url}")
+    console.print(f"Policy decision: {result.check.policy.decision.value}")
+    console.print(f"Executed: {result.check.executed}")
+
+    check_result = result.check.result
+
+    if check_result is not None:
+        console.print(f"HTTP status: {check_result.status_code}")
+        console.print(
+            "Present security headers: "
+            f"{len(check_result.present_headers)}"
+        )
+        console.print(
+            "Missing security headers: "
+            f"{len(check_result.missing_headers)}"
+        )
+
+        for header in check_result.missing_headers:
+            console.print(f"- Missing: {header}")
+
+        if check_result.error:
+            console.print(f"Checker error: {check_result.error}")
+
+    console.print(f"Evidence ID: {result.evidence.evidence_id}")
+    console.print(f"Evidence path: {result.evidence.path}")
+    console.print(f"Evidence SHA-256: {result.evidence.sha256}")
