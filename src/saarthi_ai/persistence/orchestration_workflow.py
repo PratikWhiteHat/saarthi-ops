@@ -147,6 +147,23 @@ def create_phase_execution(
 
     parent = database.get_execution(context.parent_execution_id)
 
+    if active_testing_allowed and not parent.active_testing_allowed:
+        raise OrchestrationWorkflowError(
+            "Child execution cannot enable active testing when the "
+            "parent orchestration does not allow it."
+        )
+
+    if intrusive_testing_allowed and not parent.intrusive_testing_allowed:
+        raise OrchestrationWorkflowError(
+            "Child execution cannot enable intrusive testing when the "
+            "parent orchestration does not allow it."
+        )
+
+    if intrusive_testing_allowed and not active_testing_allowed:
+        raise OrchestrationWorkflowError(
+            "Intrusive child execution requires active testing."
+        )
+
     if parent.metadata.get("orchestration_id") != context.orchestration_id:
         raise OrchestrationWorkflowError(
             "Parent execution does not match the orchestration context."

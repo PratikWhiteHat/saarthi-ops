@@ -899,3 +899,76 @@ def test_phase_3e_failure_marks_parent_failed(
     assert "simulated Phase 3E failure" in (
         parent.failure_reason or ""
     )
+
+
+def test_child_cannot_escalate_active_testing_permission(
+    database: SaarthiDatabase,
+) -> None:
+    context = create_orchestration(
+        database,
+        assessment_name="Passive Assessment",
+        target_url="https://example.com/",
+        active_testing_allowed=False,
+    )
+
+    with pytest.raises(
+        OrchestrationWorkflowError,
+        match="cannot enable active testing",
+    ):
+        create_phase_execution(
+            database,
+            context,
+            phase=OrchestrationPhase.CORS,
+            phase_name="CORS Configuration",
+            active_testing_allowed=True,
+        )
+
+
+def test_child_cannot_escalate_intrusive_testing_permission(
+    database: SaarthiDatabase,
+) -> None:
+    context = create_orchestration(
+        database,
+        assessment_name="Active Non-Intrusive Assessment",
+        target_url="https://example.com/",
+        active_testing_allowed=True,
+        intrusive_testing_allowed=False,
+    )
+
+    with pytest.raises(
+        OrchestrationWorkflowError,
+        match="cannot enable intrusive testing",
+    ):
+        create_phase_execution(
+            database,
+            context,
+            phase=OrchestrationPhase.CORS,
+            phase_name="Invalid Intrusive Child",
+            active_testing_allowed=True,
+            intrusive_testing_allowed=True,
+        )
+
+
+def test_intrusive_child_requires_active_testing(
+    database: SaarthiDatabase,
+) -> None:
+    context = create_orchestration(
+        database,
+        assessment_name="Intrusive Assessment",
+        target_url="https://example.com/",
+        active_testing_allowed=True,
+        intrusive_testing_allowed=True,
+    )
+
+    with pytest.raises(
+        OrchestrationWorkflowError,
+        match="requires active testing",
+    ):
+        create_phase_execution(
+            database,
+            context,
+            phase=OrchestrationPhase.CORS,
+            phase_name="Invalid Intrusive Child",
+            active_testing_allowed=False,
+            intrusive_testing_allowed=True,
+        )
