@@ -24,6 +24,9 @@ from saarthi_ai.persistence.models import (
     ExecutionCreate,
     ExecutionState,
 )
+from saarthi_ai.persistence.oast_registry import (
+    PersistentOastCorrelationRegistry,
+)
 
 
 @pytest.fixture
@@ -111,6 +114,30 @@ def test_workflow_persists_hash_only_correlation_evidence(
     assert result.token.token_value not in json.dumps(
         result.evidence.metadata
     )
+
+    registry = PersistentOastCorrelationRegistry(database)
+    registry.initialize()
+
+    stored_correlation = registry.get_by_token_id(
+        result.token.token_id
+    )
+
+    assert stored_correlation is not None
+    assert stored_correlation.token_hash == result.token.token_hash
+    assert stored_correlation.execution_id == execution_id
+
+    with database.connect() as connection:
+        registry_row = connection.execute(
+            """
+            SELECT *
+            FROM oast_correlations
+            WHERE token_id = ?
+            """,
+            (result.token.token_id,),
+        ).fetchone()
+
+    assert registry_row is not None
+    assert result.token.token_value not in repr(dict(registry_row))
 
     events = database.list_audit_events(execution_id)
     serialized_events = json.dumps(

@@ -19,6 +19,7 @@ from saarthi_ai.blind_validation.models import (
 )
 from saarthi_ai.blind_validation.policy import evaluate_blind_validation
 from saarthi_ai.blind_validation.tokens import generate_correlation_token
+from saarthi_ai.oast.models import OastCorrelation, OastProtocol
 from saarthi_ai.persistence.database import (
     InvalidStateTransitionError,
     SaarthiDatabase,
@@ -37,6 +38,10 @@ from saarthi_ai.persistence.models import (
     EvidenceType,
     ExecutionRecord,
     ExecutionState,
+)
+from saarthi_ai.persistence.oast_registry import (
+    OastRegistryError,
+    PersistentOastCorrelationRegistry,
 )
 
 DEFAULT_EVIDENCE_ROOT = Path("evidence") / "blind-validation"
@@ -217,6 +222,22 @@ def run_tracked_blind_validation(
     try:
         token = generate_correlation_token()
 
+        if request.callback_protocol.value in {"http", "https"}:
+            registry = PersistentOastCorrelationRegistry(database)
+            registry.initialize()
+            registry.register(
+                OastCorrelation(
+                    token_id=token.token_id,
+                    token_hash=token.token_hash,
+                    execution_id=request.execution_id,
+                    protocol=OastProtocol(
+                        request.callback_protocol.value
+                    ),
+                    created_at=token.created_at,
+                    expires_at=token.expires_at,
+                )
+            )
+
         payload = _serialize_blind_validation(
             request,
             token,
@@ -297,6 +318,7 @@ def run_tracked_blind_validation(
         BlindValidationWorkflowError,
         InvalidStateTransitionError,
         OSError,
+        OastRegistryError,
         ValueError,
     ) as exc:
         database.add_audit_event(

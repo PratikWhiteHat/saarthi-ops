@@ -191,3 +191,50 @@ def test_head_callback_returns_no_body(
     assert response.status_code == 202
     assert response.content == b""
     assert len(manager.list_observations()) == 1
+
+
+def test_callback_loads_correlation_from_persistent_registry(
+    client: TestClient,
+    manager: LocalOastManager,
+    database: SaarthiDatabase,
+) -> None:
+    from saarthi_ai.blind_validation.models import (
+        BlindValidationRequest,
+        CallbackProtocol,
+    )
+    from saarthi_ai.persistence.blind_validation_workflow import (
+        run_tracked_blind_validation,
+    )
+
+    execution_id = (
+        database.list_executions(limit=1)[0].execution_id
+    )
+
+    result = run_tracked_blind_validation(
+        database,
+        BlindValidationRequest(
+            execution_id=execution_id,
+            target_url="https://example.com/",
+            authorized=True,
+            active_testing=True,
+            explicitly_approved=True,
+            callback_protocol=CallbackProtocol.HTTPS,
+            requested_poll_attempts=2,
+            requested_poll_interval_seconds=5,
+        ),
+    )
+
+    assert manager.get_correlation(result.token.token_id) is None
+
+    response = client.get(
+        f"/v1/oast/callback/{result.token.token_value}",
+    )
+
+    assert response.status_code == 202
+    assert response.json()["token_id"] == result.token.token_id
+
+    loaded = manager.get_correlation(result.token.token_id)
+
+    assert loaded is not None
+    assert loaded.status.value == "observed"
+    assert result.token.token_value not in response.text

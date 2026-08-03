@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Annotated
 
 from fastapi import (
@@ -11,6 +12,7 @@ from fastapi import (
     status,
 )
 
+from saarthi_ai.blind_validation.tokens import hash_token
 from saarthi_ai.oast.manager import (
     MAX_BODY_BYTES,
     LocalOastManager,
@@ -18,11 +20,18 @@ from saarthi_ai.oast.manager import (
     OastCorrelationNotFoundError,
     OastObservationRejectedError,
 )
-from saarthi_ai.oast.models import OastObservation, OastProtocol
+from saarthi_ai.oast.models import (
+    OastCorrelationStatus,
+    OastObservation,
+    OastProtocol,
+)
 from saarthi_ai.persistence.database import (
     DEFAULT_DATABASE_PATH,
     InvalidStateTransitionError,
     SaarthiDatabase,
+)
+from saarthi_ai.persistence.oast_registry import (
+    PersistentOastCorrelationRegistry,
 )
 from saarthi_ai.persistence.oast_workflow import (
     OastObservationWorkflowError,
@@ -60,6 +69,22 @@ def get_oast_database() -> SaarthiDatabase:
 OastDatabaseDependency = Annotated[
     SaarthiDatabase,
     Depends(get_oast_database),
+]
+
+
+def get_oast_registry(
+    database: OastDatabaseDependency,
+) -> PersistentOastCorrelationRegistry:
+    """Return the persistent hash-only OAST correlation registry."""
+
+    registry = PersistentOastCorrelationRegistry(database)
+    registry.initialize()
+    return registry
+
+
+OastRegistryDependency = Annotated[
+    PersistentOastCorrelationRegistry,
+    Depends(get_oast_registry),
 ]
 
 
@@ -122,6 +147,7 @@ async def receive_oast_callback(
     request: Request,
     manager: OastManagerDependency,
     database: OastDatabaseDependency,
+    registry: OastRegistryDependency,
 ) -> OastObservation | Response:
     """Accept one bounded loopback callback and correlate its token."""
 
@@ -131,6 +157,10 @@ async def receive_oast_callback(
         OastProtocol.HTTPS
         if request.url.scheme.lower() == "https"
         else OastProtocol.HTTP
+    )
+
+    persisted_correlation = registry.get_by_token_hash(
+        hash_token(raw_token)
     )
 
     try:
@@ -144,11 +174,31 @@ async def receive_oast_callback(
             body_size=body_size,
         )
     except OastCorrelationNotFoundError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="No active callback correlation was found.",
-        ) from exc
+        if persisted_correlation is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="No active callback correlation was found.",
+            ) from exc
+
+        manager.register(persisted_correlation)
+
+        observation = manager.observe(
+            raw_token=raw_token,
+            protocol=protocol,
+            request_method=request.method,
+            request_path="/v1/oast/callback/[REDACTED]",
+            source_address=_source_address(request),
+            headers=dict(request.headers),
+            body_size=body_size,
+        )
     except OastCorrelationExpiredError as exc:
+        if persisted_correlation is not None:
+            registry.update_status(
+                persisted_correlation.token_id,
+                OastCorrelationStatus.EXPIRED,
+                updated_at=datetime.now(UTC),
+            )
+
         raise HTTPException(
             status_code=status.HTTP_410_GONE,
             detail="The callback correlation has expired.",
@@ -160,6 +210,12 @@ async def receive_oast_callback(
         ) from exc
 
     correlation = manager.get_correlation(observation.token_id)
+
+    registry.update_status(
+        observation.token_id,
+        OastCorrelationStatus.OBSERVED,
+        updated_at=observation.observed_at,
+    )
 
     if correlation is None:
         raise HTTPException(
