@@ -172,3 +172,65 @@ def test_execution_order_handles_legacy_schema() -> None:
     ) == ('ORDER BY "finished_at" DESC, "started_at" DESC')
 
     assert execution_order_sql(None, None, None) == ""
+
+
+def test_completed_direct_check_evidence_maps_to_phase_4a() -> None:
+    assert (
+        infer_phase(
+            "completed",
+            {"direct_check_result"},
+        )
+        == "4A — DIRECT VULNERABILITY CHECKS"
+    )
+
+
+def test_running_direct_check_evidence_maps_to_phase_4a() -> None:
+    assert (
+        infer_phase(
+            "running",
+            {"direct_check_result"},
+        )
+        == "4A — DIRECT VULNERABILITY CHECKS"
+    )
+
+
+def test_direct_check_evidence_maps_to_short_phase_4a() -> None:
+    assert (
+        infer_phase_short(
+            "completed",
+            {"direct_check_result"},
+        )
+        == "4A"
+    )
+
+
+def test_phase_rows_marks_4a_done_and_4b_next() -> None:
+    from saarthi_ai.tui.app import phase_rows
+
+    rows = phase_rows("4A — DIRECT VULNERABILITY CHECKS")
+    row_map = {row[1]: row for row in rows}
+
+    assert row_map["4A"][0] == "✓"
+    assert row_map["4A"][3] == "DONE"
+    assert row_map["4B"][0] == "→"
+    assert row_map["4B"][3] == "NEXT"
+
+
+def test_phase_rows_marks_3e_done_and_4a_next() -> None:
+    from saarthi_ai.tui.app import phase_rows
+
+    rows = phase_rows("3E — JAVASCRIPT INTELLIGENCE")
+    row_map = {row[1]: row for row in rows}
+
+    assert row_map["3E"][3] == "DONE"
+    assert row_map["4A"][3] == "NEXT"
+
+
+def test_phase_rows_keeps_future_phases_planned() -> None:
+    from saarthi_ai.tui.app import phase_rows
+
+    rows = phase_rows("4A — DIRECT VULNERABILITY CHECKS")
+    row_map = {row[1]: row for row in rows}
+
+    assert row_map["4C"][3] == "PLANNED"
+    assert row_map["4D"][3] == "PLANNED"

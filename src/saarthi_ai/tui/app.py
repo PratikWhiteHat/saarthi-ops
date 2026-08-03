@@ -408,6 +408,8 @@ def infer_phase(
     normalized_evidence = {evidence_type.strip().lower() for evidence_type in evidence_types}
 
     if normalized == "completed":
+        if "direct_check_result" in normalized_evidence:
+            return "4A — DIRECT VULNERABILITY CHECKS"
         if "javascript_intelligence_result" in normalized_evidence:
             return "3E — JAVASCRIPT INTELLIGENCE"
         if "crawl_result" in normalized_evidence:
@@ -423,6 +425,8 @@ def infer_phase(
         return "3B — SUBDOMAIN ENUMERATION"
 
     if normalized in {"running", "analyzing"}:
+        if "direct_check_result" in normalized_evidence:
+            return "4A — DIRECT VULNERABILITY CHECKS"
         if "javascript_intelligence_result" in normalized_evidence:
             return "4A — DIRECT VULNERABILITY CHECKS"
         if "crawl_result" in normalized_evidence:
@@ -523,17 +527,47 @@ def demo_snapshot(activity: list[str] | None = None) -> DashboardSnapshot:
     )
 
 
-PHASES = [
-    ("✓", "3A", "DNS Intelligence", "DONE", "2026-07-31 12:48"),
-    ("✓", "3B", "Subdomain Enumeration", "DONE", "2026-07-31 13:05"),
-    ("✓", "3C", "Live Host Intelligence", "DONE", "2026-08-02 09:42"),
-    ("✓", "3D", "Crawling & URL Intelligence", "DONE", "2026-08-02 20:15"),
-    ("✓", "3E", "JavaScript Intelligence", "DONE", "2026-08-02 22:35"),
-    ("→", "4A", "Direct Vulnerability Checks", "NEXT", "—"),
-    ("·", "4B", "Blind Validation", "PLANNED", "—"),
-    ("·", "4C", "OAST Manager", "PLANNED", "—"),
-    ("·", "4D", "Confirmation Engine", "PLANNED", "—"),
+BASE_PHASES = [
+    ("3A", "DNS Intelligence"),
+    ("3B", "Subdomain Enumeration"),
+    ("3C", "Live Host Intelligence"),
+    ("3D", "Crawling & URL Intelligence"),
+    ("3E", "JavaScript Intelligence"),
+    ("4A", "Direct Vulnerability Checks"),
+    ("4B", "Blind Validation"),
+    ("4C", "OAST Manager"),
+    ("4D", "Confirmation Engine"),
 ]
+
+
+def phase_rows(current_phase: str) -> list[tuple[str, str, str, str, str]]:
+    current_code = current_phase.split(" ", 1)[0]
+    phase_codes = [code for code, _ in BASE_PHASES]
+
+    try:
+        current_index = phase_codes.index(current_code)
+    except ValueError:
+        current_index = -1
+
+    rows: list[tuple[str, str, str, str, str]] = []
+
+    for index, (code, name) in enumerate(BASE_PHASES):
+        if current_index == -1:
+            marker = "·"
+            status = "PLANNED"
+        elif index <= current_index:
+            marker = "✓"
+            status = "DONE"
+        elif index == current_index + 1:
+            marker = "→"
+            status = "NEXT"
+        else:
+            marker = "·"
+            status = "PLANNED"
+
+        rows.append((marker, code, name, status, "—"))
+
+    return rows
 
 TOOLS = [
     ("subfinder", "Subdomain Discovery", "ENABLED"),
@@ -694,7 +728,7 @@ class SaarthiDashboard(App[None]):
 
         phase_table = self.query_one("#phase-table", DataTable)
         phase_table.clear()
-        for row in PHASES:
+        for row in phase_rows(snapshot.current_phase):
             phase_table.add_row(*row)
 
         tools_table = self.query_one("#tools-table", DataTable)
