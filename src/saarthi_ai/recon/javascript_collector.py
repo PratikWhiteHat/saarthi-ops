@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import json
 import re
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import urljoin, urlsplit, urlunsplit
@@ -706,6 +707,11 @@ async def collect_javascript_intelligence(
     *,
     evidence_root: Path | None = None,
     transport: httpx.AsyncBaseTransport | None = None,
+    progress_callback: Callable[
+        [JavaScriptAssetRecord],
+        None,
+    ]
+    | None = None,
 ) -> JavaScriptCollectionResult:
     """Analyze approved Phase 3D JavaScript assets."""
 
@@ -739,26 +745,45 @@ async def collect_javascript_intelligence(
 
     semaphore = asyncio.Semaphore(FETCH_CONCURRENCY)
 
+    assets: list[JavaScriptAssetRecord] = []
+
     async with httpx.AsyncClient(
         timeout=timeout,
         limits=limits,
         transport=transport,
         headers={
-            "User-Agent": ("Saarthi-OPS/0.1 Authorized-JavaScript-Intelligence"),
-            "Accept": ("application/javascript, text/javascript, */*;q=0.1"),
+            "User-Agent": (
+                "Saarthi-OPS/0.1 "
+                "Authorized-JavaScript-Intelligence"
+            ),
+            "Accept": (
+                "application/javascript, "
+                "text/javascript, */*;q=0.1"
+            ),
         },
     ) as client:
-        assets = await asyncio.gather(
-            *[
+        tasks = [
+            asyncio.create_task(
                 _fetch_one(
                     client,
                     semaphore,
                     url,
                     domain,
                 )
-                for url in javascript_urls
-            ]
-        )
+            )
+            for url in javascript_urls
+        ]
+
+        for completed_task in asyncio.as_completed(tasks):
+            asset = await completed_task
+            assets.append(asset)
+
+            if progress_callback is not None:
+                try:
+                    progress_callback(asset)
+                except Exception:
+                    # Display/audit failures must never interrupt collection.
+                    pass
 
     fetched_count = sum(asset.fetch.status_code is not None for asset in assets)
 

@@ -130,7 +130,7 @@ def test_tracked_crawl_completes_and_registers_evidence(
     monkeypatch.setattr(
         crawl_workflow,
         "collect_crawl_intelligence",
-        lambda source_evidence_path, *, evidence_root=None: collection,
+        lambda source_evidence_path, *, evidence_root=None, progress_callback=None: collection,
     )
 
     execution_id = create_execution(database)
@@ -175,7 +175,7 @@ def test_crawl_domain_must_match_execution_scope(
     monkeypatch.setattr(
         crawl_workflow,
         "collect_crawl_intelligence",
-        lambda source_evidence_path, *, evidence_root=None: collection,
+        lambda source_evidence_path, *, evidence_root=None, progress_callback=None: collection,
     )
 
     execution_id = create_execution(database)

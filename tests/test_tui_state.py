@@ -368,3 +368,158 @@ def test_phase_rows_marks_4d_done() -> None:
     assert row_map["4C"][3] == "DONE"
     assert row_map["4D"][3] == "DONE"
     assert not any(row[3] == "NEXT" for row in rows)
+
+
+def test_normalize_phase_code_collapses_phase_4a_children() -> None:
+    from saarthi_ai.tui.app import normalize_phase_code
+
+    assert normalize_phase_code("4A-security-headers") == "4A"
+    assert normalize_phase_code("4A-cors") == "4A"
+    assert normalize_phase_code("3E") == "3E"
+
+
+def test_phase_rows_uses_completed_orchestration_phases() -> None:
+    from saarthi_ai.tui.app import phase_rows
+
+    rows = phase_rows(
+        "4A — DIRECT VULNERABILITY CHECKS",
+        {
+            "3A",
+            "3B",
+            "3C",
+            "3D",
+            "3E",
+            "4A-security-headers",
+            "4A-cors",
+        },
+    )
+
+    status_by_phase = {
+        phase: status
+        for _, phase, _, status, _ in rows
+    }
+
+    assert status_by_phase["3A"] == "DONE"
+    assert status_by_phase["3B"] == "DONE"
+    assert status_by_phase["3C"] == "DONE"
+    assert status_by_phase["3D"] == "DONE"
+    assert status_by_phase["3E"] == "DONE"
+    assert status_by_phase["4A"] == "DONE"
+    assert status_by_phase["4B"] == "NEXT"
+    assert status_by_phase["4C"] == "PLANNED"
+    assert status_by_phase["4D"] == "PLANNED"
+
+
+def test_parse_execution_metadata_rejects_invalid_json() -> None:
+    import sqlite3
+
+    from saarthi_ai.tui.app import parse_execution_metadata
+
+    connection = sqlite3.connect(":memory:")
+    connection.row_factory = sqlite3.Row
+    connection.execute(
+        "CREATE TABLE records (metadata_json TEXT)"
+    )
+    connection.execute(
+        "INSERT INTO records VALUES (?)",
+        ("not-json",),
+    )
+
+    row = connection.execute(
+        "SELECT * FROM records"
+    ).fetchone()
+
+    assert parse_execution_metadata(
+        row,
+        "metadata_json",
+    ) == {}
+
+
+def test_select_dashboard_execution_rows_uses_parent_and_children() -> None:
+    import json
+    import sqlite3
+
+    from saarthi_ai.tui.app import (
+        select_dashboard_execution_rows,
+    )
+
+    connection = sqlite3.connect(":memory:")
+    connection.row_factory = sqlite3.Row
+    connection.execute(
+        """
+        CREATE TABLE executions (
+            execution_id TEXT,
+            state TEXT,
+            metadata_json TEXT
+        )
+        """
+    )
+
+    records = [
+        (
+            "execution-cors",
+            "completed",
+            {
+                "execution_role": "orchestration_child",
+                "orchestration_id": "orchestration-test",
+                "phase_code": "4A-cors",
+            },
+        ),
+        (
+            "execution-headers",
+            "completed",
+            {
+                "execution_role": "orchestration_child",
+                "orchestration_id": "orchestration-test",
+                "phase_code": "4A-security-headers",
+            },
+        ),
+        (
+            "execution-3e",
+            "completed",
+            {
+                "execution_role": "orchestration_child",
+                "orchestration_id": "orchestration-test",
+                "phase_code": "3E",
+            },
+        ),
+        (
+            "execution-parent",
+            "completed",
+            {
+                "execution_role": "orchestration_parent",
+                "orchestration_id": "orchestration-test",
+            },
+        ),
+    ]
+
+    for execution_id, state, metadata in records:
+        connection.execute(
+            "INSERT INTO executions VALUES (?, ?, ?)",
+            (
+                execution_id,
+                state,
+                json.dumps(metadata),
+            ),
+        )
+
+    rows = connection.execute(
+        "SELECT * FROM executions"
+    ).fetchall()
+
+    parent, children, completed = (
+        select_dashboard_execution_rows(
+            list(rows),
+            "metadata_json",
+        )
+    )
+
+    assert parent["execution_id"] == "execution-parent"
+    assert len(children) == 3
+    assert completed == frozenset(
+        {
+            "3E",
+            "4A-security-headers",
+            "4A-cors",
+        }
+    )

@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import tempfile
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -15,6 +16,7 @@ from pydantic import ValidationError
 
 from saarthi_ai.execution.tool_runner import (
     PD_HTTPX_PROFILE,
+    ToolOutputEvent,
     ToolRunnerError,
     resolve_executable,
     run_tool,
@@ -313,6 +315,11 @@ def collect_http_intelligence(
     source_evidence_path: Path,
     *,
     evidence_root: Path | None = None,
+    progress_callback: Callable[
+        [HttpIntelligenceRecord],
+        None,
+    ]
+    | None = None,
 ) -> HttpIntelligenceCollectionResult:
     """Probe Phase 3B hostnames with allowlisted ProjectDiscovery httpx."""
 
@@ -375,11 +382,53 @@ def collect_http_intelligence(
             "1",
         ]
 
+        def emit_progress(event: ToolOutputEvent) -> None:
+            """Forward only parsed, valid and in-scope httpx records."""
+
+            if progress_callback is None:
+                return
+
+            if event.stream != "stdout":
+                return
+
+            stripped = event.line.strip()
+
+            if not stripped:
+                return
+
+            try:
+                payload = json.loads(stripped)
+            except json.JSONDecodeError:
+                return
+
+            if not isinstance(payload, dict):
+                return
+
+            try:
+                record = _parse_record(
+                    payload,
+                    domain,
+                )
+            except ValidationError:
+                return
+
+            if record is None:
+                return
+
+            progress_callback(record)
+
         try:
-            tool_result = run_tool(
-                PD_HTTPX_PROFILE,
-                arguments,
-            )
+            if progress_callback is None:
+                tool_result = run_tool(
+                    PD_HTTPX_PROFILE,
+                    arguments,
+                )
+            else:
+                tool_result = run_tool(
+                    PD_HTTPX_PROFILE,
+                    arguments,
+                    on_output=emit_progress,
+                )
         except ToolRunnerError as exc:
             raise HttpIntelligenceCollectionError(str(exc)) from exc
 

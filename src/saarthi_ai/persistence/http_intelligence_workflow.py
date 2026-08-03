@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import threading
 from pathlib import Path
+from urllib.parse import urlsplit, urlunsplit
 
 from saarthi_ai.persistence.database import (
     InvalidStateTransitionError,
@@ -26,6 +28,7 @@ from saarthi_ai.recon.http_intelligence_collector import (
 )
 from saarthi_ai.recon.http_intelligence_models import (
     HttpIntelligenceCollectionResult,
+    HttpIntelligenceRecord,
 )
 
 
@@ -107,10 +110,91 @@ def run_tracked_http_intelligence(
         },
     )
 
+    progress_lock = threading.Lock()
+    progress_event_count = 0
+    maximum_progress_events = 60
+    observed_urls: set[str] = set()
+
+    def record_progress(
+        record: HttpIntelligenceRecord,
+    ) -> None:
+        """Store bounded Phase 3C live-host activity safely."""
+
+        nonlocal progress_event_count
+
+        parsed = urlsplit(record.url)
+
+        safe_url = urlunsplit(
+            (
+                parsed.scheme,
+                parsed.netloc,
+                parsed.path or "/",
+                "",
+                "",
+            )
+        )
+
+        technologies = [
+            technology[:80]
+            for technology in record.technologies[:10]
+        ]
+
+        with progress_lock:
+            if safe_url in observed_urls:
+                return
+
+            if progress_event_count >= maximum_progress_events:
+                return
+
+            observed_urls.add(safe_url)
+            progress_event_count += 1
+
+            status_text = (
+                str(record.status_code)
+                if record.status_code is not None
+                else "unknown"
+            )
+
+            message = (
+                "[3C][httpx] "
+                f"{safe_url} status={status_text}"
+            )
+
+            if technologies:
+                message += (
+                    " tech="
+                    + ",".join(technologies)
+                )
+
+            database.add_audit_event(
+                execution_id,
+                event_type=AuditEventType.TOOL_OUTPUT,
+                actor=actor,
+                message=message,
+                details={
+                    "phase_code": "3C",
+                    "tool": "projectdiscovery-httpx",
+                    "url": safe_url,
+                    "host": record.host,
+                    "scheme": record.scheme,
+                    "port": record.port,
+                    "status_code": record.status_code,
+                    "technologies": technologies,
+                    "webserver": (
+                        record.webserver[:80]
+                        if record.webserver
+                        else None
+                    ),
+                    "content_length": record.content_length,
+                    "sequence": progress_event_count,
+                },
+            )
+
     try:
         collection = collect_http_intelligence(
             source_evidence_path,
             evidence_root=evidence_root,
+            progress_callback=record_progress,
         )
 
         if not _domain_in_execution_scope(

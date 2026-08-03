@@ -102,6 +102,7 @@ def test_tracked_subdomain_collection_completes(
         domain: str,
         *,
         evidence_root: Path | None = None,
+        progress_callback=None,
     ) -> SubdomainCollectionResult:
         assert domain == "example.com"
         assert evidence_root == tmp_path
@@ -172,6 +173,7 @@ def test_subdomain_collection_accepts_scoped_subdomain(
         domain: str,
         *,
         evidence_root: Path | None = None,
+        progress_callback=None,
     ) -> SubdomainCollectionResult:
         return build_collection_result(
             tmp_path,
@@ -208,6 +210,7 @@ def test_subdomain_failure_marks_execution_failed(
         domain: str,
         *,
         evidence_root: Path | None = None,
+        progress_callback=None,
     ) -> SubdomainCollectionResult:
         raise SubdomainCollectionError(
             "All passive providers failed."

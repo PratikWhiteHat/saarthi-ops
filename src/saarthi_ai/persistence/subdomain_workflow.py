@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 
+from saarthi_ai.execution.tool_runner import ToolOutputEvent
 from saarthi_ai.persistence.database import (
     InvalidStateTransitionError,
     SaarthiDatabase,
@@ -20,6 +22,10 @@ from saarthi_ai.persistence.models import (
     EvidenceType,
     ExecutionRecord,
     ExecutionState,
+)
+from saarthi_ai.recon.dns_collector import (
+    DnsCollectionError,
+    normalize_domain,
 )
 from saarthi_ai.recon.subdomain_collector import (
     SubdomainCollectionError,
@@ -84,10 +90,59 @@ def run_tracked_subdomain_collection(
         },
     )
 
+    progress_lock = threading.Lock()
+    progress_event_count = 0
+    maximum_progress_events = 200
+
+    def record_progress(event: ToolOutputEvent) -> None:
+        """Persist bounded, in-scope hostname output from passive tools."""
+
+        nonlocal progress_event_count
+
+        if event.stream != "stdout":
+            return
+
+        raw_value = event.line.strip().lower()
+
+        if raw_value.startswith("*."):
+            raw_value = raw_value[2:]
+
+        try:
+            hostname = normalize_domain(raw_value)
+        except DnsCollectionError:
+            return
+
+        if not _domain_is_in_execution_scope(
+            hostname,
+            execution,
+        ):
+            return
+
+        with progress_lock:
+            if progress_event_count >= maximum_progress_events:
+                return
+
+            progress_event_count += 1
+
+            database.add_audit_event(
+                execution_id,
+                event_type=AuditEventType.TOOL_OUTPUT,
+                actor=actor,
+                message=f"[3B][{event.tool_name}] {hostname}",
+                details={
+                    "phase_code": "3B",
+                    "tool": event.tool_name,
+                    "stream": event.stream,
+                    "hostname": hostname,
+                    "sequence": progress_event_count,
+                },
+            )
+
     try:
         collection = collect_subdomains(
             domain,
             evidence_root=evidence_root,
+            progress_callback=record_progress,
         )
 
         evidence = database.add_evidence(

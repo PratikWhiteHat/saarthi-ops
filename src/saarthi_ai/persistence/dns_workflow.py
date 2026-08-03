@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -22,6 +23,7 @@ from saarthi_ai.persistence.models import (
 from saarthi_ai.recon.dns_collector import (
     DnsCollectionError,
     DnsCollectionResult,
+    DnsRecord,
     collect_dns_records,
 )
 
@@ -114,10 +116,51 @@ def run_tracked_dns_collection(
         },
     )
 
+    progress_lock = threading.Lock()
+    progress_event_count = 0
+    maximum_progress_events = 100
+
+    def record_progress(record: DnsRecord) -> None:
+        nonlocal progress_event_count
+
+        value = record.value.strip()
+
+        if record.record_type == "TXT":
+            value = "[TXT VALUE REDACTED]"
+
+        if len(value) > 200:
+            value = f"{value[:200]}...[TRUNCATED]"
+
+        with progress_lock:
+            if progress_event_count >= maximum_progress_events:
+                return
+
+            progress_event_count += 1
+
+            database.add_audit_event(
+                execution_id,
+                event_type=AuditEventType.TOOL_OUTPUT,
+                actor=actor,
+                message=(
+                    f"[3A][dns] {record.record_type} "
+                    f"{domain} -> {value}"
+                ),
+                details={
+                    "phase_code": "3A",
+                    "tool": "internal-dns-collector",
+                    "domain": domain,
+                    "record_type": record.record_type,
+                    "value": value,
+                    "ttl": record.ttl,
+                    "sequence": progress_event_count,
+                },
+            )
+
     try:
         collection = collect_dns_records(
             domain,
             evidence_root=evidence_root,
+            progress_callback=record_progress,
         )
 
         total_records = sum(len(record_items) for record_items in collection.records.values())

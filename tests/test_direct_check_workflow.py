@@ -316,3 +316,135 @@ def test_failed_check_does_not_register_evidence(
         )
 
     assert database.list_evidence(execution_id) == []
+
+
+def test_security_header_results_create_safe_tui_audit_events(
+    database: SaarthiDatabase,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from saarthi_ai.checks.executor import DirectCheckExecutionResult
+    from saarthi_ai.checks.models import (
+        CheckDecision,
+        DirectCheckRequest,
+        PolicyResult,
+    )
+    from saarthi_ai.checks.security_headers import (
+        HeaderObservation,
+        SecurityHeadersResult,
+        SensitiveHeaderFinding,
+    )
+    from saarthi_ai.persistence import direct_check_workflow
+
+    execution_id = create_execution(database)
+
+    request = DirectCheckRequest(
+        execution_id=execution_id,
+        target_url="https://example.com/",
+        check_id="security-headers",
+        authorized=True,
+        active_testing=False,
+        explicitly_approved=True,
+    )
+
+    async def fake_execute(
+        supplied_request: DirectCheckRequest,
+    ) -> DirectCheckExecutionResult:
+        assert supplied_request == request
+
+        return DirectCheckExecutionResult(
+            check_id="security-headers",
+            target_url=request.target_url,
+            policy=PolicyResult(
+                decision=CheckDecision.ALLOW,
+                reason="Allowed for test.",
+            ),
+            executed=True,
+            result=SecurityHeadersResult(
+                target_url=request.target_url,
+                status_code=200,
+                present_headers=(
+                    "strict-transport-security",
+                ),
+                missing_headers=(
+                    "content-security-policy",
+                ),
+                response_headers={
+                    "strict-transport-security": (
+                        "max-age=31536000"
+                    ),
+                },
+                sensitive_headers=(
+                    SensitiveHeaderFinding(
+                        header_name="authorization",
+                        redacted_value="[REDACTED]",
+                        fingerprint_sha256="a" * 64,
+                        reasons=(
+                            "credential_or_session_header",
+                        ),
+                    ),
+                ),
+                header_observations=(
+                    HeaderObservation(
+                        header_name="x-powered-by",
+                        category="technology_disclosure",
+                        severity="informational",
+                        redacted_value="PHP/8.2.7",
+                        fingerprint_sha256="b" * 64,
+                        reasons=(
+                            "software_version_disclosure",
+                        ),
+                    ),
+                ),
+            ),
+        )
+
+    monkeypatch.setattr(
+        direct_check_workflow,
+        "execute_direct_check",
+        fake_execute,
+    )
+
+    run_tracked_direct_check(
+        database,
+        request,
+        evidence_root=tmp_path,
+    )
+
+    events = database.list_audit_events(
+        execution_id,
+    )
+
+    output_events = [
+        event
+        for event in events
+        if event.event_type is direct_check_workflow.AuditEventType.TOOL_OUTPUT
+    ]
+
+    messages = {
+        event.message
+        for event in output_events
+    }
+
+    assert any(
+        "Missing security header: content-security-policy"
+        in message
+        for message in messages
+    )
+    assert any(
+        "technology_disclosure: x-powered-by"
+        in message
+        for message in messages
+    )
+    assert any(
+        "Credential-bearing response header: authorization"
+        in message
+        for message in messages
+    )
+
+    serialized_details = repr(
+        [event.details for event in output_events]
+    )
+
+    assert "actual-secret" not in serialized_details
+    assert "[REDACTED]" in serialized_details

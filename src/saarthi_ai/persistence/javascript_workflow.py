@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 from pathlib import Path
+from urllib.parse import urlsplit, urlunsplit
 
 from saarthi_ai.persistence.database import (
     InvalidStateTransitionError,
@@ -29,6 +31,7 @@ from saarthi_ai.recon.javascript_collector import (
     collect_javascript_intelligence,
 )
 from saarthi_ai.recon.javascript_models import (
+    JavaScriptAssetRecord,
     JavaScriptCollectionResult,
 )
 
@@ -89,11 +92,124 @@ def run_tracked_javascript_intelligence(
         },
     )
 
+    progress_lock = threading.Lock()
+    progress_event_count = 0
+    maximum_progress_events = 50
+    observed_urls: set[str] = set()
+
+    def record_progress(
+        asset: JavaScriptAssetRecord,
+    ) -> None:
+        nonlocal progress_event_count
+
+        parsed = urlsplit(asset.fetch.url)
+        safe_url = urlunsplit(
+            (
+                parsed.scheme,
+                parsed.netloc,
+                parsed.path or "/",
+                "",
+                "",
+            )
+        )
+
+        with progress_lock:
+            if safe_url in observed_urls:
+                return
+
+            if progress_event_count >= maximum_progress_events:
+                return
+
+            observed_urls.add(safe_url)
+            progress_event_count += 1
+
+            if asset.fetch.error:
+                database.add_audit_event(
+                    execution_id,
+                    event_type=AuditEventType.TOOL_OUTPUT,
+                    actor=actor,
+                    message=(
+                        "[3E][javascript] "
+                        f"Fetch failed: {safe_url}"
+                    ),
+                    details={
+                        "phase_code": "3E",
+                        "tool": (
+                            "saarthi-javascript-intelligence"
+                        ),
+                        "url": safe_url,
+                        "status": "failed",
+                        "error": asset.fetch.error[:300],
+                        "sequence": progress_event_count,
+                    },
+                )
+                return
+
+            status_code = asset.fetch.status_code
+            endpoint_count = len(asset.endpoints)
+            parameter_count = len(asset.parameters)
+            websocket_count = len(asset.websocket_urls)
+            source_map_count = len(asset.source_map_urls)
+            secret_candidate_count = len(
+                asset.secret_candidates
+            )
+
+            database.add_audit_event(
+                execution_id,
+                event_type=AuditEventType.TOOL_OUTPUT,
+                actor=actor,
+                message=(
+                    "[3E][javascript] "
+                    f"{safe_url} HTTP {status_code}; "
+                    f"endpoints={endpoint_count}; "
+                    f"parameters={parameter_count}; "
+                    f"websockets={websocket_count}; "
+                    f"source_maps={source_map_count}; "
+                    f"secret_candidates="
+                    f"{secret_candidate_count}"
+                ),
+                details={
+                    "phase_code": "3E",
+                    "tool": (
+                        "saarthi-javascript-intelligence"
+                    ),
+                    "url": safe_url,
+                    "status_code": status_code,
+                    "content_type": (
+                        asset.fetch.content_type[:120]
+                        if asset.fetch.content_type
+                        else None
+                    ),
+                    "body_bytes_captured": (
+                        asset.fetch.body_bytes_captured
+                    ),
+                    "body_truncated": (
+                        asset.fetch.body_truncated
+                    ),
+                    "endpoint_count": endpoint_count,
+                    "parameter_names": [
+                        parameter.name
+                        for parameter in asset.parameters[:25]
+                    ],
+                    "websocket_count": websocket_count,
+                    "source_map_count": source_map_count,
+                    "framework_indicators": list(
+                        asset.framework_indicators[:15]
+                    ),
+                    "secret_candidate_count": (
+                        secret_candidate_count
+                    ),
+                    "secret_values_stored": False,
+                    "sequence": progress_event_count,
+                },
+            )
+
     try:
         collection = asyncio.run(
             collect_javascript_intelligence(
                 source_evidence_path,
                 evidence_root=evidence_root,
+                progress_callback=record_progress,
             )
         )
 

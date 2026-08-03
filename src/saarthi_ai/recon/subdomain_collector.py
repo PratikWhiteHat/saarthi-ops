@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
@@ -13,6 +14,7 @@ from saarthi_ai.execution.tool_runner import (
     AMASS_PROFILE,
     ASSETFINDER_PROFILE,
     SUBFINDER_PROFILE,
+    ToolOutputEvent,
     ToolProfile,
     ToolRunnerError,
     ToolRunResult,
@@ -170,6 +172,7 @@ def _run_passive_tool(
     source: str,
     candidates: dict[str, SubdomainCandidate],
     rejected_names: set[str],
+    progress_callback: Callable[[ToolOutputEvent], None] | None = None,
 ) -> tuple[ToolExecutionSummary, int]:
     """Run one allowlisted passive tool and merge its results."""
 
@@ -186,10 +189,17 @@ def _run_passive_tool(
         )
 
     try:
-        result = run_tool(
-            profile,
-            arguments,
-        )
+        if progress_callback is None:
+            result = run_tool(
+                profile,
+                arguments,
+            )
+        else:
+            result = run_tool(
+                profile,
+                arguments,
+                on_output=progress_callback,
+            )
     except ToolRunnerError as exc:
         return (
             ToolExecutionSummary(
@@ -365,6 +375,7 @@ def collect_subdomains(
     evidence_root: Path | None = None,
     client: httpx.Client | None = None,
     endpoint: str = DEFAULT_CT_ENDPOINT,
+    progress_callback: Callable[[ToolOutputEvent], None] | None = None,
 ) -> SubdomainCollectionResult:
     """Collect passive candidates using approved local tools and CT."""
 
@@ -411,6 +422,7 @@ def collect_subdomains(
             source=source,
             candidates=candidates,
             rejected_names=rejected_names,
+            progress_callback=progress_callback,
         )
         tool_runs.append(summary)
         raw_entry_count += raw_count

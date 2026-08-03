@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import threading
 from pathlib import Path
+from urllib.parse import urlsplit, urlunsplit
 
 from saarthi_ai.persistence.database import (
     InvalidStateTransitionError,
@@ -27,7 +29,10 @@ from saarthi_ai.recon.crawl_collector import (
     CrawlCollectionError,
     collect_crawl_intelligence,
 )
-from saarthi_ai.recon.crawl_models import CrawlCollectionResult
+from saarthi_ai.recon.crawl_models import (
+    CrawlCollectionResult,
+    CrawlUrlRecord,
+)
 
 
 class TrackedCrawlResult:
@@ -84,10 +89,85 @@ def run_tracked_crawl(
         },
     )
 
+    progress_lock = threading.Lock()
+    progress_event_count = 0
+    maximum_progress_events = 80
+    observed_urls: set[str] = set()
+
+    def record_progress(record: CrawlUrlRecord) -> None:
+        nonlocal progress_event_count
+
+        parsed = urlsplit(record.url)
+        safe_url = urlunsplit(
+            (
+                parsed.scheme,
+                parsed.netloc,
+                parsed.path or "/",
+                "",
+                "",
+            )
+        )
+
+        with progress_lock:
+            if safe_url in observed_urls:
+                return
+
+            if progress_event_count >= maximum_progress_events:
+                return
+
+            observed_urls.add(safe_url)
+            progress_event_count += 1
+
+            status = (
+                str(record.status_code)
+                if record.status_code is not None
+                else "unknown"
+            )
+
+            kind = (
+                "javascript"
+                if record.is_javascript
+                else "websocket"
+                if record.is_websocket
+                else "url"
+            )
+
+            database.add_audit_event(
+                execution_id,
+                event_type=AuditEventType.TOOL_OUTPUT,
+                actor=actor,
+                message=(
+                    f"[3D][katana] {record.method} "
+                    f"{safe_url} status={status} type={kind}"
+                ),
+                details={
+                    "phase_code": "3D",
+                    "tool": "projectdiscovery-katana",
+                    "method": record.method,
+                    "url": safe_url,
+                    "host": record.host,
+                    "path": record.path,
+                    "status_code": record.status_code,
+                    "content_type": (
+                        record.content_type[:120]
+                        if record.content_type
+                        else None
+                    ),
+                    "is_javascript": record.is_javascript,
+                    "is_websocket": record.is_websocket,
+                    "parameter_names": [
+                        parameter.name
+                        for parameter in record.parameters[:25]
+                    ],
+                    "sequence": progress_event_count,
+                },
+            )
+
     try:
         collection = collect_crawl_intelligence(
             source_evidence_path,
             evidence_root=evidence_root,
+            progress_callback=record_progress,
         )
 
         if not _domain_in_execution_scope(

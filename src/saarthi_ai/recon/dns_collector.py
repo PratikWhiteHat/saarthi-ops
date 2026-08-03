@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -108,6 +109,7 @@ def collect_dns_records(
     *,
     evidence_root: Path | None = None,
     resolver: dns.resolver.Resolver | None = None,
+    progress_callback: Callable[[DnsRecord], None] | None = None,
 ) -> DnsCollectionResult:
     """Collect controlled DNS records and write structured JSON evidence."""
 
@@ -138,13 +140,15 @@ def collect_dns_records(
             ttl = answer.rrset.ttl
 
             for item in answer:
-                records[record_type].append(
-                    DnsRecord(
-                        record_type=record_type,
-                        value=_normalize_answer(record_type, item),
-                        ttl=ttl,
-                    )
+                record = DnsRecord(
+                    record_type=record_type,
+                    value=_normalize_answer(record_type, item),
+                    ttl=ttl,
                 )
+                records[record_type].append(record)
+
+                if progress_callback is not None:
+                    progress_callback(record)
 
         except dns.resolver.NXDOMAIN as exc:
             raise DnsCollectionError(f"Domain '{normalized_domain}' does not exist.") from exc

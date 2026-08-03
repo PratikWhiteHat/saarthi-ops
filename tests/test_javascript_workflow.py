@@ -119,6 +119,7 @@ def test_tracked_javascript_completes_and_registers_evidence(
         source_evidence_path: Path,
         *,
         evidence_root: Path | None = None,
+    progress_callback=None,
     ) -> JavaScriptCollectionResult:
         return collection
 
@@ -171,6 +172,7 @@ def test_javascript_domain_must_match_execution_scope(
         source_evidence_path: Path,
         *,
         evidence_root: Path | None = None,
+    progress_callback=None,
     ) -> JavaScriptCollectionResult:
         return collection
 

@@ -309,3 +309,62 @@ def test_out_of_scope_results_are_rejected(
     assert "api.example.com" in hostnames
     assert "example.com.attacker.test" not in hostnames
     assert "example.com.attacker.test" in result.rejected_names
+
+
+def test_collect_subdomains_forwards_tool_output_callback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Passive tool output should be forwarded through the progress callback."""
+
+    from saarthi_ai.execution.tool_runner import ToolOutputEvent
+
+    monkeypatch.setattr(
+        subdomain_collector,
+        "resolve_executable",
+        lambda profile: f"/approved/{profile.name}",
+    )
+
+    def fake_run(
+        profile,
+        arguments,
+        *,
+        on_output=None,
+    ):
+        if on_output is not None:
+            on_output(
+                ToolOutputEvent(
+                    tool_name=profile.name,
+                    stream="stdout",
+                    line=f"{profile.name}.example.com",
+                )
+            )
+
+        return tool_result(
+            profile.name,
+            f"{profile.name}.example.com\n",
+        )
+
+    monkeypatch.setattr(
+        subdomain_collector,
+        "run_tool",
+        fake_run,
+    )
+
+    events: list[ToolOutputEvent] = []
+
+    collect_subdomains(
+        "example.com",
+        evidence_root=tmp_path,
+        client=FakeCtClient([]),  # type: ignore[arg-type]
+        progress_callback=events.append,
+    )
+
+    assert {
+        event.tool_name
+        for event in events
+    } == {
+        "subfinder",
+        "amass",
+        "assetfinder",
+    }

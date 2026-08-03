@@ -151,3 +151,114 @@ sleep 2
     assert result.timed_out is True
     assert len(result.stdout_sha256) == 64
     assert len(result.stderr_sha256) == 64
+
+
+def test_run_tool_streams_stdout_and_stderr(
+    tmp_path: Path,
+) -> None:
+    """Approved tool output should be emitted through the callback."""
+
+    from saarthi_ai.execution.tool_runner import ToolOutputEvent
+
+    executable = create_executable(
+        tmp_path / "stream-tool",
+        """#!/bin/sh
+printf 'first.example.com\\n'
+printf 'warning message\\n' >&2
+printf 'second.example.com\\n'
+""",
+    )
+
+    profile = ToolProfile(
+        name="stream-tool",
+        executable_candidates=(str(executable),),
+        timeout_seconds=5,
+    )
+
+    events: list[ToolOutputEvent] = []
+
+    result = run_tool(
+        profile,
+        [],
+        on_output=events.append,
+    )
+
+    assert result.exit_code == 0
+    assert result.stdout == (
+        "first.example.com\n"
+        "second.example.com\n"
+    )
+    assert result.stderr == "warning message\n"
+
+    assert {
+        (event.stream, event.line)
+        for event in events
+    } == {
+        ("stdout", "first.example.com"),
+        ("stdout", "second.example.com"),
+        ("stderr", "warning message"),
+    }
+
+
+def test_run_tool_callback_failure_does_not_stop_tool(
+    tmp_path: Path,
+) -> None:
+    """A broken display callback must not terminate tool execution."""
+
+    executable = create_executable(
+        tmp_path / "callback-tool",
+        """#!/bin/sh
+printf 'api.example.com\\n'
+""",
+    )
+
+    profile = ToolProfile(
+        name="callback-tool",
+        executable_candidates=(str(executable),),
+        timeout_seconds=5,
+    )
+
+    def broken_callback(event) -> None:
+        raise RuntimeError("display unavailable")
+
+    result = run_tool(
+        profile,
+        [],
+        on_output=broken_callback,
+    )
+
+    assert result.exit_code == 0
+    assert result.stdout == "api.example.com\n"
+
+
+def test_run_tool_streams_output_before_timeout(
+    tmp_path: Path,
+) -> None:
+    """Output emitted before a timeout should remain available."""
+
+    executable = create_executable(
+        tmp_path / "stream-timeout-tool",
+        """#!/bin/sh
+printf 'started\\n'
+sleep 2
+""",
+    )
+
+    profile = ToolProfile(
+        name="stream-timeout-tool",
+        executable_candidates=(str(executable),),
+        timeout_seconds=1,
+    )
+
+    lines: list[str] = []
+
+    result = run_tool(
+        profile,
+        [],
+        on_output=lambda event: lines.append(event.line),
+    )
+
+    assert result.timed_out is True
+    assert result.exit_code == -1
+    assert result.stdout == "started\n"
+    assert lines == ["started"]

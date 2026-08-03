@@ -100,6 +100,7 @@ def test_tracked_dns_collection_completes_and_registers_evidence(
         domain: str,
         *,
         evidence_root: Path | None = None,
+        progress_callback=None,
     ) -> DnsCollectionResult:
         assert domain == "example.com"
         assert evidence_root == tmp_path
@@ -177,6 +178,7 @@ def test_dns_subdomain_is_allowed_for_parent_domain_scope(
         domain: str,
         *,
         evidence_root: Path | None = None,
+        progress_callback=None,
     ) -> DnsCollectionResult:
         result = build_dns_result(tmp_path)
 
@@ -242,6 +244,7 @@ def test_dns_collection_failure_marks_execution_failed(
         domain: str,
         *,
         evidence_root: Path | None = None,
+        progress_callback=None,
     ) -> DnsCollectionResult:
         raise DnsCollectionError("DNS query timed out.")
 

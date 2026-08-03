@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import tempfile
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -15,6 +16,7 @@ from pydantic import ValidationError
 
 from saarthi_ai.execution.tool_runner import (
     KATANA_PROFILE,
+    ToolOutputEvent,
     ToolRunnerError,
     resolve_executable,
     run_tool,
@@ -472,6 +474,7 @@ def collect_crawl_intelligence(
     source_evidence_path: Path,
     *,
     evidence_root: Path | None = None,
+    progress_callback: Callable[[CrawlUrlRecord], None] | None = None,
 ) -> CrawlCollectionResult:
     """Crawl approved Phase 3C live URLs using controlled Katana."""
 
@@ -535,11 +538,50 @@ def collect_crawl_intelligence(
             "1048576",
         ]
 
+        def emit_progress(event: ToolOutputEvent) -> None:
+            if progress_callback is None or event.stream != "stdout":
+                return
+
+            stripped = event.line.strip()
+
+            if not stripped:
+                return
+
+            try:
+                payload = json.loads(stripped)
+            except json.JSONDecodeError:
+                return
+
+            if not isinstance(payload, dict):
+                return
+
+            try:
+                record, _, _ = _parse_record(
+                    payload,
+                    domain,
+                )
+            except (
+                ValidationError,
+                DnsCollectionError,
+                ValueError,
+            ):
+                return
+
+            if record is not None:
+                progress_callback(record)
+
         try:
-            tool_result = run_tool(
-                KATANA_PROFILE,
-                arguments,
-            )
+            if progress_callback is None:
+                tool_result = run_tool(
+                    KATANA_PROFILE,
+                    arguments,
+                )
+            else:
+                tool_result = run_tool(
+                    KATANA_PROFILE,
+                    arguments,
+                    on_output=emit_progress,
+                )
         except ToolRunnerError as exc:
             raise CrawlCollectionError(str(exc)) from exc
 

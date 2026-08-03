@@ -199,3 +199,94 @@ def test_httpx_timeout_raises(
             source,
             evidence_root=tmp_path,
         )
+
+
+def test_httpx_streams_only_parsed_in_scope_records(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from saarthi_ai.execution.tool_runner import ToolOutputEvent
+
+    source = write_subdomain_evidence(
+        tmp_path / "subdomains.json"
+    )
+
+    valid_line = json.dumps(
+        {
+            "input": "api.example.com",
+            "url": (
+                "https://api.example.com/"
+                "?access_token=must-not-be-logged"
+            ),
+            "status_code": 200,
+            "title": "Private dashboard",
+            "tech": ["nginx", "PHP"],
+            "webserver": "nginx",
+            "content_length": 123,
+        }
+    )
+
+    outside_line = json.dumps(
+        {
+            "input": "outside.test",
+            "url": "https://outside.test/",
+            "status_code": 200,
+        }
+    )
+
+    monkeypatch.setattr(
+        http_intelligence_collector,
+        "resolve_executable",
+        lambda profile: "/approved/httpx",
+    )
+
+    def fake_run_tool(
+        profile,
+        arguments,
+        *,
+        on_output=None,
+    ):
+        if on_output is not None:
+            on_output(
+                ToolOutputEvent(
+                    tool_name=profile.name,
+                    stream="stdout",
+                    line=valid_line,
+                )
+            )
+            on_output(
+                ToolOutputEvent(
+                    tool_name=profile.name,
+                    stream="stdout",
+                    line=outside_line,
+                )
+            )
+            on_output(
+                ToolOutputEvent(
+                    tool_name=profile.name,
+                    stream="stderr",
+                    line="Authorization: Bearer secret",
+                )
+            )
+
+        return tool_result(
+            valid_line + "\n" + outside_line + "\n"
+        )
+
+    monkeypatch.setattr(
+        http_intelligence_collector,
+        "run_tool",
+        fake_run_tool,
+    )
+
+    records = []
+
+    collect_http_intelligence(
+        source,
+        evidence_root=tmp_path / "evidence",
+        progress_callback=records.append,
+    )
+
+    assert len(records) == 1
+    assert records[0].host == "api.example.com"
+    assert records[0].status_code == 200

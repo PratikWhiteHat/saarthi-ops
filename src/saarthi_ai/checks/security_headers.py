@@ -65,7 +65,21 @@ VERSION_PATTERN = re.compile(
 
 @dataclass(frozen=True)
 class SensitiveHeaderFinding:
+    """A credential-bearing response header requiring redaction."""
+
     header_name: str
+    redacted_value: str
+    fingerprint_sha256: str
+    reasons: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class HeaderObservation:
+    """A non-credential response-header security observation."""
+
+    header_name: str
+    category: str
+    severity: str
     redacted_value: str
     fingerprint_sha256: str
     reasons: tuple[str, ...]
@@ -79,10 +93,13 @@ class SecurityHeadersResult:
     missing_headers: tuple[str, ...]
     response_headers: dict[str, str]
     sensitive_headers: tuple[SensitiveHeaderFinding, ...] = ()
+    header_observations: tuple[HeaderObservation, ...] = ()
     error: str | None = None
 
     @property
     def passed(self) -> bool:
+        """Pass only when required headers exist and no credential risk exists."""
+
         return (
             not self.error
             and not self.missing_headers
@@ -90,55 +107,69 @@ class SecurityHeadersResult:
         )
 
 
+def _fingerprint_header_value(value: str) -> str:
+    """Create a stable fingerprint without preserving the original value."""
+
+    return hashlib.sha256(
+        value.encode(
+            "utf-8",
+            errors="ignore",
+        )
+    ).hexdigest()
+
+
 def _redact_header_value(
     header_name: str,
     value: str,
 ) -> str:
+    """Return a bounded value safe for evidence and terminal output."""
+
     normalized_name = header_name.lower().strip()
 
     if normalized_name in SECRET_HEADER_NAMES:
         return "[REDACTED]"
 
     token_context = (
-        normalized_name in SECRET_HEADER_NAMES
-        or TOKEN_CONTEXT_PATTERN.search(normalized_name) is not None
+        TOKEN_CONTEXT_PATTERN.search(normalized_name)
+        is not None
     )
 
     redacted = value
 
     if token_context:
-        redacted = TOKEN_PATTERN.sub("[REDACTED-TOKEN]", redacted)
+        redacted = TOKEN_PATTERN.sub(
+            "[REDACTED-TOKEN]",
+            redacted,
+        )
 
-    redacted = PRIVATE_IP_PATTERN.sub("[REDACTED-PRIVATE-IP]", redacted)
+    redacted = PRIVATE_IP_PATTERN.sub(
+        "[REDACTED-PRIVATE-IP]",
+        redacted,
+    )
 
     if len(redacted) > 200:
-        redacted = f"{redacted[:200]}...[TRUNCATED]"
+        redacted = (
+            f"{redacted[:200]}...[TRUNCATED]"
+        )
 
     return redacted
 
 
-def _detect_sensitive_header_reasons(
+def _detect_credential_reasons(
     header_name: str,
     value: str,
 ) -> tuple[str, ...]:
+    """Detect credential-bearing headers without generic entropy guessing."""
+
     normalized_name = header_name.lower().strip()
     reasons: set[str] = set()
-
-    if normalized_name in SENSITIVE_RESPONSE_HEADERS:
-        reasons.add("sensitive_header_name")
 
     if normalized_name in SECRET_HEADER_NAMES:
         reasons.add("credential_or_session_header")
 
-    if VERSION_PATTERN.search(value):
-        reasons.add("software_version_disclosure")
-
-    if PRIVATE_IP_PATTERN.search(value):
-        reasons.add("private_ip_disclosure")
-
     token_context = (
-        normalized_name in SECRET_HEADER_NAMES
-        or TOKEN_CONTEXT_PATTERN.search(normalized_name) is not None
+        TOKEN_CONTEXT_PATTERN.search(normalized_name)
+        is not None
     )
 
     if token_context and TOKEN_PATTERN.search(value):
@@ -150,12 +181,15 @@ def _detect_sensitive_header_reasons(
 def _find_sensitive_headers(
     headers: Mapping[str, str],
 ) -> tuple[SensitiveHeaderFinding, ...]:
+    """Return only credential-bearing response-header findings."""
+
     findings: list[SensitiveHeaderFinding] = []
 
     for name, value in headers.items():
         normalized_name = name.lower().strip()
         normalized_value = value.strip()
-        reasons = _detect_sensitive_header_reasons(
+
+        reasons = _detect_credential_reasons(
             normalized_name,
             normalized_value,
         )
@@ -170,12 +204,11 @@ def _find_sensitive_headers(
                     normalized_name,
                     normalized_value,
                 ),
-                fingerprint_sha256=hashlib.sha256(
-                    normalized_value.encode(
-                        "utf-8",
-                        errors="ignore",
+                fingerprint_sha256=(
+                    _fingerprint_header_value(
+                        normalized_value,
                     )
-                ).hexdigest(),
+                ),
                 reasons=reasons,
             )
         )
@@ -184,6 +217,90 @@ def _find_sensitive_headers(
         sorted(
             findings,
             key=lambda finding: finding.header_name,
+        )
+    )
+
+
+def _find_header_observations(
+    headers: Mapping[str, str],
+) -> tuple[HeaderObservation, ...]:
+    """Classify non-credential information disclosures separately."""
+
+    observations: list[HeaderObservation] = []
+
+    for name, value in headers.items():
+        normalized_name = name.lower().strip()
+        normalized_value = value.strip()
+
+        # Reporting headers contain benign opaque telemetry identifiers.
+        if normalized_name in {
+            "report-to",
+            "reporting-endpoints",
+            "nel",
+        }:
+            continue
+
+        reasons: set[str] = set()
+        category: str | None = None
+        severity: str | None = None
+
+        if PRIVATE_IP_PATTERN.search(normalized_value):
+            category = "internal_infrastructure_disclosure"
+            severity = "low"
+            reasons.add("private_ip_disclosure")
+
+        technology_header = (
+            normalized_name in SENSITIVE_RESPONSE_HEADERS
+            and TOKEN_CONTEXT_PATTERN.search(
+                normalized_name
+            )
+            is None
+        )
+
+        if technology_header:
+            category = (
+                category
+                or "technology_disclosure"
+            )
+            severity = severity or "informational"
+            reasons.add("technology_header_disclosure")
+
+        if VERSION_PATTERN.search(normalized_value):
+            category = (
+                category
+                or "technology_disclosure"
+            )
+            severity = severity or "informational"
+            reasons.add("software_version_disclosure")
+
+        if not reasons or category is None or severity is None:
+            continue
+
+        observations.append(
+            HeaderObservation(
+                header_name=normalized_name,
+                category=category,
+                severity=severity,
+                redacted_value=_redact_header_value(
+                    normalized_name,
+                    normalized_value,
+                ),
+                fingerprint_sha256=(
+                    _fingerprint_header_value(
+                        normalized_value,
+                    )
+                ),
+                reasons=tuple(sorted(reasons)),
+            )
+        )
+
+    return tuple(
+        sorted(
+            observations,
+            key=lambda observation: (
+                observation.category,
+                observation.header_name,
+            ),
         )
     )
 
@@ -226,6 +343,9 @@ def analyze_security_headers(
         missing_headers=missing_headers,
         response_headers=safe_response_headers,
         sensitive_headers=_find_sensitive_headers(
+            normalized_headers,
+        ),
+        header_observations=_find_header_observations(
             normalized_headers,
         ),
     )

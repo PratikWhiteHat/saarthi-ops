@@ -126,7 +126,7 @@ def test_tracked_http_intelligence_completes_and_registers_evidence(
     monkeypatch.setattr(
         http_intelligence_workflow,
         "collect_http_intelligence",
-        lambda source_evidence_path, *, evidence_root=None: collection,
+        lambda source_evidence_path, *, evidence_root=None, progress_callback=None: collection,
     )
 
     execution_id = create_execution(database)
@@ -171,7 +171,7 @@ def test_collection_domain_must_match_execution_scope(
     monkeypatch.setattr(
         http_intelligence_workflow,
         "collect_http_intelligence",
-        lambda source_evidence_path, *, evidence_root=None: collection,
+        lambda source_evidence_path, *, evidence_root=None, progress_callback=None: collection,
     )
 
     execution_id = create_execution(database)

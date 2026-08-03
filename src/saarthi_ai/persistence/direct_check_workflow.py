@@ -13,6 +13,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 from uuid import uuid4
 
+from saarthi_ai.checks.cors import CorsCheckResult
 from saarthi_ai.checks.executor import (
     DirectCheckExecutionResult,
     execute_direct_check,
@@ -162,6 +163,200 @@ def _write_evidence_atomically(
     )
 
 
+
+def _audit_security_header_results(
+    database: SaarthiDatabase,
+    execution_id: str,
+    check: DirectCheckExecutionResult,
+    *,
+    actor: str,
+) -> None:
+    """Persist safe Phase 4A security-header details for the TUI."""
+
+    result = check.result
+
+    if result is None or check.check_id != "security-headers":
+        return
+
+    database.add_audit_event(
+        execution_id,
+        event_type=AuditEventType.TOOL_OUTPUT,
+        actor=actor,
+        message=(
+            "[4A][security-headers] "
+            f"HTTP {result.status_code}; "
+            f"missing={len(result.missing_headers)}; "
+            f"credential_headers={len(result.sensitive_headers)}; "
+            f"observations={len(result.header_observations)}"
+        ),
+        details={
+            "phase_code": "4A",
+            "check_id": "security-headers",
+            "status_code": result.status_code,
+            "missing_header_count": len(result.missing_headers),
+            "credential_header_count": len(result.sensitive_headers),
+            "observation_count": len(result.header_observations),
+        },
+    )
+
+    for header_name in result.missing_headers:
+        database.add_audit_event(
+            execution_id,
+            event_type=AuditEventType.TOOL_OUTPUT,
+            actor=actor,
+            message=(
+                "[4A][security-headers] "
+                f"Missing security header: {header_name}"
+            ),
+            details={
+                "phase_code": "4A",
+                "check_id": "security-headers",
+                "category": "missing_security_header",
+                "severity": "informational",
+                "header_name": header_name,
+            },
+        )
+
+    for observation in result.header_observations:
+        database.add_audit_event(
+            execution_id,
+            event_type=AuditEventType.TOOL_OUTPUT,
+            actor=actor,
+            message=(
+                f"[4A][security-headers][{observation.severity.upper()}] "
+                f"{observation.category}: {observation.header_name}"
+            ),
+            details={
+                "phase_code": "4A",
+                "check_id": "security-headers",
+                "category": observation.category,
+                "severity": observation.severity,
+                "header_name": observation.header_name,
+                "reasons": list(observation.reasons),
+                "redacted_value": observation.redacted_value,
+                "fingerprint_sha256": observation.fingerprint_sha256,
+            },
+        )
+
+    for finding in result.sensitive_headers:
+        database.add_audit_event(
+            execution_id,
+            event_type=AuditEventType.TOOL_OUTPUT,
+            actor=actor,
+            message=(
+                "[4A][security-headers][HIGH] "
+                f"Credential-bearing response header: "
+                f"{finding.header_name}"
+            ),
+            details={
+                "phase_code": "4A",
+                "check_id": "security-headers",
+                "category": "credential_exposure",
+                "severity": "high",
+                "header_name": finding.header_name,
+                "reasons": list(finding.reasons),
+                "redacted_value": finding.redacted_value,
+                "fingerprint_sha256": finding.fingerprint_sha256,
+            },
+        )
+
+
+def _audit_cors_results(
+    database: SaarthiDatabase,
+    execution_id: str,
+    check: DirectCheckExecutionResult,
+    *,
+    actor: str,
+) -> None:
+    """Persist safe Phase 4A CORS probe details for the TUI."""
+
+    result = check.result
+
+    if (
+        check.check_id != "cors-configuration"
+        or not isinstance(result, CorsCheckResult)
+    ):
+        return
+
+    database.add_audit_event(
+        execution_id,
+        event_type=AuditEventType.TOOL_OUTPUT,
+        actor=actor,
+        message=(
+            "[4A][cors] "
+            f"probes={len(result.probes)}; "
+            f"findings={len(result.findings)}; "
+            f"error={result.error is not None}"
+        ),
+        details={
+            "phase_code": "4A",
+            "check_id": "cors-configuration",
+            "probe_count": len(result.probes),
+            "finding_count": len(result.findings),
+            "error": result.error,
+        },
+    )
+
+    for probe in result.probes:
+        allowed_origin = probe.allow_origin or "none"
+
+        database.add_audit_event(
+            execution_id,
+            event_type=AuditEventType.TOOL_OUTPUT,
+            actor=actor,
+            message=(
+                "[4A][cors] "
+                f"{probe.probe_name} "
+                f"{probe.request_method} "
+                f"status={probe.status_code}; "
+                f"allow_origin={allowed_origin}; "
+                f"credentials="
+                f"{str(probe.allow_credentials).lower()}"
+            ),
+            details={
+                "phase_code": "4A",
+                "check_id": "cors-configuration",
+                "category": "cors_probe",
+                "probe_name": probe.probe_name,
+                "request_method": probe.request_method,
+                "status_code": probe.status_code,
+                "allow_origin": probe.allow_origin,
+                "allow_credentials": (
+                    probe.allow_credentials
+                ),
+                "allow_methods": list(
+                    probe.allow_methods[:20]
+                ),
+                "allow_header_names": list(
+                    probe.allow_headers[:20]
+                ),
+                "vary_origin": probe.vary_origin,
+                "error": probe.error,
+            },
+        )
+
+    for finding in result.findings:
+        database.add_audit_event(
+            execution_id,
+            event_type=AuditEventType.TOOL_OUTPUT,
+            actor=actor,
+            message=(
+                "[4A][cors]"
+                f"[{finding.severity.upper()}] "
+                f"{finding.title}"
+            ),
+            details={
+                "phase_code": "4A",
+                "check_id": "cors-configuration",
+                "category": "cors_finding",
+                "finding_id": finding.finding_id,
+                "title": finding.title,
+                "severity": finding.severity,
+                "evidence": finding.evidence,
+            },
+        )
+
+
 def run_tracked_direct_check(
     database: SaarthiDatabase,
     request: DirectCheckRequest,
@@ -223,6 +418,20 @@ def run_tracked_direct_check(
             raise DirectCheckWorkflowError(
                 check.error or "Direct check was not executed."
             )
+
+        _audit_security_header_results(
+            database,
+            request.execution_id,
+            check,
+            actor=actor,
+        )
+
+        _audit_cors_results(
+            database,
+            request.execution_id,
+            check,
+            actor=actor,
+        )
 
         payload = _serialize_check_result(request, check)
         evidence_path, evidence_sha256, evidence_size = (

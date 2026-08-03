@@ -3,6 +3,9 @@ from __future__ import annotations
 import hashlib
 import os
 import subprocess
+import threading
+import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from shutil import which
@@ -20,6 +23,15 @@ class ToolProfile:
     executable_candidates: tuple[str, ...]
     timeout_seconds: int
     max_output_bytes: int = 5_000_000
+
+
+@dataclass(frozen=True)
+class ToolOutputEvent:
+    """One bounded output line emitted by an approved tool."""
+
+    tool_name: str
+    stream: str
+    line: str
 
 
 @dataclass(frozen=True)
@@ -127,60 +139,175 @@ def resolve_executable(profile: ToolProfile) -> str | None:
 def run_tool(
     profile: ToolProfile,
     arguments: list[str],
+    *,
+    on_output: Callable[[ToolOutputEvent], None] | None = None,
 ) -> ToolRunResult:
-    """Run a fixed approved tool without invoking a shell."""
+    """Run an approved tool and optionally stream bounded output lines."""
 
     executable = resolve_executable(profile)
 
     if executable is None:
-        raise ToolRunnerError(f"Approved tool '{profile.name}' is not installed or executable.")
+        raise ToolRunnerError(
+            f"Approved tool '{profile.name}' is not installed or executable."
+        )
 
     command = [executable, *arguments]
 
     try:
-        completed = subprocess.run(
+        process = subprocess.Popen(
             command,
             shell=False,
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=False,
-            timeout=profile.timeout_seconds,
-            check=False,
             env={
                 **os.environ,
                 "NO_COLOR": "1",
             },
+            start_new_session=True,
         )
+    except OSError as exc:
+        raise ToolRunnerError(
+            f"Unable to start approved tool '{profile.name}': {exc}"
+        ) from exc
 
-        raw_stdout = completed.stdout[: profile.max_output_bytes]
-        raw_stderr = completed.stderr[: profile.max_output_bytes]
+    stdout_buffer = bytearray()
+    stderr_buffer = bytearray()
+    buffer_lock = threading.Lock()
 
-        stdout = raw_stdout.decode("utf-8", errors="replace")
-        stderr = raw_stderr.decode("utf-8", errors="replace")
+    max_stream_events = 500
+    max_event_line_chars = 1_000
+    emitted_events = 0
+    emitted_lock = threading.Lock()
 
-        return ToolRunResult(
+    def emit(stream: str, raw_line: bytes) -> None:
+        nonlocal emitted_events
+
+        if on_output is None:
+            return
+
+        line = raw_line.decode(
+            "utf-8",
+            errors="replace",
+        ).strip()
+
+        if not line:
+            return
+
+        with emitted_lock:
+            if emitted_events >= max_stream_events:
+                return
+            emitted_events += 1
+
+        event = ToolOutputEvent(
             tool_name=profile.name,
-            executable=executable,
-            arguments=tuple(arguments),
-            exit_code=completed.returncode,
-            stdout=stdout,
-            stderr=stderr,
-            stdout_sha256=hashlib.sha256(raw_stdout).hexdigest(),
-            stderr_sha256=hashlib.sha256(raw_stderr).hexdigest(),
-            timed_out=False,
+            stream=stream,
+            line=line[:max_event_line_chars],
         )
 
-    except subprocess.TimeoutExpired as exc:
-        raw_stdout = exc.stdout if isinstance(exc.stdout, bytes) else (exc.stdout or "").encode()
-        raw_stderr = exc.stderr if isinstance(exc.stderr, bytes) else (exc.stderr or "").encode()
+        try:
+            on_output(event)
+        except Exception:
+            # A display or persistence callback must not break tool execution.
+            return
 
-        return ToolRunResult(
-            tool_name=profile.name,
-            executable=executable,
-            arguments=tuple(arguments),
-            exit_code=-1,
-            stdout=raw_stdout.decode("utf-8", errors="replace"),
-            stderr=raw_stderr.decode("utf-8", errors="replace"),
-            stdout_sha256=hashlib.sha256(raw_stdout).hexdigest(),
-            stderr_sha256=hashlib.sha256(raw_stderr).hexdigest(),
-            timed_out=True,
-        )
+    def read_stream(
+        stream_name: str,
+        pipe,
+        destination: bytearray,
+    ) -> None:
+        if pipe is None:
+            return
+
+        try:
+            while True:
+                raw_line = pipe.readline()
+
+                if not raw_line:
+                    break
+
+                with buffer_lock:
+                    remaining = (
+                        profile.max_output_bytes
+                        - len(destination)
+                    )
+
+                    if remaining > 0:
+                        destination.extend(
+                            raw_line[:remaining]
+                        )
+
+                emit(stream_name, raw_line)
+        finally:
+            pipe.close()
+
+    stdout_thread = threading.Thread(
+        target=read_stream,
+        args=(
+            "stdout",
+            process.stdout,
+            stdout_buffer,
+        ),
+        daemon=True,
+    )
+    stderr_thread = threading.Thread(
+        target=read_stream,
+        args=(
+            "stderr",
+            process.stderr,
+            stderr_buffer,
+        ),
+        daemon=True,
+    )
+
+    stdout_thread.start()
+    stderr_thread.start()
+
+    deadline = time.monotonic() + profile.timeout_seconds
+    timed_out = False
+
+    while process.poll() is None:
+        if time.monotonic() >= deadline:
+            timed_out = True
+            process.terminate()
+
+            try:
+                process.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
+
+            break
+
+        time.sleep(0.05)
+
+    if not timed_out:
+        process.wait()
+
+    stdout_thread.join(timeout=2)
+    stderr_thread.join(timeout=2)
+
+    raw_stdout = bytes(stdout_buffer)
+    raw_stderr = bytes(stderr_buffer)
+
+    return ToolRunResult(
+        tool_name=profile.name,
+        executable=executable,
+        arguments=tuple(arguments),
+        exit_code=(-1 if timed_out else process.returncode),
+        stdout=raw_stdout.decode(
+            "utf-8",
+            errors="replace",
+        ),
+        stderr=raw_stderr.decode(
+            "utf-8",
+            errors="replace",
+        ),
+        stdout_sha256=hashlib.sha256(
+            raw_stdout
+        ).hexdigest(),
+        stderr_sha256=hashlib.sha256(
+            raw_stderr
+        ).hexdigest(),
+        timed_out=timed_out,
+    )

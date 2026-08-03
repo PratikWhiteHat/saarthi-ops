@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -29,6 +30,7 @@ class DashboardSnapshot:
     execution_state: str
     recent_executions: list[dict[str, str]]
     recent_activity: list[str]
+    completed_phases: frozenset[str] = frozenset()
 
 
 class ReadOnlySaarthiRepository:
@@ -117,6 +119,11 @@ class ReadOnlySaarthiRepository:
             "completed_at",
             "finished_at",
         )
+        metadata_column = self._pick(
+            columns,
+            "metadata_json",
+            "metadata",
+        )
 
         order_sql = execution_order_sql(
             updated_column,
@@ -125,12 +132,23 @@ class ReadOnlySaarthiRepository:
         )
 
         rows = connection.execute(
-            f'SELECT * FROM "{execution_table}" {order_sql} LIMIT 6'
+            f'SELECT * FROM "{execution_table}" {order_sql} LIMIT 100'
         ).fetchall()
         if not rows:
             return demo_snapshot(["[INF] No executions are currently stored."])
 
-        latest = rows[0]
+        latest, display_rows, completed_phases = (
+            select_dashboard_execution_rows(
+                list(rows),
+                metadata_column,
+            )
+        )
+
+        orchestration_execution_ids = [
+            str(row[id_column])
+            for row in [latest, *display_rows]
+            if id_column is not None and row[id_column] is not None
+        ]
 
         def value(row: sqlite3.Row, column: str | None, default: str) -> str:
             if column is None or row[column] is None:
@@ -141,7 +159,7 @@ class ReadOnlySaarthiRepository:
         execution_state = value(latest, state_column, "unknown")
 
         recent_executions: list[dict[str, str]] = []
-        for row in rows:
+        for row in display_rows:
             started = value(row, created_column, "—")
             completed = value(row, completed_column, "")
             row_execution_id = value(row, id_column, "unknown")
@@ -154,9 +172,15 @@ class ReadOnlySaarthiRepository:
             recent_executions.append(
                 {
                     "execution_id": row_execution_id,
-                    "phase": infer_phase_short(
-                        value(row, state_column, "unknown"),
-                        row_evidence_types,
+                    "phase": str(
+                        parse_execution_metadata(
+                            row,
+                            metadata_column,
+                        ).get("phase_code")
+                        or infer_phase_short(
+                            value(row, state_column, "unknown"),
+                            row_evidence_types,
+                        )
                     ),
                     "target": value(row, target_column, "Authorized target"),
                     "status": value(
@@ -211,11 +235,12 @@ class ReadOnlySaarthiRepository:
             finding_count=finding_count,
             execution_state=execution_state,
             recent_executions=recent_executions,
-            recent_activity=self._load_activity(
+            recent_activity=self._load_orchestration_activity(
                 connection,
                 tables,
-                execution_id,
+                orchestration_execution_ids,
             ),
+            completed_phases=completed_phases,
         )
 
     def _evidence_types(
@@ -287,6 +312,183 @@ class ReadOnlySaarthiRepository:
             ).fetchone()
         return int(row["total"])
 
+    def _load_orchestration_activity(
+        self,
+        connection: sqlite3.Connection,
+        tables: set[str],
+        execution_ids: Iterable[str],
+    ) -> list[str]:
+        """Return detailed audit activity across an orchestration."""
+
+        table = next(
+            (
+                name
+                for name in (
+                    "audit_events",
+                    "audit_log",
+                    "events",
+                )
+                if name in tables
+            ),
+            None,
+        )
+        if table is None:
+            return ["[INF] No audit table detected."]
+
+        columns = self._columns(connection, table)
+        message_column = self._pick(
+            columns,
+            "message",
+            "event",
+            "action",
+        )
+        timestamp_column = self._pick(
+            columns,
+            "created_at",
+            "timestamp",
+            "occurred_at",
+        )
+        execution_column = self._pick(
+            columns,
+            "execution_id",
+            "execution",
+        )
+        event_type_column = self._pick(
+            columns,
+            "event_type",
+            "type",
+        )
+        actor_column = self._pick(
+            columns,
+            "actor",
+            "source",
+        )
+        details_column = self._pick(
+            columns,
+            "details_json",
+            "details",
+            "metadata_json",
+        )
+
+        if message_column is None:
+            return [
+                "[WRN] Audit table has no readable message column."
+            ]
+
+        normalized_ids = list(
+            dict.fromkeys(
+                execution_id
+                for execution_id in execution_ids
+                if execution_id
+            )
+        )
+
+        if execution_column is None or not normalized_ids:
+            return [
+                "[INF] No orchestration activity recorded."
+            ]
+
+        placeholders = ", ".join(
+            "?" for _ in normalized_ids
+        )
+        order_sql = (
+            f'ORDER BY "{timestamp_column}" DESC'
+            if timestamp_column
+            else ""
+        )
+
+        rows = connection.execute(
+            f"""
+            SELECT *
+            FROM "{table}"
+            WHERE "{execution_column}" IN ({placeholders})
+            {order_sql}
+            LIMIT 200
+            """,
+            tuple(normalized_ids),
+        ).fetchall()
+
+        sensitive_terms = {
+            "authorization",
+            "cookie",
+            "password",
+            "secret",
+            "token",
+            "api_key",
+            "apikey",
+            "header",
+        }
+
+        activity: list[str] = []
+
+        for row in reversed(rows):
+            stamp = (
+                compact_timestamp(str(row[timestamp_column]))
+                if (
+                    timestamp_column
+                    and row[timestamp_column] is not None
+                )
+                else datetime.now().strftime("%H:%M:%S")
+            )
+
+            event_type = (
+                str(row[event_type_column]).upper()
+                if (
+                    event_type_column
+                    and row[event_type_column] is not None
+                )
+                else "INFO"
+            )
+
+            actor = (
+                str(row[actor_column])
+                if actor_column and row[actor_column] is not None
+                else "system"
+            )
+
+            details_text = ""
+
+            if details_column and row[details_column] is not None:
+                try:
+                    raw_details = json.loads(
+                        str(row[details_column])
+                    )
+                except (
+                    json.JSONDecodeError,
+                    TypeError,
+                    ValueError,
+                ):
+                    raw_details = {}
+
+                if isinstance(raw_details, dict):
+                    safe_details = {
+                        str(key): value
+                        for key, value in raw_details.items()
+                        if not any(
+                            term in str(key).lower()
+                            for term in sensitive_terms
+                        )
+                    }
+
+                    if safe_details:
+                        details_text = " | " + ", ".join(
+                            f"{key}={value}"
+                            for key, value in safe_details.items()
+                        )
+
+            activity.append(
+                f"{stamp:<19} "
+                f"{event_type:<18} "
+                f"[{actor}] "
+                f"{row[message_column]}"
+                f"{details_text}"
+            )
+
+        return activity or [
+            "[INF] No orchestration activity recorded."
+        ]
+
+
     def _load_activity(
         self,
         connection: sqlite3.Connection,
@@ -343,6 +545,92 @@ class ReadOnlySaarthiRepository:
             )
             activity.append(f"{stamp:<19} INF  {row[message_column]}")
         return activity or ["[INF] No activity recorded."]
+
+
+
+def parse_execution_metadata(
+    row: sqlite3.Row,
+    metadata_column: str | None,
+) -> dict[str, Any]:
+    """Safely parse execution metadata stored as JSON."""
+
+    if metadata_column is None or row[metadata_column] is None:
+        return {}
+
+    try:
+        payload = json.loads(str(row[metadata_column]))
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return {}
+
+    return payload if isinstance(payload, dict) else {}
+
+
+def select_dashboard_execution_rows(
+    rows: list[sqlite3.Row],
+    metadata_column: str | None,
+) -> tuple[sqlite3.Row, list[sqlite3.Row], frozenset[str]]:
+    """Select the latest orchestration parent and its child executions."""
+
+    latest = rows[0]
+    latest_metadata = parse_execution_metadata(
+        latest,
+        metadata_column,
+    )
+    orchestration_id = latest_metadata.get("orchestration_id")
+
+    if not isinstance(orchestration_id, str) or not orchestration_id:
+        return latest, rows[:6], frozenset()
+
+    orchestration_rows = [
+        row
+        for row in rows
+        if parse_execution_metadata(
+            row,
+            metadata_column,
+        ).get("orchestration_id")
+        == orchestration_id
+    ]
+
+    parent = next(
+        (
+            row
+            for row in orchestration_rows
+            if parse_execution_metadata(
+                row,
+                metadata_column,
+            ).get("execution_role")
+            == "orchestration_parent"
+        ),
+        latest,
+    )
+
+    completed_phases = frozenset(
+        str(metadata["phase_code"])
+        for row in orchestration_rows
+        if (
+            (metadata := parse_execution_metadata(
+                row,
+                metadata_column,
+            )).get("execution_role")
+            == "orchestration_child"
+            and metadata.get("phase_code")
+            and str(row["state"]).lower() == "completed"
+        )
+    )
+
+    child_rows = [
+        row
+        for row in orchestration_rows
+        if parse_execution_metadata(
+            row,
+            metadata_column,
+        ).get("execution_role")
+        == "orchestration_child"
+    ]
+
+    return parent, child_rows[:7], completed_phases
+
+
 
 
 def execution_order_sql(
@@ -558,7 +846,58 @@ BASE_PHASES = [
 ]
 
 
-def phase_rows(current_phase: str) -> list[tuple[str, str, str, str, str]]:
+def normalize_phase_code(phase_code: str) -> str:
+    """Normalize orchestration child phase identifiers for the TUI."""
+
+    normalized = phase_code.strip()
+
+    if normalized.startswith("4A-"):
+        return "4A"
+
+    return normalized
+
+
+def phase_rows(
+    current_phase: str,
+    completed_phases: Iterable[str] = (),
+) -> list[tuple[str, str, str, str, str]]:
+    """Build workflow rows from explicit orchestration state when available."""
+
+    normalized_completed = {
+        normalize_phase_code(code)
+        for code in completed_phases
+    }
+
+    if normalized_completed:
+        rows: list[tuple[str, str, str, str, str]] = []
+        phase_codes = [code for code, _ in BASE_PHASES]
+
+        completed_indexes = [
+            phase_codes.index(code)
+            for code in normalized_completed
+            if code in phase_codes
+        ]
+        latest_completed_index = (
+            max(completed_indexes)
+            if completed_indexes
+            else -1
+        )
+
+        for index, (code, name) in enumerate(BASE_PHASES):
+            if code in normalized_completed:
+                marker = "✓"
+                status = "DONE"
+            elif index == latest_completed_index + 1:
+                marker = "→"
+                status = "NEXT"
+            else:
+                marker = "·"
+                status = "PLANNED"
+
+            rows.append((marker, code, name, status, "—"))
+
+        return rows
+
     current_code = current_phase.split(" ", 1)[0]
     phase_codes = [code for code, _ in BASE_PHASES]
 
@@ -567,7 +906,7 @@ def phase_rows(current_phase: str) -> list[tuple[str, str, str, str, str]]:
     except ValueError:
         current_index = -1
 
-    rows: list[tuple[str, str, str, str, str]] = []
+    rows = []
 
     for index, (code, name) in enumerate(BASE_PHASES):
         if current_index == -1:
@@ -586,6 +925,7 @@ def phase_rows(current_phase: str) -> list[tuple[str, str, str, str, str]]:
         rows.append((marker, code, name, status, "—"))
 
     return rows
+
 
 TOOLS = [
     ("subfinder", "Subdomain Discovery", "ENABLED"),
@@ -665,7 +1005,7 @@ class SaarthiDashboard(App[None]):
         with Vertical(classes="panel", id="activity-panel"):
             with Horizontal(id="activity-heading"):
                 yield Label("[ 5. ACTIVITY LOG (LIVE) ]", classes="panel-title")
-                yield Label("LATEST 12 EVENTS", id="activity-caption")
+                yield Label("LATEST 200 EVENTS", id="activity-caption")
             yield Log(id="activity-log", highlight=True, max_lines=250)
 
         with Grid(id="system-status"):
@@ -681,6 +1021,10 @@ class SaarthiDashboard(App[None]):
     def on_mount(self) -> None:
         self._configure_tables()
         self.set_interval(1.0, self._update_runtime)
+        self.set_interval(
+            1.0,
+            self._refresh_snapshot_silently,
+        )
         self.action_refresh()
 
     def _configure_tables(self) -> None:
@@ -746,7 +1090,10 @@ class SaarthiDashboard(App[None]):
 
         phase_table = self.query_one("#phase-table", DataTable)
         phase_table.clear()
-        for row in phase_rows(snapshot.current_phase):
+        for row in phase_rows(
+            snapshot.current_phase,
+            snapshot.completed_phases,
+        ):
             phase_table.add_row(*row)
 
         tools_table = self.query_one("#tools-table", DataTable)
@@ -773,10 +1120,24 @@ class SaarthiDashboard(App[None]):
         for line in snapshot.recent_activity:
             activity.write_line(line)
 
+    def _refresh_snapshot_silently(self) -> None:
+        """Reload local state without creating notification noise."""
+
+        try:
+            latest_snapshot = self.repository.load()
+        except Exception:
+            return
+
+        if latest_snapshot != self.snapshot:
+            self.snapshot = latest_snapshot
+
     def action_refresh(self) -> None:
         self.snapshot = self.repository.load()
         self._update_runtime()
-        self.notify("Dashboard refreshed from the local read-only database.")
+        self.notify(
+            "Dashboard refreshed from the local "
+            "read-only database."
+        )
 
     def action_focus_phases(self) -> None:
         self.query_one("#phase-table", DataTable).focus()

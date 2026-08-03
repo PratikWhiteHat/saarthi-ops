@@ -29,6 +29,7 @@ class AuditEventType(StrEnum):
     APPROVAL_RECORDED = "approval_recorded"
     TOOL_PREPARED = "tool_prepared"
     TOOL_STARTED = "tool_started"
+    TOOL_OUTPUT = "tool_output"
     TOOL_COMPLETED = "tool_completed"
     TOOL_FAILED = "tool_failed"
     EVIDENCE_ADDED = "evidence_added"

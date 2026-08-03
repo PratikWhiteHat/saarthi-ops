@@ -116,7 +116,7 @@ async def test_run_security_headers_check_handles_http_error() -> None:
     assert result.present_headers == ()
 
 
-def test_detects_sensitive_response_header_names() -> None:
+def test_classifies_technology_headers_as_observations() -> None:
     result = analyze_security_headers(
         target_url="https://example.com/",
         status_code=200,
@@ -126,16 +126,34 @@ def test_detects_sensitive_response_header_names() -> None:
         },
     )
 
-    findings = {
-        finding.header_name: finding
-        for finding in result.sensitive_headers
+    observations = {
+        observation.header_name: observation
+        for observation in result.header_observations
     }
 
-    assert "server" in findings
-    assert "x-powered-by" in findings
-    assert "software_version_disclosure" in findings["server"].reasons
-    assert len(findings["server"].fingerprint_sha256) == 64
-
+    assert result.sensitive_headers == ()
+    assert "server" in observations
+    assert "x-powered-by" in observations
+    assert (
+        observations["server"].category
+        == "technology_disclosure"
+    )
+    assert (
+        observations["server"].severity
+        == "informational"
+    )
+    assert (
+        "software_version_disclosure"
+        in observations["server"].reasons
+    )
+    assert (
+        len(
+            observations[
+                "server"
+            ].fingerprint_sha256
+        )
+        == 64
+    )
 
 def test_redacts_token_like_header_values() -> None:
     token = "abcdefghijklmnopqrstuvwxyz1234567890"
@@ -166,11 +184,24 @@ def test_redacts_private_ip_addresses() -> None:
         },
     )
 
-    finding = result.sensitive_headers[0]
+    assert result.sensitive_headers == ()
+    assert len(result.header_observations) == 1
 
-    assert "192.168.10.20" not in finding.redacted_value
-    assert "[REDACTED-PRIVATE-IP]" in finding.redacted_value
-    assert "private_ip_disclosure" in finding.reasons
+    observation = result.header_observations[0]
+
+    assert (
+        observation.category
+        == "internal_infrastructure_disclosure"
+    )
+    assert "192.168.10.20" not in observation.redacted_value
+    assert (
+        "[REDACTED-PRIVATE-IP]"
+        in observation.redacted_value
+    )
+    assert (
+        "private_ip_disclosure"
+        in observation.reasons
+    )
 
 
 def test_secret_header_values_are_fully_redacted() -> None:
@@ -188,7 +219,7 @@ def test_secret_header_values_are_fully_redacted() -> None:
     assert "credential_or_session_header" in finding.reasons
 
 
-def test_sensitive_headers_make_result_fail() -> None:
+def test_technology_observation_does_not_fail_result() -> None:
     headers = {
         header: "configured"
         for header in RECOMMENDED_SECURITY_HEADERS
@@ -202,8 +233,9 @@ def test_sensitive_headers_make_result_fail() -> None:
     )
 
     assert result.missing_headers == ()
-    assert result.sensitive_headers
-    assert result.passed is False
+    assert result.sensitive_headers == ()
+    assert result.header_observations
+    assert result.passed is True
 
 
 def test_cloudflare_report_to_url_is_not_flagged_as_token() -> None:
