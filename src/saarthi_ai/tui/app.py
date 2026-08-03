@@ -595,10 +595,10 @@ TOOLS = [
     ("httpx", "Live Host & Service Probe", "ENABLED"),
     ("katana", "Web Crawler", "ENABLED"),
     ("nuclei", "Template-based Scanning", "PLANNED"),
-    ("sqlmap", "SQL Injection Testing", "PHASE 4"),
-    ("ghauri", "Blind SQLi Cross-check", "PHASE 4"),
+    ("sqlmap", "SQL Injection Testing", "PHASE 4A"),
+    ("ghauri", "Blind SQLi Cross-check", "PHASE 4B"),
     ("Saarthi JS", "JavaScript Intelligence", "ENABLED"),
-    ("OAST Manager", "Out-of-band Correlation", "PHASE 4"),
+    ("OAST Manager", "Out-of-band Correlation", "PHASE 4C"),
 ]
 
 
