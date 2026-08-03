@@ -234,3 +234,43 @@ def test_phase_rows_keeps_future_phases_planned() -> None:
 
     assert row_map["4C"][3] == "PLANNED"
     assert row_map["4D"][3] == "PLANNED"
+
+
+def test_completed_blind_validation_evidence_maps_to_phase_4b() -> None:
+    assert (
+        infer_phase(
+            "completed",
+            {"blind_validation_result"},
+        )
+        == "4B — BLIND VALIDATION"
+    )
+
+
+def test_running_blind_validation_evidence_maps_to_phase_4b() -> None:
+    assert (
+        infer_phase(
+            "running",
+            {"blind_validation_result"},
+        )
+        == "4B — BLIND VALIDATION"
+    )
+
+
+def test_blind_validation_evidence_maps_to_short_phase_4b() -> None:
+    assert (
+        infer_phase_short(
+            "completed",
+            {"blind_validation_result"},
+        )
+        == "4B"
+    )
+
+
+def test_phase_rows_marks_4b_done_and_4c_next() -> None:
+    from saarthi_ai.tui.app import phase_rows
+
+    rows = phase_rows("4B — BLIND VALIDATION")
+    row_map = {row[1]: row for row in rows}
+
+    assert row_map["4B"][3] == "DONE"
+    assert row_map["4C"][3] == "NEXT"
