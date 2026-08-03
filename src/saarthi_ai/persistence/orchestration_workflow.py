@@ -9,6 +9,7 @@ from uuid import uuid4
 from saarthi_ai.orchestration.models import (
     DiscoveryPipelineResult,
     InitialReconResult,
+    IntelligencePipelineResult,
     OrchestrationContext,
     OrchestrationPhase,
     OrchestrationPhaseResult,
@@ -24,6 +25,9 @@ from saarthi_ai.persistence.http_intelligence_workflow import (
     run_tracked_http_intelligence,
 )
 from saarthi_ai.persistence.http_workflow import fail_execution_safely
+from saarthi_ai.persistence.javascript_workflow import (
+    run_tracked_javascript_intelligence,
+)
 from saarthi_ai.persistence.models import (
     ExecutionCreate,
     ExecutionRecord,
@@ -375,5 +379,63 @@ def run_discovery_pipeline(
             recon.context.parent_execution_id,
             actor=actor,
             reason=f"Phase 3D orchestration failed: {exc}",
+        )
+        raise
+
+
+def run_intelligence_pipeline(
+    database: SaarthiDatabase,
+    context: OrchestrationContext,
+    *,
+    evidence_root: Path,
+    actor: str = "saarthi-workflow-orchestrator",
+) -> IntelligencePipelineResult:
+    """Run Phase 3A through 3E using linked child executions."""
+
+    discovery = run_discovery_pipeline(
+        database,
+        context,
+        evidence_root=evidence_root,
+        actor=actor,
+    )
+
+    try:
+        javascript_child = create_phase_execution(
+            database,
+            discovery.context,
+            phase=OrchestrationPhase.JAVASCRIPT,
+            phase_name="JavaScript Intelligence",
+            active_testing_allowed=True,
+            previous_execution_id=discovery.crawl.execution_id,
+        )
+
+        javascript_result = run_tracked_javascript_intelligence(
+            database,
+            javascript_child.execution_id,
+            Path(discovery.crawl.evidence_path),
+            actor=actor,
+            evidence_root=evidence_root / "javascript-intelligence",
+        )
+
+        return IntelligencePipelineResult(
+            context=discovery.context,
+            dns=discovery.dns,
+            subdomains=discovery.subdomains,
+            http_intelligence=discovery.http_intelligence,
+            crawl=discovery.crawl,
+            javascript=OrchestrationPhaseResult(
+                phase=OrchestrationPhase.JAVASCRIPT,
+                execution_id=javascript_child.execution_id,
+                evidence_id=javascript_result.evidence.evidence_id,
+                evidence_path=javascript_result.evidence.path,
+            ),
+        )
+
+    except Exception as exc:
+        fail_execution_safely(
+            database,
+            discovery.context.parent_execution_id,
+            actor=actor,
+            reason=f"Phase 3E orchestration failed: {exc}",
         )
         raise

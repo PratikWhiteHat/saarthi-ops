@@ -702,3 +702,200 @@ def test_phase_3d_failure_marks_parent_failed(
     assert "simulated Phase 3D failure" in (
         parent.failure_reason or ""
     )
+
+
+def test_intelligence_pipeline_adds_javascript_child(
+    database: SaarthiDatabase,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    import saarthi_ai.persistence.orchestration_workflow as workflow_module
+
+    context = create_orchestration(
+        database,
+        assessment_name="Automated Intelligence Pipeline",
+        target_url="https://example.com/",
+        active_testing_allowed=True,
+    )
+
+    fake_context = context.model_copy(
+        update={"status": "running"}
+    )
+
+    crawl_execution = create_phase_execution(
+        database,
+        fake_context,
+        phase=OrchestrationPhase.CRAWL,
+        phase_name="Crawling and URL Intelligence",
+        active_testing_allowed=True,
+    )
+
+    fake_discovery = type(
+        "DiscoveryResult",
+        (),
+        {
+            "context": fake_context,
+            "dns": OrchestrationPhaseResult(
+                phase=OrchestrationPhase.DNS,
+                execution_id="execution-dns",
+                evidence_id="evidence-dns",
+                evidence_path="evidence/dns.json",
+            ),
+            "subdomains": OrchestrationPhaseResult(
+                phase=OrchestrationPhase.SUBDOMAINS,
+                execution_id="execution-subdomains",
+                evidence_id="evidence-subdomains",
+                evidence_path="evidence/subdomains.json",
+            ),
+            "http_intelligence": OrchestrationPhaseResult(
+                phase=OrchestrationPhase.HTTP_INTELLIGENCE,
+                execution_id="execution-http",
+                evidence_id="evidence-http",
+                evidence_path="evidence/http.json",
+            ),
+            "crawl": OrchestrationPhaseResult(
+                phase=OrchestrationPhase.CRAWL,
+                execution_id=crawl_execution.execution_id,
+                evidence_id="evidence-crawl",
+                evidence_path=str(tmp_path / "crawl.json"),
+            ),
+        },
+    )()
+
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(
+        workflow_module,
+        "run_discovery_pipeline",
+        lambda *args, **kwargs: fake_discovery,
+    )
+
+    def fake_javascript(
+        database,
+        execution_id,
+        source_evidence_path,
+        *,
+        actor,
+        evidence_root,
+    ):
+        captured["execution_id"] = execution_id
+        captured["source_evidence_path"] = source_evidence_path
+
+        return type(
+            "Result",
+            (),
+            {
+                "evidence": type(
+                    "Evidence",
+                    (),
+                    {
+                        "evidence_id": "evidence-javascript",
+                        "path": str(evidence_root / "javascript.json"),
+                    },
+                )()
+            },
+        )()
+
+    monkeypatch.setattr(
+        workflow_module,
+        "run_tracked_javascript_intelligence",
+        fake_javascript,
+    )
+
+    result = workflow_module.run_intelligence_pipeline(
+        database,
+        context,
+        evidence_root=tmp_path / "workflow-evidence",
+    )
+
+    javascript_child = database.get_execution(
+        result.javascript.execution_id
+    )
+
+    assert result.javascript.phase is OrchestrationPhase.JAVASCRIPT
+    assert result.javascript.evidence_id == "evidence-javascript"
+    assert captured["source_evidence_path"] == Path(
+        fake_discovery.crawl.evidence_path
+    )
+    assert javascript_child.metadata["phase_code"] == "3E"
+    assert javascript_child.metadata["previous_execution_id"] == (
+        crawl_execution.execution_id
+    )
+
+
+def test_phase_3e_failure_marks_parent_failed(
+    database: SaarthiDatabase,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    import saarthi_ai.persistence.orchestration_workflow as workflow_module
+
+    context = create_orchestration(
+        database,
+        assessment_name="Failing Intelligence Pipeline",
+        target_url="https://example.com/",
+        active_testing_allowed=True,
+    )
+
+    parent = database.get_execution(context.parent_execution_id)
+    database.transition_execution(
+        parent.execution_id,
+        ExecutionState.RUNNING,
+        actor="test",
+        reason="Test orchestration started.",
+    )
+
+    fake_context = context.model_copy(
+        update={"status": "running"}
+    )
+
+    fake_discovery = type(
+        "DiscoveryResult",
+        (),
+        {
+            "context": fake_context,
+            "dns": object(),
+            "subdomains": object(),
+            "http_intelligence": object(),
+            "crawl": OrchestrationPhaseResult(
+                phase=OrchestrationPhase.CRAWL,
+                execution_id="execution-crawl",
+                evidence_id="evidence-crawl",
+                evidence_path=str(tmp_path / "crawl.json"),
+            ),
+        },
+    )()
+
+    monkeypatch.setattr(
+        workflow_module,
+        "run_discovery_pipeline",
+        lambda *args, **kwargs: fake_discovery,
+    )
+
+    def failing_javascript(*args, **kwargs):
+        raise RuntimeError("simulated Phase 3E failure")
+
+    monkeypatch.setattr(
+        workflow_module,
+        "run_tracked_javascript_intelligence",
+        failing_javascript,
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="simulated Phase 3E failure",
+    ):
+        workflow_module.run_intelligence_pipeline(
+            database,
+            context,
+            evidence_root=tmp_path / "workflow-evidence",
+        )
+
+    parent = database.get_execution(
+        context.parent_execution_id
+    )
+
+    assert parent.state is ExecutionState.FAILED
+    assert "simulated Phase 3E failure" in (
+        parent.failure_reason or ""
+    )

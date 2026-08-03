@@ -3,6 +3,7 @@
 from saarthi_ai.orchestration.models import (
     DiscoveryPipelineResult,
     InitialReconResult,
+    IntelligencePipelineResult,
     OrchestrationContext,
     OrchestrationPhase,
     OrchestrationPhaseResult,
@@ -11,6 +12,7 @@ from saarthi_ai.orchestration.models import (
 )
 
 __all__ = [
+    "IntelligencePipelineResult",
     "DiscoveryPipelineResult",
     "InitialReconResult",
     "OrchestrationContext",

@@ -74,3 +74,14 @@ class DiscoveryPipelineResult(BaseModel):
     subdomains: OrchestrationPhaseResult
     http_intelligence: OrchestrationPhaseResult
     crawl: OrchestrationPhaseResult
+
+
+class IntelligencePipelineResult(BaseModel):
+    """Results from the automated Phase 3A through 3E workflow."""
+
+    context: OrchestrationContext
+    dns: OrchestrationPhaseResult
+    subdomains: OrchestrationPhaseResult
+    http_intelligence: OrchestrationPhaseResult
+    crawl: OrchestrationPhaseResult
+    javascript: OrchestrationPhaseResult
