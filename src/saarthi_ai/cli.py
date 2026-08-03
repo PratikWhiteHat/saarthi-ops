@@ -25,6 +25,7 @@ from saarthi_ai.blind_validation.models import (
 )
 from saarthi_ai.checks.models import DirectCheckRequest
 from saarthi_ai.config import get_settings
+from saarthi_ai.confirmation.models import ConfirmationCandidate
 from saarthi_ai.execution.http_collector import HttpCollectionError
 from saarthi_ai.execution.http_models import HttpMetadataCollectionRequest
 from saarthi_ai.llm import (
@@ -34,6 +35,10 @@ from saarthi_ai.llm import (
 from saarthi_ai.persistence.blind_validation_workflow import (
     BlindValidationWorkflowError,
     run_tracked_blind_validation,
+)
+from saarthi_ai.persistence.confirmation_workflow import (
+    ConfirmationWorkflowError,
+    run_confirmation_workflow,
 )
 from saarthi_ai.persistence.crawl_workflow import (
     run_tracked_crawl,
@@ -121,12 +126,18 @@ blind_app = typer.Typer(
     help="Manage bounded Phase 4B blind-validation correlations.",
 )
 
+confirm_app = typer.Typer(
+    no_args_is_help=True,
+    help="Run deterministic Phase 4D evidence confirmation.",
+)
+
 app.add_typer(project_app, name="project")
 app.add_typer(execution_app, name="execution")
 app.add_typer(evidence_app, name="evidence")
 app.add_typer(recon_app, name="recon")
 app.add_typer(check_app, name="check")
 app.add_typer(blind_app, name="blind")
+app.add_typer(confirm_app, name="confirm")
 
 console = Console()
 
@@ -1476,4 +1487,117 @@ def blind_create(
     console.print(
         "[dim]No payload was sent and no external OAST service "
         "was contacted.[/dim]"
+    )
+
+
+@confirm_app.command("run")
+def confirm_run(
+    execution_id: Annotated[
+        str,
+        typer.Option(
+            "--execution",
+            help="Authorized assessment execution identifier.",
+        ),
+    ],
+    candidate_id: Annotated[
+        str,
+        typer.Option(
+            "--candidate-id",
+            help="Stable identifier for the candidate finding.",
+        ),
+    ],
+    title: Annotated[
+        str,
+        typer.Option(
+            "--title",
+            help="Human-readable candidate finding title.",
+        ),
+    ],
+    candidate_type: Annotated[
+        str,
+        typer.Option(
+            "--candidate-type",
+            help="Candidate category used by the confirmation engine.",
+        ),
+    ],
+    expected_token_id: Annotated[
+        str | None,
+        typer.Option(
+            "--expected-token-id",
+            help=(
+                "Expected Phase 4B token ID for correlated OAST "
+                "confirmation."
+            ),
+        ),
+    ] = None,
+) -> None:
+    """Evaluate one candidate using evidence already stored locally."""
+
+    database = get_database()
+
+    candidate = ConfirmationCandidate(
+        candidate_id=candidate_id,
+        execution_id=execution_id,
+        title=title,
+        candidate_type=candidate_type,
+        expected_token_id=expected_token_id,
+    )
+
+    console.print(
+        "[bold]Running deterministic Phase 4D confirmation...[/bold]"
+    )
+    console.print(f"Execution: {execution_id}")
+    console.print(f"Candidate ID: {candidate_id}")
+    console.print(f"Candidate type: {candidate_type}")
+    console.print(
+        f"Expected token ID: {expected_token_id or '-'}"
+    )
+
+    try:
+        evidence_records = database.list_evidence(execution_id)
+
+        decision, evidence = run_confirmation_workflow(
+            database,
+            candidate,
+            evidence_records,
+            actor="cli-confirmation-engine",
+            evidence_root=(
+                Path.cwd() / "evidence" / "confirmation-results"
+            ),
+        )
+    except (
+        ExecutionNotFoundError,
+        InvalidStateTransitionError,
+        ConfirmationWorkflowError,
+        ValueError,
+    ) as exc:
+        console.print(
+            f"[bold red]Confirmation failed:[/bold red] {exc}"
+        )
+        raise typer.Exit(code=1) from exc
+
+    console.print()
+    console.print(
+        "[bold green]Confirmation evaluation completed.[/bold green]"
+    )
+    console.print(f"Status: {decision.status.value.upper()}")
+    console.print(f"Reason: {decision.reason}")
+
+    if decision.supporting_evidence_ids:
+        console.print("Supporting evidence:")
+        for evidence_id in decision.supporting_evidence_ids:
+            console.print(f"- {evidence_id}")
+    else:
+        console.print("Supporting evidence: none")
+
+    if decision.rejected_evidence_ids:
+        console.print("Rejecting evidence:")
+        for evidence_id in decision.rejected_evidence_ids:
+            console.print(f"- {evidence_id}")
+
+    console.print(f"Confirmation evidence ID: {evidence.evidence_id}")
+    console.print(f"Evidence path: {evidence.path}")
+    console.print(f"Evidence SHA-256: {evidence.sha256}")
+    console.print(
+        "[dim]No additional security test or payload was executed.[/dim]"
     )
