@@ -49,6 +49,7 @@ class EvidenceType(StrEnum):
     JAVASCRIPT_INTELLIGENCE_RESULT = "javascript_intelligence_result"
     DIRECT_CHECK_RESULT = "direct_check_result"
     BLIND_VALIDATION_RESULT = "blind_validation_result"
+    OAST_OBSERVATION = "oast_observation"
     TLS_RESULT = "tls_result"
     TOOL_OUTPUT = "tool_output"
     SCREENSHOT = "screenshot"

@@ -19,6 +19,15 @@ from saarthi_ai.oast.manager import (
     OastObservationRejectedError,
 )
 from saarthi_ai.oast.models import OastObservation, OastProtocol
+from saarthi_ai.persistence.database import (
+    DEFAULT_DATABASE_PATH,
+    InvalidStateTransitionError,
+    SaarthiDatabase,
+)
+from saarthi_ai.persistence.oast_workflow import (
+    OastObservationWorkflowError,
+    persist_oast_observation,
+)
 
 router = APIRouter(
     prefix="/v1/oast",
@@ -26,6 +35,8 @@ router = APIRouter(
 )
 
 _manager = LocalOastManager()
+_database = SaarthiDatabase(DEFAULT_DATABASE_PATH)
+_database.initialize()
 
 
 def get_oast_manager() -> LocalOastManager:
@@ -37,6 +48,18 @@ def get_oast_manager() -> LocalOastManager:
 OastManagerDependency = Annotated[
     LocalOastManager,
     Depends(get_oast_manager),
+]
+
+
+def get_oast_database() -> SaarthiDatabase:
+    """Return the database used for OAST observation evidence."""
+
+    return _database
+
+
+OastDatabaseDependency = Annotated[
+    SaarthiDatabase,
+    Depends(get_oast_database),
 ]
 
 
@@ -98,6 +121,7 @@ async def receive_oast_callback(
     raw_token: str,
     request: Request,
     manager: OastManagerDependency,
+    database: OastDatabaseDependency,
 ) -> OastObservation | Response:
     """Accept one bounded loopback callback and correlate its token."""
 
@@ -133,6 +157,32 @@ async def receive_oast_callback(
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=str(exc),
+        ) from exc
+
+    correlation = manager.get_correlation(observation.token_id)
+
+    if correlation is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Matched correlation is no longer available.",
+        )
+
+    try:
+        persist_oast_observation(
+            database,
+            observation,
+            correlation,
+            actor="api-oast-callback-manager",
+        )
+    except InvalidStateTransitionError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(exc),
+        ) from exc
+    except OastObservationWorkflowError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Unable to persist the correlated observation.",
         ) from exc
 
     if request.method == "HEAD":
