@@ -274,3 +274,43 @@ def test_phase_rows_marks_4b_done_and_4c_next() -> None:
 
     assert row_map["4B"][3] == "DONE"
     assert row_map["4C"][3] == "NEXT"
+
+
+def test_completed_oast_observation_maps_to_phase_4c() -> None:
+    assert (
+        infer_phase(
+            "completed",
+            {"oast_observation"},
+        )
+        == "4C — OAST MANAGER"
+    )
+
+
+def test_running_oast_observation_maps_to_phase_4c() -> None:
+    assert (
+        infer_phase(
+            "running",
+            {"oast_observation"},
+        )
+        == "4C — OAST MANAGER"
+    )
+
+
+def test_oast_observation_maps_to_short_phase_4c() -> None:
+    assert (
+        infer_phase_short(
+            "completed",
+            {"oast_observation"},
+        )
+        == "4C"
+    )
+
+
+def test_phase_rows_marks_4c_done_and_4d_next() -> None:
+    from saarthi_ai.tui.app import phase_rows
+
+    rows = phase_rows("4C — OAST MANAGER")
+    row_map = {row[1]: row for row in rows}
+
+    assert row_map["4C"][3] == "DONE"
+    assert row_map["4D"][3] == "NEXT"
