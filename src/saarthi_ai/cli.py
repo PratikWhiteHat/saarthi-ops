@@ -70,6 +70,11 @@ from saarthi_ai.persistence.models import (
     ExecutionCreate,
     ExecutionState,
 )
+from saarthi_ai.persistence.orchestration_workflow import (
+    OrchestrationWorkflowError,
+    create_orchestration,
+    run_assessment_pipeline,
+)
 from saarthi_ai.persistence.projects import (
     ProjectAlreadyExistsError,
     ProjectCreate,
@@ -131,6 +136,11 @@ confirm_app = typer.Typer(
     help="Run deterministic Phase 4D evidence confirmation.",
 )
 
+workflow_app = typer.Typer(
+    no_args_is_help=True,
+    help="Run authorized multi-phase assessment workflows.",
+)
+
 app.add_typer(project_app, name="project")
 app.add_typer(execution_app, name="execution")
 app.add_typer(evidence_app, name="evidence")
@@ -138,6 +148,7 @@ app.add_typer(recon_app, name="recon")
 app.add_typer(check_app, name="check")
 app.add_typer(blind_app, name="blind")
 app.add_typer(confirm_app, name="confirm")
+app.add_typer(workflow_app, name="workflow")
 
 console = Console()
 
@@ -1601,3 +1612,163 @@ def confirm_run(
     console.print(
         "[dim]No additional security test or payload was executed.[/dim]"
     )
+
+
+@workflow_app.command("run")
+def workflow_run(
+    target_url: Annotated[
+        str,
+        typer.Option(
+            "--url",
+            help="Authorized in-scope HTTP or HTTPS target URL.",
+        ),
+    ],
+    assessment_name: Annotated[
+        str,
+        typer.Option(
+            "--name",
+            help="Assessment name recorded in execution history.",
+        ),
+    ] = "Full Authorized Assessment",
+    authorized: Annotated[
+        bool,
+        typer.Option(
+            "--authorized",
+            help="Confirm that testing authorization has been obtained.",
+        ),
+    ] = False,
+    active: Annotated[
+        bool,
+        typer.Option(
+            "--active",
+            help="Allow bounded active testing, including crawling and CORS.",
+        ),
+    ] = False,
+    approved: Annotated[
+        bool,
+        typer.Option(
+            "--approved",
+            help="Explicitly approve execution of the full workflow.",
+        ),
+    ] = False,
+    rate_limit: Annotated[
+        int,
+        typer.Option(
+            "--rate-limit",
+            min=1,
+            max=100,
+            help="Maximum approved request rate per second.",
+        ),
+    ] = 2,
+) -> None:
+    """Run the authorized Phase 3A through Phase 4A assessment pipeline."""
+
+    if not authorized:
+        console.print(
+            "[bold yellow]Authorization confirmation required.[/bold yellow] "
+            "Rerun with --authorized only after confirming written scope."
+        )
+        raise typer.Exit(code=1)
+
+    if not active:
+        console.print(
+            "[bold yellow]Active-testing approval required.[/bold yellow] "
+            "The full workflow includes crawling and bounded CORS probes."
+        )
+        raise typer.Exit(code=1)
+
+    if not approved:
+        console.print(
+            "[bold yellow]Explicit execution approval required.[/bold yellow] "
+            "Review the target and rerun with --approved."
+        )
+        raise typer.Exit(code=1)
+
+    database = get_database()
+
+    try:
+        context = create_orchestration(
+            database,
+            assessment_name=assessment_name,
+            target_url=target_url,
+            active_testing_allowed=True,
+            intrusive_testing_allowed=False,
+            rate_limit_per_second=rate_limit,
+            actor="cli-workflow-orchestrator",
+        )
+
+        evidence_root = (
+            Path.cwd()
+            / "evidence"
+            / "orchestrations"
+            / context.orchestration_id
+        )
+
+        console.print(
+            "[bold]Starting authorized assessment workflow...[/bold]"
+        )
+        console.print(f"Assessment: {assessment_name}")
+        console.print(f"Target: {target_url}")
+        console.print(f"Orchestration: {context.orchestration_id}")
+        console.print(
+            f"Parent execution: {context.parent_execution_id}"
+        )
+        console.print(f"Evidence root: {evidence_root}")
+
+        result = run_assessment_pipeline(
+            database,
+            context,
+            evidence_root=evidence_root,
+            explicitly_approved=True,
+            actor="cli-workflow-orchestrator",
+        )
+
+    except (
+        OrchestrationWorkflowError,
+        InvalidStateTransitionError,
+        DnsCollectionError,
+        SubdomainCollectionError,
+        HttpIntelligenceCollectionError,
+        CrawlCollectionError,
+        JavaScriptCollectionError,
+        DirectCheckWorkflowError,
+    ) as exc:
+        console.print(
+            f"[bold red]Assessment workflow failed:[/bold red] {exc}"
+        )
+        raise typer.Exit(code=1) from exc
+
+    phase_results = (
+        result.dns,
+        result.subdomains,
+        result.http_intelligence,
+        result.crawl,
+        result.javascript,
+        result.security_headers,
+        result.cors,
+    )
+
+    table = Table(title="Assessment Workflow Results")
+    table.add_column("Phase")
+    table.add_column("Execution")
+    table.add_column("Evidence")
+    table.add_column("Evidence Path")
+
+    for phase in phase_results:
+        table.add_row(
+            phase.phase.value,
+            phase.execution_id,
+            phase.evidence_id,
+            phase.evidence_path,
+        )
+
+    console.print()
+    console.print(table)
+    console.print()
+    console.print(
+        "[bold green]Assessment workflow completed.[/bold green]"
+    )
+    console.print(
+        f"Parent execution: {result.context.parent_execution_id}"
+    )
+    console.print(f"Final state: {result.context.status.value}")
