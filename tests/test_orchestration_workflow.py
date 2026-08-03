@@ -4,7 +4,10 @@ from pathlib import Path
 
 import pytest
 
-from saarthi_ai.orchestration.models import OrchestrationPhase
+from saarthi_ai.orchestration.models import (
+    OrchestrationPhase,
+    OrchestrationPhaseResult,
+)
 from saarthi_ai.persistence.database import SaarthiDatabase
 from saarthi_ai.persistence.models import ExecutionState
 from saarthi_ai.persistence.orchestration_workflow import (
@@ -498,5 +501,204 @@ def test_phase_3c_failure_marks_parent_failed(
 
     assert parent.state is ExecutionState.FAILED
     assert "simulated Phase 3C failure" in (
+        parent.failure_reason or ""
+    )
+
+
+def test_discovery_pipeline_adds_crawl_child(
+    database: SaarthiDatabase,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    import saarthi_ai.persistence.orchestration_workflow as workflow_module
+
+    context = create_orchestration(
+        database,
+        assessment_name="Automated Discovery Pipeline",
+        target_url="https://example.com/",
+        active_testing_allowed=True,
+    )
+
+    fake_context = context.model_copy(
+        update={"status": "running"}
+    )
+
+    http_execution = create_phase_execution(
+        database,
+        fake_context,
+        phase=OrchestrationPhase.HTTP_INTELLIGENCE,
+        phase_name="Live Host Intelligence",
+        active_testing_allowed=True,
+    )
+
+    fake_recon = type(
+        "ReconResult",
+        (),
+        {
+            "context": fake_context,
+            "dns": OrchestrationPhaseResult(
+                phase=OrchestrationPhase.DNS,
+                execution_id="execution-dns",
+                evidence_id="evidence-dns",
+                evidence_path="evidence/dns.json",
+            ),
+            "subdomains": OrchestrationPhaseResult(
+                phase=OrchestrationPhase.SUBDOMAINS,
+                execution_id="execution-subdomains",
+                evidence_id="evidence-subdomains",
+                evidence_path="evidence/subdomains.json",
+            ),
+            "http_intelligence": OrchestrationPhaseResult(
+                phase=OrchestrationPhase.HTTP_INTELLIGENCE,
+                execution_id=http_execution.execution_id,
+                evidence_id="evidence-http",
+                evidence_path=str(
+                    tmp_path / "http-intelligence.json"
+                ),
+            ),
+        },
+    )()
+
+    captured: dict[str, object] = {}
+
+    def fake_recon_pipeline(*args, **kwargs):
+        return fake_recon
+
+    def fake_crawl(
+        database,
+        execution_id,
+        source_evidence_path,
+        *,
+        actor,
+        evidence_root,
+    ):
+        captured["execution_id"] = execution_id
+        captured["source_evidence_path"] = source_evidence_path
+
+        return type(
+            "Result",
+            (),
+            {
+                "evidence": type(
+                    "Evidence",
+                    (),
+                    {
+                        "evidence_id": "evidence-crawl",
+                        "path": str(evidence_root / "crawl.json"),
+                    },
+                )()
+            },
+        )()
+
+    monkeypatch.setattr(
+        workflow_module,
+        "run_recon_pipeline",
+        fake_recon_pipeline,
+    )
+    monkeypatch.setattr(
+        workflow_module,
+        "run_tracked_crawl",
+        fake_crawl,
+    )
+
+    result = workflow_module.run_discovery_pipeline(
+        database,
+        context,
+        evidence_root=tmp_path / "workflow-evidence",
+    )
+
+    crawl_child = database.get_execution(
+        result.crawl.execution_id
+    )
+
+    assert result.crawl.phase is OrchestrationPhase.CRAWL
+    assert result.crawl.evidence_id == "evidence-crawl"
+    assert captured["source_evidence_path"] == Path(
+        fake_recon.http_intelligence.evidence_path
+    )
+    assert crawl_child.metadata["phase_code"] == "3D"
+    assert crawl_child.metadata["previous_execution_id"] == (
+        http_execution.execution_id
+    )
+
+
+def test_phase_3d_failure_marks_parent_failed(
+    database: SaarthiDatabase,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    import saarthi_ai.persistence.orchestration_workflow as workflow_module
+
+    context = create_orchestration(
+        database,
+        assessment_name="Failing Discovery Pipeline",
+        target_url="https://example.com/",
+        active_testing_allowed=True,
+    )
+
+    parent = database.get_execution(context.parent_execution_id)
+    database.transition_execution(
+        parent.execution_id,
+        ExecutionState.RUNNING,
+        actor="test",
+        reason="Test orchestration started.",
+    )
+
+    fake_context = context.model_copy(
+        update={"status": "running"}
+    )
+
+    fake_recon = type(
+        "ReconResult",
+        (),
+        {
+            "context": fake_context,
+            "dns": object(),
+            "subdomains": object(),
+            "http_intelligence": type(
+                "PhaseResult",
+                (),
+                {
+                    "execution_id": "execution-http",
+                    "evidence_path": str(
+                        tmp_path / "http-intelligence.json"
+                    ),
+                },
+            )(),
+        },
+    )()
+
+    monkeypatch.setattr(
+        workflow_module,
+        "run_recon_pipeline",
+        lambda *args, **kwargs: fake_recon,
+    )
+
+    monkeypatch.setattr(
+        workflow_module,
+        "run_tracked_crawl",
+        lambda *args, **kwargs: (
+            (_ for _ in ()).throw(
+                RuntimeError("simulated Phase 3D failure")
+            )
+        ),
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="simulated Phase 3D failure",
+    ):
+        workflow_module.run_discovery_pipeline(
+            database,
+            context,
+            evidence_root=tmp_path / "workflow-evidence",
+        )
+
+    parent = database.get_execution(
+        context.parent_execution_id
+    )
+
+    assert parent.state is ExecutionState.FAILED
+    assert "simulated Phase 3D failure" in (
         parent.failure_reason or ""
     )

@@ -1,6 +1,7 @@
 """Phase 5 assessment orchestration models."""
 
 from saarthi_ai.orchestration.models import (
+    DiscoveryPipelineResult,
     InitialReconResult,
     OrchestrationContext,
     OrchestrationPhase,
@@ -10,6 +11,7 @@ from saarthi_ai.orchestration.models import (
 )
 
 __all__ = [
+    "DiscoveryPipelineResult",
     "InitialReconResult",
     "OrchestrationContext",
     "OrchestrationPhase",

@@ -64,3 +64,13 @@ class ReconPipelineResult(BaseModel):
     dns: OrchestrationPhaseResult
     subdomains: OrchestrationPhaseResult
     http_intelligence: OrchestrationPhaseResult
+
+
+class DiscoveryPipelineResult(BaseModel):
+    """Results from the automated Phase 3A through 3D workflow."""
+
+    context: OrchestrationContext
+    dns: OrchestrationPhaseResult
+    subdomains: OrchestrationPhaseResult
+    http_intelligence: OrchestrationPhaseResult
+    crawl: OrchestrationPhaseResult

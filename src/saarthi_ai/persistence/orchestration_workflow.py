@@ -7,6 +7,7 @@ from urllib.parse import urlparse
 from uuid import uuid4
 
 from saarthi_ai.orchestration.models import (
+    DiscoveryPipelineResult,
     InitialReconResult,
     OrchestrationContext,
     OrchestrationPhase,
@@ -14,6 +15,7 @@ from saarthi_ai.orchestration.models import (
     OrchestrationStatus,
     ReconPipelineResult,
 )
+from saarthi_ai.persistence.crawl_workflow import run_tracked_crawl
 from saarthi_ai.persistence.database import SaarthiDatabase
 from saarthi_ai.persistence.dns_workflow import (
     run_tracked_dns_collection,
@@ -314,5 +316,64 @@ def run_recon_pipeline(
             initial.context.parent_execution_id,
             actor=actor,
             reason=f"Phase 3C orchestration failed: {exc}",
+        )
+        raise
+
+
+def run_discovery_pipeline(
+    database: SaarthiDatabase,
+    context: OrchestrationContext,
+    *,
+    evidence_root: Path,
+    actor: str = "saarthi-workflow-orchestrator",
+) -> DiscoveryPipelineResult:
+    """Run Phase 3A through 3D using linked child executions."""
+
+    recon = run_recon_pipeline(
+        database,
+        context,
+        evidence_root=evidence_root,
+        actor=actor,
+    )
+
+    try:
+        crawl_child = create_phase_execution(
+            database,
+            recon.context,
+            phase=OrchestrationPhase.CRAWL,
+            phase_name="Crawling and URL Intelligence",
+            active_testing_allowed=True,
+            previous_execution_id=(
+                recon.http_intelligence.execution_id
+            ),
+        )
+
+        crawl_result = run_tracked_crawl(
+            database,
+            crawl_child.execution_id,
+            Path(recon.http_intelligence.evidence_path),
+            actor=actor,
+            evidence_root=evidence_root / "crawling",
+        )
+
+        return DiscoveryPipelineResult(
+            context=recon.context,
+            dns=recon.dns,
+            subdomains=recon.subdomains,
+            http_intelligence=recon.http_intelligence,
+            crawl=OrchestrationPhaseResult(
+                phase=OrchestrationPhase.CRAWL,
+                execution_id=crawl_child.execution_id,
+                evidence_id=crawl_result.evidence.evidence_id,
+                evidence_path=crawl_result.evidence.path,
+            ),
+        )
+
+    except Exception as exc:
+        fail_execution_safely(
+            database,
+            recon.context.parent_execution_id,
+            actor=actor,
+            reason=f"Phase 3D orchestration failed: {exc}",
         )
         raise
