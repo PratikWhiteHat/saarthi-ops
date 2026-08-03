@@ -85,3 +85,16 @@ class IntelligencePipelineResult(BaseModel):
     http_intelligence: OrchestrationPhaseResult
     crawl: OrchestrationPhaseResult
     javascript: OrchestrationPhaseResult
+
+
+class AssessmentPipelineResult(BaseModel):
+    """Results from the completed automated Phase 3A through 4A workflow."""
+
+    context: OrchestrationContext
+    dns: OrchestrationPhaseResult
+    subdomains: OrchestrationPhaseResult
+    http_intelligence: OrchestrationPhaseResult
+    crawl: OrchestrationPhaseResult
+    javascript: OrchestrationPhaseResult
+    security_headers: OrchestrationPhaseResult
+    cors: OrchestrationPhaseResult

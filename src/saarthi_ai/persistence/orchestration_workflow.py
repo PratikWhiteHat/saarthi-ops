@@ -6,7 +6,9 @@ from pathlib import Path
 from urllib.parse import urlparse
 from uuid import uuid4
 
+from saarthi_ai.checks.models import DirectCheckRequest
 from saarthi_ai.orchestration.models import (
+    AssessmentPipelineResult,
     DiscoveryPipelineResult,
     InitialReconResult,
     IntelligencePipelineResult,
@@ -18,6 +20,9 @@ from saarthi_ai.orchestration.models import (
 )
 from saarthi_ai.persistence.crawl_workflow import run_tracked_crawl
 from saarthi_ai.persistence.database import SaarthiDatabase
+from saarthi_ai.persistence.direct_check_workflow import (
+    run_tracked_direct_check,
+)
 from saarthi_ai.persistence.dns_workflow import (
     run_tracked_dns_collection,
 )
@@ -454,5 +459,160 @@ def run_intelligence_pipeline(
             discovery.context.parent_execution_id,
             actor=actor,
             reason=f"Phase 3E orchestration failed: {exc}",
+        )
+        raise
+
+
+def run_assessment_pipeline(
+    database: SaarthiDatabase,
+    context: OrchestrationContext,
+    *,
+    evidence_root: Path,
+    explicitly_approved: bool,
+    actor: str = "saarthi-workflow-orchestrator",
+) -> AssessmentPipelineResult:
+    """Run the authorized Phase 3A through 4A assessment pipeline."""
+
+    parent = database.get_execution(context.parent_execution_id)
+
+    if not explicitly_approved:
+        raise OrchestrationWorkflowError(
+            "Explicit operator approval is required for the full assessment."
+        )
+
+    if not parent.authorization_confirmed:
+        raise OrchestrationWorkflowError(
+            "Parent orchestration does not have confirmed authorization."
+        )
+
+    if not parent.active_testing_allowed:
+        raise OrchestrationWorkflowError(
+            "The full assessment requires active testing approval."
+        )
+
+    intelligence = run_intelligence_pipeline(
+        database,
+        context,
+        evidence_root=evidence_root,
+        actor=actor,
+    )
+
+    try:
+        security_headers_child = create_phase_execution(
+            database,
+            intelligence.context,
+            phase=OrchestrationPhase.SECURITY_HEADERS,
+            phase_name="Security Headers",
+            active_testing_allowed=False,
+            previous_execution_id=intelligence.javascript.execution_id,
+        )
+
+        security_headers_result = run_tracked_direct_check(
+            database,
+            DirectCheckRequest(
+                execution_id=security_headers_child.execution_id,
+                target_url=intelligence.context.target_url,
+                check_id="security-headers",
+                authorized=True,
+                active_testing=False,
+                explicitly_approved=True,
+                requested_method="GET",
+                requested_requests=1,
+                metadata={
+                    "orchestration_id": (
+                        intelligence.context.orchestration_id
+                    ),
+                    "phase": "4A-security-headers",
+                },
+            ),
+            actor=actor,
+            evidence_root=evidence_root / "security-headers",
+        )
+
+        cors_child = create_phase_execution(
+            database,
+            intelligence.context,
+            phase=OrchestrationPhase.CORS,
+            phase_name="CORS Configuration",
+            active_testing_allowed=True,
+            previous_execution_id=security_headers_child.execution_id,
+        )
+
+        cors_result = run_tracked_direct_check(
+            database,
+            DirectCheckRequest(
+                execution_id=cors_child.execution_id,
+                target_url=intelligence.context.target_url,
+                check_id="cors-configuration",
+                authorized=True,
+                active_testing=True,
+                explicitly_approved=True,
+                requested_method="GET",
+                requested_requests=3,
+                metadata={
+                    "orchestration_id": (
+                        intelligence.context.orchestration_id
+                    ),
+                    "phase": "4A-cors",
+                },
+            ),
+            actor=actor,
+            evidence_root=evidence_root / "cors",
+        )
+
+        parent = database.get_execution(
+            intelligence.context.parent_execution_id
+        )
+
+        if parent.state is not ExecutionState.RUNNING:
+            raise OrchestrationWorkflowError(
+                "Parent orchestration must be running before completion."
+            )
+
+        parent = database.transition_execution(
+            parent.execution_id,
+            ExecutionState.ANALYZING,
+            actor=actor,
+            reason="Automated assessment evidence is ready for review.",
+        )
+
+        database.transition_execution(
+            parent.execution_id,
+            ExecutionState.COMPLETED,
+            actor=actor,
+            reason="Phase 3A through 4A assessment workflow completed.",
+        )
+
+        completed_context = intelligence.context.model_copy(
+            update={"status": OrchestrationStatus.COMPLETED}
+        )
+
+        return AssessmentPipelineResult(
+            context=completed_context,
+            dns=intelligence.dns,
+            subdomains=intelligence.subdomains,
+            http_intelligence=intelligence.http_intelligence,
+            crawl=intelligence.crawl,
+            javascript=intelligence.javascript,
+            security_headers=OrchestrationPhaseResult(
+                phase=OrchestrationPhase.SECURITY_HEADERS,
+                execution_id=security_headers_child.execution_id,
+                evidence_id=security_headers_result.evidence.evidence_id,
+                evidence_path=security_headers_result.evidence.path,
+            ),
+            cors=OrchestrationPhaseResult(
+                phase=OrchestrationPhase.CORS,
+                execution_id=cors_child.execution_id,
+                evidence_id=cors_result.evidence.evidence_id,
+                evidence_path=cors_result.evidence.path,
+            ),
+        )
+
+    except Exception as exc:
+        fail_execution_safely(
+            database,
+            intelligence.context.parent_execution_id,
+            actor=actor,
+            reason=f"Phase 4A orchestration failed: {exc}",
         )
         raise

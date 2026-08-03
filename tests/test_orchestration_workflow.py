@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from saarthi_ai.checks.models import DirectCheckRequest
 from saarthi_ai.orchestration.models import (
     OrchestrationPhase,
     OrchestrationPhaseResult,
@@ -15,6 +16,7 @@ from saarthi_ai.persistence.orchestration_workflow import (
     create_orchestration,
     create_phase_execution,
     normalize_target_domain,
+    run_assessment_pipeline,
 )
 
 
@@ -972,3 +974,201 @@ def test_intrusive_child_requires_active_testing(
             active_testing_allowed=False,
             intrusive_testing_allowed=True,
         )
+
+
+def test_assessment_pipeline_runs_phase_4a_and_completes_parent(
+    database: SaarthiDatabase,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    import saarthi_ai.persistence.orchestration_workflow as workflow_module
+
+    context = create_orchestration(
+        database,
+        assessment_name="Complete Automated Assessment",
+        target_url="https://example.com/",
+        active_testing_allowed=True,
+    )
+
+    parent = database.get_execution(context.parent_execution_id)
+    database.transition_execution(
+        parent.execution_id,
+        ExecutionState.RUNNING,
+        actor="test",
+        reason="Simulated intelligence pipeline started.",
+    )
+
+    running_context = context.model_copy(
+        update={"status": "running"}
+    )
+
+    def phase_result(
+        phase: OrchestrationPhase,
+        name: str,
+    ) -> OrchestrationPhaseResult:
+        return OrchestrationPhaseResult(
+            phase=phase,
+            execution_id=f"execution-{name}",
+            evidence_id=f"evidence-{name}",
+            evidence_path=str(tmp_path / f"{name}.json"),
+        )
+
+    fake_intelligence = type(
+        "IntelligenceResult",
+        (),
+        {
+            "context": running_context,
+            "dns": phase_result(OrchestrationPhase.DNS, "dns"),
+            "subdomains": phase_result(
+                OrchestrationPhase.SUBDOMAINS,
+                "subdomains",
+            ),
+            "http_intelligence": phase_result(
+                OrchestrationPhase.HTTP_INTELLIGENCE,
+                "http",
+            ),
+            "crawl": phase_result(
+                OrchestrationPhase.CRAWL,
+                "crawl",
+            ),
+            "javascript": phase_result(
+                OrchestrationPhase.JAVASCRIPT,
+                "javascript",
+            ),
+        },
+    )()
+
+    monkeypatch.setattr(
+        workflow_module,
+        "run_intelligence_pipeline",
+        lambda *args, **kwargs: fake_intelligence,
+    )
+
+    requests: list[DirectCheckRequest] = []
+
+    def fake_direct_check(
+        database,
+        request,
+        *,
+        actor,
+        evidence_root,
+    ):
+        requests.append(request)
+
+        return type(
+            "Result",
+            (),
+            {
+                "evidence": type(
+                    "Evidence",
+                    (),
+                    {
+                        "evidence_id": (
+                            f"evidence-{request.check_id}"
+                        ),
+                        "path": str(
+                            evidence_root
+                            / f"{request.check_id}.json"
+                        ),
+                    },
+                )()
+            },
+        )()
+
+    monkeypatch.setattr(
+        workflow_module,
+        "run_tracked_direct_check",
+        fake_direct_check,
+    )
+
+    result = workflow_module.run_assessment_pipeline(
+        database,
+        context,
+        evidence_root=tmp_path / "workflow-evidence",
+        explicitly_approved=True,
+    )
+
+    parent = database.get_execution(context.parent_execution_id)
+    headers_child = database.get_execution(
+        result.security_headers.execution_id
+    )
+    cors_child = database.get_execution(
+        result.cors.execution_id
+    )
+
+    assert parent.state is ExecutionState.COMPLETED
+    assert result.context.status.value == "completed"
+
+    assert [request.check_id for request in requests] == [
+        "security-headers",
+        "cors-configuration",
+    ]
+
+    assert requests[0].active_testing is False
+    assert requests[0].requested_requests == 1
+    assert requests[1].active_testing is True
+    assert requests[1].requested_requests == 3
+
+    assert headers_child.metadata["phase_code"] == (
+        "4A-security-headers"
+    )
+    assert headers_child.metadata["previous_execution_id"] == (
+        fake_intelligence.javascript.execution_id
+    )
+
+    assert cors_child.metadata["phase_code"] == "4A-cors"
+    assert cors_child.metadata["previous_execution_id"] == (
+        headers_child.execution_id
+    )
+
+
+def test_assessment_pipeline_requires_explicit_approval(
+    database: SaarthiDatabase,
+    tmp_path: Path,
+) -> None:
+    context = create_orchestration(
+        database,
+        assessment_name="Unapproved Assessment",
+        target_url="https://example.com/",
+        active_testing_allowed=True,
+    )
+
+    with pytest.raises(
+        OrchestrationWorkflowError,
+        match="Explicit operator approval",
+    ):
+        run_assessment_pipeline(
+            database,
+            context,
+            evidence_root=tmp_path / "workflow-evidence",
+            explicitly_approved=False,
+        )
+
+    parent = database.get_execution(context.parent_execution_id)
+    assert parent.state is ExecutionState.PLANNED
+
+
+def test_assessment_pipeline_requires_active_parent(
+    database: SaarthiDatabase,
+    tmp_path: Path,
+) -> None:
+    context = create_orchestration(
+        database,
+        assessment_name="Passive Assessment",
+        target_url="https://example.com/",
+        active_testing_allowed=False,
+    )
+
+    with pytest.raises(
+        OrchestrationWorkflowError,
+        match="requires active testing approval",
+    ):
+        run_assessment_pipeline(
+            database,
+            context,
+            evidence_root=tmp_path / "workflow-evidence",
+            explicitly_approved=True,
+        )
+
+    parent = database.get_execution(context.parent_execution_id)
+    assert parent.state is ExecutionState.PLANNED
