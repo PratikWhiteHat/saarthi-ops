@@ -1278,6 +1278,24 @@ def check_direct(
         for header in check_result.missing_headers:
             console.print(f"- Missing: {header}")
 
+        sensitive_headers = getattr(
+            check_result,
+            "sensitive_headers",
+            (),
+        )
+
+        console.print(
+            "Sensitive response headers: "
+            f"{len(sensitive_headers)}"
+        )
+
+        for finding in sensitive_headers:
+            reasons = ", ".join(finding.reasons)
+            console.print(
+                f"- Sensitive: {finding.header_name} = "
+                f"{finding.redacted_value} [{reasons}]"
+            )
+
         if check_result.error:
             console.print(f"Checker error: {check_result.error}")
 

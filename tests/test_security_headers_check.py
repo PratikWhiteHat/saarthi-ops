@@ -114,3 +114,93 @@ async def test_run_security_headers_check_handles_http_error() -> None:
     assert result.status_code == 0
     assert result.error is not None
     assert result.present_headers == ()
+
+
+def test_detects_sensitive_response_header_names() -> None:
+    result = analyze_security_headers(
+        target_url="https://example.com/",
+        status_code=200,
+        headers={
+            "Server": "nginx/1.24.0",
+            "X-Powered-By": "PHP/8.2.7",
+        },
+    )
+
+    findings = {
+        finding.header_name: finding
+        for finding in result.sensitive_headers
+    }
+
+    assert "server" in findings
+    assert "x-powered-by" in findings
+    assert "software_version_disclosure" in findings["server"].reasons
+    assert len(findings["server"].fingerprint_sha256) == 64
+
+
+def test_redacts_token_like_header_values() -> None:
+    token = "abcdefghijklmnopqrstuvwxyz1234567890"
+
+    result = analyze_security_headers(
+        target_url="https://example.com/",
+        status_code=200,
+        headers={
+            "X-Debug-Token": token,
+        },
+    )
+
+    assert len(result.sensitive_headers) == 1
+
+    finding = result.sensitive_headers[0]
+
+    assert token not in finding.redacted_value
+    assert "[REDACTED-TOKEN]" in finding.redacted_value
+    assert "token_like_value" in finding.reasons
+
+
+def test_redacts_private_ip_addresses() -> None:
+    result = analyze_security_headers(
+        target_url="https://example.com/",
+        status_code=200,
+        headers={
+            "X-Backend-Server": "node-01 192.168.10.20",
+        },
+    )
+
+    finding = result.sensitive_headers[0]
+
+    assert "192.168.10.20" not in finding.redacted_value
+    assert "[REDACTED-PRIVATE-IP]" in finding.redacted_value
+    assert "private_ip_disclosure" in finding.reasons
+
+
+def test_secret_header_values_are_fully_redacted() -> None:
+    result = analyze_security_headers(
+        target_url="https://example.com/",
+        status_code=200,
+        headers={
+            "Set-Cookie": "session=super-secret-session-value",
+        },
+    )
+
+    finding = result.sensitive_headers[0]
+
+    assert finding.redacted_value == "[REDACTED]"
+    assert "credential_or_session_header" in finding.reasons
+
+
+def test_sensitive_headers_make_result_fail() -> None:
+    headers = {
+        header: "configured"
+        for header in RECOMMENDED_SECURITY_HEADERS
+    }
+    headers["Server"] = "nginx/1.24.0"
+
+    result = analyze_security_headers(
+        target_url="https://example.com/",
+        status_code=200,
+        headers=headers,
+    )
+
+    assert result.missing_headers == ()
+    assert result.sensitive_headers
+    assert result.passed is False
