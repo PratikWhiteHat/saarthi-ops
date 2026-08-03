@@ -6,6 +6,7 @@ from saarthi_ai.orchestration.models import (
     OrchestrationPhase,
     OrchestrationPhaseResult,
     OrchestrationStatus,
+    ReconPipelineResult,
 )
 
 __all__ = [
@@ -14,4 +15,5 @@ __all__ = [
     "OrchestrationPhase",
     "OrchestrationPhaseResult",
     "OrchestrationStatus",
+    "ReconPipelineResult",
 ]

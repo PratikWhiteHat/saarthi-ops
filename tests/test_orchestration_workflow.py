@@ -299,3 +299,204 @@ def test_initial_recon_failure_marks_parent_failed(
     assert "simulated DNS failure" in (
         parent.failure_reason or ""
     )
+
+
+def test_recon_pipeline_adds_http_intelligence_child(
+    database: SaarthiDatabase,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    import saarthi_ai.persistence.orchestration_workflow as workflow_module
+
+    def fake_dns(
+        database,
+        execution_id,
+        domain,
+        *,
+        actor,
+        evidence_root,
+    ):
+        return type(
+            "Result",
+            (),
+            {
+                "evidence": type(
+                    "Evidence",
+                    (),
+                    {
+                        "evidence_id": "evidence-dns",
+                        "path": str(evidence_root / "dns.json"),
+                    },
+                )()
+            },
+        )()
+
+    def fake_subdomains(
+        database,
+        execution_id,
+        domain,
+        *,
+        actor,
+        evidence_root,
+    ):
+        return type(
+            "Result",
+            (),
+            {
+                "evidence": type(
+                    "Evidence",
+                    (),
+                    {
+                        "evidence_id": "evidence-subdomains",
+                        "path": str(evidence_root / "subdomains.json"),
+                    },
+                )()
+            },
+        )()
+
+    captured: dict[str, object] = {}
+
+    def fake_http_intelligence(
+        database,
+        execution_id,
+        source_evidence_path,
+        *,
+        actor,
+        evidence_root,
+    ):
+        captured["source_evidence_path"] = source_evidence_path
+        captured["http_execution_id"] = execution_id
+
+        return type(
+            "Result",
+            (),
+            {
+                "evidence": type(
+                    "Evidence",
+                    (),
+                    {
+                        "evidence_id": "evidence-http",
+                        "path": str(evidence_root / "http.json"),
+                    },
+                )()
+            },
+        )()
+
+    monkeypatch.setattr(
+        workflow_module,
+        "run_tracked_dns_collection",
+        fake_dns,
+    )
+    monkeypatch.setattr(
+        workflow_module,
+        "run_tracked_subdomain_collection",
+        fake_subdomains,
+    )
+    monkeypatch.setattr(
+        workflow_module,
+        "run_tracked_http_intelligence",
+        fake_http_intelligence,
+    )
+
+    context = create_orchestration(
+        database,
+        assessment_name="Automated Recon Pipeline",
+        target_url="https://example.com/",
+        active_testing_allowed=True,
+    )
+
+    result = workflow_module.run_recon_pipeline(
+        database,
+        context,
+        evidence_root=tmp_path / "workflow-evidence",
+    )
+
+    http_child = database.get_execution(
+        result.http_intelligence.execution_id
+    )
+
+    assert result.http_intelligence.phase is (
+        OrchestrationPhase.HTTP_INTELLIGENCE
+    )
+    assert result.http_intelligence.evidence_id == "evidence-http"
+    assert captured["source_evidence_path"] == Path(
+        result.subdomains.evidence_path
+    )
+    assert http_child.metadata["phase_code"] == "3C"
+    assert http_child.metadata["previous_execution_id"] == (
+        result.subdomains.execution_id
+    )
+
+    parent = database.get_execution(
+        context.parent_execution_id
+    )
+    assert parent.state is ExecutionState.RUNNING
+
+
+def test_phase_3c_failure_marks_parent_failed(
+    database: SaarthiDatabase,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    import saarthi_ai.persistence.orchestration_workflow as workflow_module
+
+    def fake_success(*args, evidence_root, **kwargs):
+        return type(
+            "Result",
+            (),
+            {
+                "evidence": type(
+                    "Evidence",
+                    (),
+                    {
+                        "evidence_id": "evidence-ok",
+                        "path": str(evidence_root / "result.json"),
+                    },
+                )()
+            },
+        )()
+
+    def failing_http(*args, **kwargs):
+        raise RuntimeError("simulated Phase 3C failure")
+
+    monkeypatch.setattr(
+        workflow_module,
+        "run_tracked_dns_collection",
+        fake_success,
+    )
+    monkeypatch.setattr(
+        workflow_module,
+        "run_tracked_subdomain_collection",
+        fake_success,
+    )
+    monkeypatch.setattr(
+        workflow_module,
+        "run_tracked_http_intelligence",
+        failing_http,
+    )
+
+    context = create_orchestration(
+        database,
+        assessment_name="Failing Recon Pipeline",
+        target_url="https://example.com/",
+        active_testing_allowed=True,
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="simulated Phase 3C failure",
+    ):
+        workflow_module.run_recon_pipeline(
+            database,
+            context,
+            evidence_root=tmp_path / "workflow-evidence",
+        )
+
+    parent = database.get_execution(
+        context.parent_execution_id
+    )
+
+    assert parent.state is ExecutionState.FAILED
+    assert "simulated Phase 3C failure" in (
+        parent.failure_reason or ""
+    )

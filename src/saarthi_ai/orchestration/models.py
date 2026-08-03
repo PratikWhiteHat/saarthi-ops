@@ -55,3 +55,12 @@ class InitialReconResult(BaseModel):
     context: OrchestrationContext
     dns: OrchestrationPhaseResult
     subdomains: OrchestrationPhaseResult
+
+
+class ReconPipelineResult(BaseModel):
+    """Results from the automated Phase 3A through 3C workflow."""
+
+    context: OrchestrationContext
+    dns: OrchestrationPhaseResult
+    subdomains: OrchestrationPhaseResult
+    http_intelligence: OrchestrationPhaseResult

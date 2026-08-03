@@ -12,10 +12,14 @@ from saarthi_ai.orchestration.models import (
     OrchestrationPhase,
     OrchestrationPhaseResult,
     OrchestrationStatus,
+    ReconPipelineResult,
 )
 from saarthi_ai.persistence.database import SaarthiDatabase
 from saarthi_ai.persistence.dns_workflow import (
     run_tracked_dns_collection,
+)
+from saarthi_ai.persistence.http_intelligence_workflow import (
+    run_tracked_http_intelligence,
 )
 from saarthi_ai.persistence.http_workflow import fail_execution_safely
 from saarthi_ai.persistence.models import (
@@ -254,5 +258,61 @@ def run_initial_recon(
             running_context.parent_execution_id,
             actor=actor,
             reason=f"Initial orchestration failed: {exc}",
+        )
+        raise
+
+
+def run_recon_pipeline(
+    database: SaarthiDatabase,
+    context: OrchestrationContext,
+    *,
+    evidence_root: Path,
+    actor: str = "saarthi-workflow-orchestrator",
+) -> ReconPipelineResult:
+    """Run Phase 3A, 3B, and 3C using linked child executions."""
+
+    initial = run_initial_recon(
+        database,
+        context,
+        evidence_root=evidence_root,
+        actor=actor,
+    )
+
+    try:
+        http_child = create_phase_execution(
+            database,
+            initial.context,
+            phase=OrchestrationPhase.HTTP_INTELLIGENCE,
+            phase_name="Live Host Intelligence",
+            active_testing_allowed=True,
+            previous_execution_id=initial.subdomains.execution_id,
+        )
+
+        http_result = run_tracked_http_intelligence(
+            database,
+            http_child.execution_id,
+            Path(initial.subdomains.evidence_path),
+            actor=actor,
+            evidence_root=evidence_root / "http-intelligence",
+        )
+
+        return ReconPipelineResult(
+            context=initial.context,
+            dns=initial.dns,
+            subdomains=initial.subdomains,
+            http_intelligence=OrchestrationPhaseResult(
+                phase=OrchestrationPhase.HTTP_INTELLIGENCE,
+                execution_id=http_child.execution_id,
+                evidence_id=http_result.evidence.evidence_id,
+                evidence_path=http_result.evidence.path,
+            ),
+        )
+
+    except Exception as exc:
+        fail_execution_safely(
+            database,
+            initial.context.parent_execution_id,
+            actor=actor,
+            reason=f"Phase 3C orchestration failed: {exc}",
         )
         raise
