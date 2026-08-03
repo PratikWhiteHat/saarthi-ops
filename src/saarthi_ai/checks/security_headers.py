@@ -46,6 +46,10 @@ TOKEN_PATTERN = re.compile(
     r"(?i)\b(?:bearer\s+)?[a-z0-9_-]{24,}\b"
 )
 
+TOKEN_CONTEXT_PATTERN = re.compile(
+    r"(?i)(?:token|secret|api[_-]?key|access[_-]?key|session|credential)"
+)
+
 PRIVATE_IP_PATTERN = re.compile(
     r"\b(?:"
     r"10(?:\.\d{1,3}){3}|"
@@ -95,7 +99,16 @@ def _redact_header_value(
     if normalized_name in SECRET_HEADER_NAMES:
         return "[REDACTED]"
 
-    redacted = TOKEN_PATTERN.sub("[REDACTED-TOKEN]", value)
+    token_context = (
+        normalized_name in SECRET_HEADER_NAMES
+        or TOKEN_CONTEXT_PATTERN.search(normalized_name) is not None
+    )
+
+    redacted = value
+
+    if token_context:
+        redacted = TOKEN_PATTERN.sub("[REDACTED-TOKEN]", redacted)
+
     redacted = PRIVATE_IP_PATTERN.sub("[REDACTED-PRIVATE-IP]", redacted)
 
     if len(redacted) > 200:
@@ -123,7 +136,12 @@ def _detect_sensitive_header_reasons(
     if PRIVATE_IP_PATTERN.search(value):
         reasons.add("private_ip_disclosure")
 
-    if TOKEN_PATTERN.search(value):
+    token_context = (
+        normalized_name in SECRET_HEADER_NAMES
+        or TOKEN_CONTEXT_PATTERN.search(normalized_name) is not None
+    )
+
+    if token_context and TOKEN_PATTERN.search(value):
         reasons.add("token_like_value")
 
     return tuple(sorted(reasons))

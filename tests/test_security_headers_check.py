@@ -204,3 +204,55 @@ def test_sensitive_headers_make_result_fail() -> None:
     assert result.missing_headers == ()
     assert result.sensitive_headers
     assert result.passed is False
+
+
+def test_cloudflare_report_to_url_is_not_flagged_as_token() -> None:
+    result = analyze_security_headers(
+        target_url="https://example.com/",
+        status_code=200,
+        headers={
+            "Report-To": (
+                '{"group":"cf-nel","max_age":604800,'
+                '"endpoints":[{"url":'
+                '"https://a.nel.cloudflare.com/report/v4?s='
+                'abcdefghijklmnopqrstuvwxyz1234567890"}]}'
+            ),
+        },
+    )
+
+    assert result.sensitive_headers == ()
+
+
+def test_cloudflare_nel_header_is_not_sensitive() -> None:
+    result = analyze_security_headers(
+        target_url="https://example.com/",
+        status_code=200,
+        headers={
+            "NEL": (
+                '{"report_to":"cf-nel","success_fraction":0.0,'
+                '"max_age":604800}'
+            ),
+        },
+    )
+
+    assert result.sensitive_headers == ()
+
+
+def test_token_named_header_still_redacts_long_value() -> None:
+    token = "abcdefghijklmnopqrstuvwxyz1234567890"
+
+    result = analyze_security_headers(
+        target_url="https://example.com/",
+        status_code=200,
+        headers={
+            "X-Access-Token": token,
+        },
+    )
+
+    assert len(result.sensitive_headers) == 1
+    finding = result.sensitive_headers[0]
+
+    assert "token_like_value" in finding.reasons
+    assert "credential_or_session_header" in finding.reasons
+    assert token not in finding.redacted_value
+    assert finding.redacted_value == "[REDACTED]"
