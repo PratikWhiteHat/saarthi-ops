@@ -50,6 +50,7 @@ class EvidenceType(StrEnum):
     DIRECT_CHECK_RESULT = "direct_check_result"
     BLIND_VALIDATION_RESULT = "blind_validation_result"
     OAST_OBSERVATION = "oast_observation"
+    CONFIRMATION_RESULT = "confirmation_result"
     TLS_RESULT = "tls_result"
     TOOL_OUTPUT = "tool_output"
     SCREENSHOT = "screenshot"
