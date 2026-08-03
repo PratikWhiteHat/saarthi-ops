@@ -314,3 +314,57 @@ def test_phase_rows_marks_4c_done_and_4d_next() -> None:
 
     assert row_map["4C"][3] == "DONE"
     assert row_map["4D"][3] == "NEXT"
+
+
+def test_completed_confirmation_result_maps_to_phase_4d() -> None:
+    assert (
+        infer_phase(
+            "completed",
+            {"confirmation_result"},
+        )
+        == "4D — CONFIRMATION ENGINE"
+    )
+
+
+def test_running_confirmation_result_maps_to_phase_4d() -> None:
+    assert (
+        infer_phase(
+            "running",
+            {"confirmation_result"},
+        )
+        == "4D — CONFIRMATION ENGINE"
+    )
+
+
+def test_confirmation_result_maps_to_short_phase_4d() -> None:
+    assert (
+        infer_phase_short(
+            "completed",
+            {"confirmation_result"},
+        )
+        == "4D"
+    )
+
+
+def test_confirmation_result_takes_precedence_over_oast() -> None:
+    assert (
+        infer_phase(
+            "completed",
+            {
+                "oast_observation",
+                "confirmation_result",
+            },
+        )
+        == "4D — CONFIRMATION ENGINE"
+    )
+
+
+def test_phase_rows_marks_4d_done() -> None:
+    from saarthi_ai.tui.app import phase_rows
+
+    rows = phase_rows("4D — CONFIRMATION ENGINE")
+    row_map = {row[1]: row for row in rows}
+
+    assert row_map["4C"][3] == "DONE"
+    assert row_map["4D"][3] == "DONE"
+    assert not any(row[3] == "NEXT" for row in rows)

@@ -408,6 +408,8 @@ def infer_phase(
     normalized_evidence = {evidence_type.strip().lower() for evidence_type in evidence_types}
 
     if normalized == "completed":
+        if "confirmation_result" in normalized_evidence:
+            return "4D — CONFIRMATION ENGINE"
         if "oast_observation" in normalized_evidence:
             return "4C — OAST MANAGER"
         if "blind_validation_result" in normalized_evidence:
@@ -429,6 +431,8 @@ def infer_phase(
         return "3B — SUBDOMAIN ENUMERATION"
 
     if normalized in {"running", "analyzing"}:
+        if "confirmation_result" in normalized_evidence:
+            return "4D — CONFIRMATION ENGINE"
         if "oast_observation" in normalized_evidence:
             return "4C — OAST MANAGER"
         if "blind_validation_result" in normalized_evidence:
@@ -464,6 +468,8 @@ def infer_phase_short(
 
     phase = infer_phase(state, evidence_types)
 
+    if phase.startswith("4D"):
+        return "4D"
     if phase.startswith("4C"):
         return "4C"
     if phase.startswith("4B"):
