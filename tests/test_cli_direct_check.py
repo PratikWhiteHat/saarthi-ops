@@ -78,6 +78,7 @@ def test_direct_check_uses_project_evidence_directory(
                     status_code=200,
                     present_headers=("content-security-policy",),
                     missing_headers=("strict-transport-security",),
+                    sensitive_headers=(),
                     error=None,
                 ),
             ),
@@ -134,3 +135,98 @@ def test_direct_check_uses_project_evidence_directory(
     assert "Missing security headers: 1" in result.stdout
     assert "strict-transport-security" in result.stdout
     assert "Evidence SHA-256" in result.stdout
+
+
+def test_cors_check_uses_active_testing_and_three_requests(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    import saarthi_ai.cli as cli_module
+
+    captured: dict[str, object] = {}
+
+    def fake_workflow(
+        database,
+        request,
+        *,
+        actor,
+        evidence_root,
+    ):
+        captured["request"] = request
+
+        return SimpleNamespace(
+            execution=SimpleNamespace(
+                state=SimpleNamespace(value="completed"),
+            ),
+            check=SimpleNamespace(
+                check_id=request.check_id,
+                target_url=request.target_url,
+                policy=SimpleNamespace(
+                    decision=SimpleNamespace(value="allow"),
+                ),
+                executed=True,
+                result=SimpleNamespace(
+                    probes=(
+                        SimpleNamespace(
+                            probe_name="arbitrary-origin",
+                            request_method="GET",
+                            status_code=200,
+                            allow_origin="https://saarthi.invalid",
+                            allow_credentials=True,
+                        ),
+                    ),
+                    findings=(
+                        SimpleNamespace(
+                            severity="high",
+                            title="Arbitrary Origin Reflected",
+                            evidence="Origin was reflected.",
+                        ),
+                    ),
+                    error=None,
+                ),
+            ),
+            evidence=SimpleNamespace(
+                evidence_id="evidence-test",
+                path=str(evidence_root / "evidence-test.json"),
+                sha256="a" * 64,
+            ),
+        )
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        cli_module,
+        "get_database",
+        lambda: object(),
+    )
+    monkeypatch.setattr(
+        cli_module,
+        "run_tracked_direct_check",
+        fake_workflow,
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "check",
+            "direct",
+            "--execution",
+            "execution-test",
+            "--url",
+            "https://example.com/",
+            "--check",
+            "cors-configuration",
+            "--approved",
+        ],
+    )
+
+    assert result.exit_code == 0
+
+    request = captured["request"]
+
+    assert request.active_testing is True
+    assert request.requested_requests == 3
+    assert request.requested_method == "GET"
+
+    assert "CORS probes executed: 1" in result.stdout
+    assert "CORS findings: 1" in result.stdout
+    assert "Arbitrary Origin Reflected" in result.stdout

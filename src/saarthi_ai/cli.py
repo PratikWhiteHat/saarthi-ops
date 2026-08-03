@@ -1223,15 +1223,37 @@ def check_direct(
 
     database = get_database()
 
+    check_execution_settings = {
+        "security-headers": {
+            "active_testing": False,
+            "requested_method": "GET",
+            "requested_requests": 1,
+        },
+        "cors-configuration": {
+            "active_testing": True,
+            "requested_method": "GET",
+            "requested_requests": 3,
+        },
+    }
+
+    settings = check_execution_settings.get(
+        check_id,
+        {
+            "active_testing": True,
+            "requested_method": "GET",
+            "requested_requests": 1,
+        },
+    )
+
     request = DirectCheckRequest(
         execution_id=execution_id,
         target_url=target_url,
         check_id=check_id,
         authorized=True,
-        active_testing=False,
+        active_testing=settings["active_testing"],
         explicitly_approved=True,
-        requested_method="GET",
-        requested_requests=1,
+        requested_method=settings["requested_method"],
+        requested_requests=settings["requested_requests"],
     )
 
     console.print("[bold]Starting policy-controlled Phase 4A direct check...[/bold]")
@@ -1264,7 +1286,7 @@ def check_direct(
 
     check_result = result.check.result
 
-    if check_result is not None:
+    if check_result is not None and check_id == "security-headers":
         console.print(f"HTTP status: {check_result.status_code}")
         console.print(
             "Present security headers: "
@@ -1278,22 +1300,38 @@ def check_direct(
         for header in check_result.missing_headers:
             console.print(f"- Missing: {header}")
 
-        sensitive_headers = getattr(
-            check_result,
-            "sensitive_headers",
-            (),
-        )
-
         console.print(
             "Sensitive response headers: "
-            f"{len(sensitive_headers)}"
+            f"{len(check_result.sensitive_headers)}"
         )
 
-        for finding in sensitive_headers:
+        for finding in check_result.sensitive_headers:
             reasons = ", ".join(finding.reasons)
             console.print(
                 f"- Sensitive: {finding.header_name} = "
                 f"{finding.redacted_value} [{reasons}]"
+            )
+
+        if check_result.error:
+            console.print(f"Checker error: {check_result.error}")
+
+    if check_result is not None and check_id == "cors-configuration":
+        console.print(f"CORS probes executed: {len(check_result.probes)}")
+        console.print(f"CORS findings: {len(check_result.findings)}")
+
+        for probe in check_result.probes:
+            console.print(
+                f"- Probe: {probe.probe_name} "
+                f"[{probe.request_method}] "
+                f"status={probe.status_code} "
+                f"allow-origin={probe.allow_origin or '-'} "
+                f"credentials={probe.allow_credentials}"
+            )
+
+        for finding in check_result.findings:
+            console.print(
+                f"- [{finding.severity.upper()}] "
+                f"{finding.title}: {finding.evidence}"
             )
 
         if check_result.error:
