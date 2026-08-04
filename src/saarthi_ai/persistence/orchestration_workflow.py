@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from urllib.parse import urlparse
 from uuid import uuid4
@@ -14,6 +15,7 @@ from saarthi_ai.orchestration.models import (
     IntelligencePipelineResult,
     OrchestrationContext,
     OrchestrationPhase,
+    OrchestrationPhaseOutcome,
     OrchestrationPhaseResult,
     OrchestrationStatus,
     ReconPipelineResult,
@@ -65,6 +67,46 @@ def normalize_target_domain(target_url: str) -> str:
         )
 
     return hostname
+
+
+def count_crawl_javascript_assets(
+    evidence_path: Path,
+) -> int:
+    """Count JavaScript assets in validated Phase 3D evidence."""
+
+    if not evidence_path.is_file():
+        raise OrchestrationWorkflowError(
+            "Phase 3D crawl evidence file does not exist: "
+            f"{evidence_path}"
+        )
+
+    try:
+        payload = json.loads(
+            evidence_path.read_text(encoding="utf-8")
+        )
+    except (OSError, json.JSONDecodeError) as exc:
+        raise OrchestrationWorkflowError(
+            f"Unable to read Phase 3D crawl evidence: {exc}"
+        ) from exc
+
+    if not isinstance(payload, dict):
+        raise OrchestrationWorkflowError(
+            "Phase 3D crawl evidence must contain a JSON object."
+        )
+
+    records = payload.get("urls")
+
+    if not isinstance(records, list):
+        raise OrchestrationWorkflowError(
+            "Phase 3D crawl evidence does not contain a urls list."
+        )
+
+    return sum(
+        1
+        for record in records
+        if isinstance(record, dict)
+        and record.get("is_javascript") is True
+    )
 
 
 def create_orchestration(
@@ -422,6 +464,34 @@ def run_intelligence_pipeline(
     )
 
     try:
+        crawl_evidence_path = Path(
+            discovery.crawl.evidence_path or ""
+        )
+        javascript_asset_count = count_crawl_javascript_assets(
+            crawl_evidence_path
+        )
+
+        if javascript_asset_count == 0:
+            return IntelligencePipelineResult(
+                context=discovery.context,
+                dns=discovery.dns,
+                subdomains=discovery.subdomains,
+                http_intelligence=discovery.http_intelligence,
+                crawl=discovery.crawl,
+                javascript=OrchestrationPhaseResult(
+                    phase=OrchestrationPhase.JAVASCRIPT,
+                    outcome=OrchestrationPhaseOutcome.SKIPPED,
+                    required=False,
+                    reason=(
+                        "Phase 3E skipped because Phase 3D "
+                        "discovered no JavaScript assets."
+                    ),
+                    metrics={
+                        "input_javascript_count": 0,
+                    },
+                ),
+            )
+
         javascript_child = create_phase_execution(
             database,
             discovery.context,
@@ -434,7 +504,7 @@ def run_intelligence_pipeline(
         javascript_result = run_tracked_javascript_intelligence(
             database,
             javascript_child.execution_id,
-            Path(discovery.crawl.evidence_path),
+            crawl_evidence_path,
             actor=actor,
             evidence_root=evidence_root / "javascript-intelligence",
         )
@@ -447,9 +517,15 @@ def run_intelligence_pipeline(
             crawl=discovery.crawl,
             javascript=OrchestrationPhaseResult(
                 phase=OrchestrationPhase.JAVASCRIPT,
+                required=False,
                 execution_id=javascript_child.execution_id,
                 evidence_id=javascript_result.evidence.evidence_id,
                 evidence_path=javascript_result.evidence.path,
+                metrics={
+                    "input_javascript_count": (
+                        javascript_asset_count
+                    ),
+                },
             ),
         )
 
@@ -504,7 +580,10 @@ def run_assessment_pipeline(
             phase=OrchestrationPhase.SECURITY_HEADERS,
             phase_name="Security Headers",
             active_testing_allowed=False,
-            previous_execution_id=intelligence.javascript.execution_id,
+            previous_execution_id=(
+                intelligence.javascript.execution_id
+                or intelligence.crawl.execution_id
+            ),
         )
 
         security_headers_result = run_tracked_direct_check(

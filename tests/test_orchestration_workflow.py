@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -764,6 +765,22 @@ def test_intelligence_pipeline_adds_javascript_child(
         },
     )()
 
+    crawl_evidence_path = tmp_path / "crawl.json"
+    crawl_evidence_path.write_text(
+        json.dumps(
+            {
+                "domain": "example.com",
+                "urls": [
+                    {
+                        "url": "https://example.com/app.js",
+                        "is_javascript": True,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
     captured: dict[str, object] = {}
 
     monkeypatch.setattr(
@@ -867,6 +884,22 @@ def test_phase_3e_failure_marks_parent_failed(
             ),
         },
     )()
+
+    crawl_evidence_path = tmp_path / "crawl.json"
+    crawl_evidence_path.write_text(
+        json.dumps(
+            {
+                "domain": "example.com",
+                "urls": [
+                    {
+                        "url": "https://example.com/app.js",
+                        "is_javascript": True,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
 
     monkeypatch.setattr(
         workflow_module,
@@ -1172,3 +1205,455 @@ def test_assessment_pipeline_requires_active_parent(
 
     parent = database.get_execution(context.parent_execution_id)
     assert parent.state is ExecutionState.PLANNED
+
+
+def test_orchestration_phase_result_defaults_to_completed() -> None:
+    result = OrchestrationPhaseResult(
+        phase=OrchestrationPhase.DNS,
+        execution_id="execution-dns",
+        evidence_id="evidence-dns",
+        evidence_path="evidence/dns.json",
+    )
+
+    assert result.completed is True
+    assert result.skipped is False
+    assert result.failed is False
+    assert result.required is True
+    assert result.outcome.value == "completed"
+
+
+def test_orchestration_phase_result_can_represent_skipped_phase() -> None:
+    from saarthi_ai.orchestration.models import (
+        OrchestrationPhaseOutcome,
+    )
+
+    result = OrchestrationPhaseResult(
+        phase=OrchestrationPhase.JAVASCRIPT,
+        outcome=OrchestrationPhaseOutcome.SKIPPED,
+        required=False,
+        reason="No in-scope JavaScript assets were discovered.",
+        metrics={
+            "input_javascript_count": 0,
+        },
+    )
+
+    assert result.completed is False
+    assert result.skipped is True
+    assert result.failed is False
+    assert result.execution_id is None
+    assert result.evidence_id is None
+    assert result.evidence_path is None
+
+
+def test_orchestration_status_supports_partial() -> None:
+    from saarthi_ai.orchestration.models import OrchestrationStatus
+
+    assert OrchestrationStatus.PARTIAL.value == "partial"
+
+
+def test_calculate_orchestration_status_completed() -> None:
+    from saarthi_ai.orchestration.models import (
+        calculate_orchestration_status,
+    )
+
+    results = [
+        OrchestrationPhaseResult(
+            phase=OrchestrationPhase.DNS,
+            execution_id="execution-dns",
+            evidence_id="evidence-dns",
+            evidence_path="dns.json",
+        ),
+        OrchestrationPhaseResult(
+            phase=OrchestrationPhase.CRAWL,
+            required=False,
+            execution_id="execution-crawl",
+            evidence_id="evidence-crawl",
+            evidence_path="crawl.json",
+        ),
+    ]
+
+    assert calculate_orchestration_status(results).value == "completed"
+
+
+def test_calculate_orchestration_status_partial_for_optional_skip() -> None:
+    from saarthi_ai.orchestration.models import (
+        OrchestrationPhaseOutcome,
+        calculate_orchestration_status,
+    )
+
+    results = [
+        OrchestrationPhaseResult(
+            phase=OrchestrationPhase.DNS,
+            execution_id="execution-dns",
+            evidence_id="evidence-dns",
+            evidence_path="dns.json",
+        ),
+        OrchestrationPhaseResult(
+            phase=OrchestrationPhase.JAVASCRIPT,
+            outcome=OrchestrationPhaseOutcome.SKIPPED,
+            required=False,
+            reason="No JavaScript assets discovered.",
+        ),
+    ]
+
+    assert calculate_orchestration_status(results).value == "partial"
+
+
+def test_calculate_orchestration_status_failed_for_required_failure() -> None:
+    from saarthi_ai.orchestration.models import (
+        OrchestrationPhaseOutcome,
+        calculate_orchestration_status,
+    )
+
+    results = [
+        OrchestrationPhaseResult(
+            phase=OrchestrationPhase.HTTP_INTELLIGENCE,
+            outcome=OrchestrationPhaseOutcome.FAILED,
+            required=True,
+            error_summary="HTTP intelligence failed.",
+        ),
+    ]
+
+    assert calculate_orchestration_status(results).value == "failed"
+
+
+def test_calculate_orchestration_status_partial_for_optional_failure() -> None:
+    from saarthi_ai.orchestration.models import (
+        OrchestrationPhaseOutcome,
+        calculate_orchestration_status,
+    )
+
+    results = [
+        OrchestrationPhaseResult(
+            phase=OrchestrationPhase.DNS,
+            execution_id="execution-dns",
+            evidence_id="evidence-dns",
+            evidence_path="dns.json",
+        ),
+        OrchestrationPhaseResult(
+            phase=OrchestrationPhase.CORS,
+            outcome=OrchestrationPhaseOutcome.FAILED,
+            required=False,
+            error_summary="CORS validation failed.",
+        ),
+    ]
+
+    assert calculate_orchestration_status(results).value == "partial"
+
+
+def test_calculate_orchestration_status_fails_without_results() -> None:
+    from saarthi_ai.orchestration.models import (
+        calculate_orchestration_status,
+    )
+
+    assert calculate_orchestration_status([]).value == "failed"
+
+
+def test_assessment_result_exposes_ordered_phase_results() -> None:
+    from saarthi_ai.orchestration.models import (
+        AssessmentPipelineResult,
+        OrchestrationContext,
+    )
+
+    context = OrchestrationContext(
+        orchestration_id="orchestration-test",
+        parent_execution_id="execution-parent",
+        target_url="https://example.com/",
+        target_domain="example.com",
+    )
+
+    def result(
+        phase: OrchestrationPhase,
+        name: str,
+    ) -> OrchestrationPhaseResult:
+        return OrchestrationPhaseResult(
+            phase=phase,
+            execution_id=f"execution-{name}",
+            evidence_id=f"evidence-{name}",
+            evidence_path=f"{name}.json",
+        )
+
+    assessment = AssessmentPipelineResult(
+        context=context,
+        dns=result(OrchestrationPhase.DNS, "dns"),
+        subdomains=result(
+            OrchestrationPhase.SUBDOMAINS,
+            "subdomains",
+        ),
+        http_intelligence=result(
+            OrchestrationPhase.HTTP_INTELLIGENCE,
+            "http",
+        ),
+        crawl=result(OrchestrationPhase.CRAWL, "crawl"),
+        javascript=result(
+            OrchestrationPhase.JAVASCRIPT,
+            "javascript",
+        ),
+        security_headers=result(
+            OrchestrationPhase.SECURITY_HEADERS,
+            "headers",
+        ),
+        cors=result(OrchestrationPhase.CORS, "cors"),
+    )
+
+    assert [
+        phase.phase
+        for phase in assessment.phase_results
+    ] == [
+        OrchestrationPhase.DNS,
+        OrchestrationPhase.SUBDOMAINS,
+        OrchestrationPhase.HTTP_INTELLIGENCE,
+        OrchestrationPhase.CRAWL,
+        OrchestrationPhase.JAVASCRIPT,
+        OrchestrationPhase.SECURITY_HEADERS,
+        OrchestrationPhase.CORS,
+    ]
+
+    assert assessment.calculated_status.value == "completed"
+
+
+def test_assessment_result_calculates_partial_status() -> None:
+    from saarthi_ai.orchestration.models import (
+        AssessmentPipelineResult,
+        OrchestrationContext,
+        OrchestrationPhaseOutcome,
+    )
+
+    context = OrchestrationContext(
+        orchestration_id="orchestration-test",
+        parent_execution_id="execution-parent",
+        target_url="https://example.com/",
+        target_domain="example.com",
+    )
+
+    def completed(
+        phase: OrchestrationPhase,
+        name: str,
+    ) -> OrchestrationPhaseResult:
+        return OrchestrationPhaseResult(
+            phase=phase,
+            execution_id=f"execution-{name}",
+            evidence_id=f"evidence-{name}",
+            evidence_path=f"{name}.json",
+        )
+
+    assessment = AssessmentPipelineResult(
+        context=context,
+        dns=completed(OrchestrationPhase.DNS, "dns"),
+        subdomains=completed(
+            OrchestrationPhase.SUBDOMAINS,
+            "subdomains",
+        ),
+        http_intelligence=completed(
+            OrchestrationPhase.HTTP_INTELLIGENCE,
+            "http",
+        ),
+        crawl=completed(OrchestrationPhase.CRAWL, "crawl"),
+        javascript=OrchestrationPhaseResult(
+            phase=OrchestrationPhase.JAVASCRIPT,
+            outcome=OrchestrationPhaseOutcome.SKIPPED,
+            required=False,
+            reason="No JavaScript assets discovered.",
+        ),
+        security_headers=completed(
+            OrchestrationPhase.SECURITY_HEADERS,
+            "headers",
+        ),
+        cors=completed(OrchestrationPhase.CORS, "cors"),
+    )
+
+    assert assessment.calculated_status.value == "partial"
+
+
+def test_count_crawl_javascript_assets(
+    tmp_path: Path,
+) -> None:
+    import json
+
+    from saarthi_ai.persistence.orchestration_workflow import (
+        count_crawl_javascript_assets,
+    )
+
+    evidence_path = tmp_path / "crawl.json"
+    evidence_path.write_text(
+        json.dumps(
+            {
+                "domain": "example.com",
+                "urls": [
+                    {
+                        "url": "https://example.com/",
+                        "is_javascript": False,
+                    },
+                    {
+                        "url": "https://example.com/app.js",
+                        "is_javascript": True,
+                    },
+                    {
+                        "url": "https://example.com/vendor.js",
+                        "is_javascript": True,
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert count_crawl_javascript_assets(evidence_path) == 2
+
+
+def test_count_crawl_javascript_assets_rejects_invalid_schema(
+    tmp_path: Path,
+) -> None:
+    import json
+
+    evidence_path = tmp_path / "crawl.json"
+    evidence_path.write_text(
+        json.dumps(
+            {
+                "domain": "example.com",
+                "records": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        OrchestrationWorkflowError,
+        match="does not contain a urls list",
+    ):
+        from saarthi_ai.persistence.orchestration_workflow import (
+            count_crawl_javascript_assets,
+        )
+
+        count_crawl_javascript_assets(evidence_path)
+
+
+def test_intelligence_pipeline_skips_javascript_when_none_found(
+    database: SaarthiDatabase,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    import json
+
+    import saarthi_ai.persistence.orchestration_workflow as workflow_module
+
+    context = create_orchestration(
+        database,
+        assessment_name="Assessment Without JavaScript",
+        target_url="https://example.com/",
+        active_testing_allowed=True,
+    )
+
+    parent = database.get_execution(context.parent_execution_id)
+    database.transition_execution(
+        parent.execution_id,
+        ExecutionState.RUNNING,
+        actor="test",
+        reason="Test orchestration started.",
+    )
+
+    running_context = context.model_copy(
+        update={"status": "running"}
+    )
+
+    crawl_evidence_path = tmp_path / "crawl.json"
+    crawl_evidence_path.write_text(
+        json.dumps(
+            {
+                "domain": "example.com",
+                "urls": [
+                    {
+                        "url": "https://example.com/",
+                        "is_javascript": False,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    crawl_execution = create_phase_execution(
+        database,
+        running_context,
+        phase=OrchestrationPhase.CRAWL,
+        phase_name="Crawling and URL Intelligence",
+        active_testing_allowed=True,
+    )
+
+    fake_discovery = type(
+        "DiscoveryResult",
+        (),
+        {
+            "context": running_context,
+            "dns": OrchestrationPhaseResult(
+                phase=OrchestrationPhase.DNS,
+                execution_id="execution-dns",
+                evidence_id="evidence-dns",
+                evidence_path="evidence/dns.json",
+            ),
+            "subdomains": OrchestrationPhaseResult(
+                phase=OrchestrationPhase.SUBDOMAINS,
+                execution_id="execution-subdomains",
+                evidence_id="evidence-subdomains",
+                evidence_path="evidence/subdomains.json",
+            ),
+            "http_intelligence": OrchestrationPhaseResult(
+                phase=OrchestrationPhase.HTTP_INTELLIGENCE,
+                execution_id="execution-http",
+                evidence_id="evidence-http",
+                evidence_path="evidence/http.json",
+            ),
+            "crawl": OrchestrationPhaseResult(
+                phase=OrchestrationPhase.CRAWL,
+                execution_id=crawl_execution.execution_id,
+                evidence_id="evidence-crawl",
+                evidence_path=str(crawl_evidence_path),
+            ),
+        },
+    )()
+
+    monkeypatch.setattr(
+        workflow_module,
+        "run_discovery_pipeline",
+        lambda *args, **kwargs: fake_discovery,
+    )
+
+    javascript_called = False
+
+    def unexpected_javascript_call(*args, **kwargs):
+        nonlocal javascript_called
+        javascript_called = True
+        raise AssertionError(
+            "JavaScript collector must not run without assets."
+        )
+
+    monkeypatch.setattr(
+        workflow_module,
+        "run_tracked_javascript_intelligence",
+        unexpected_javascript_call,
+    )
+
+    result = workflow_module.run_intelligence_pipeline(
+        database,
+        context,
+        evidence_root=tmp_path / "workflow-evidence",
+    )
+
+    assert javascript_called is False
+    assert result.javascript.skipped is True
+    assert result.javascript.required is False
+    assert result.javascript.execution_id is None
+    assert result.javascript.evidence_id is None
+    assert result.javascript.evidence_path is None
+    assert result.javascript.metrics == {
+        "input_javascript_count": 0,
+    }
+
+    children = database.list_executions(limit=100)
+    javascript_children = [
+        child
+        for child in children
+        if child.metadata.get("phase_code") == "3E"
+    ]
+
+    assert javascript_children == []

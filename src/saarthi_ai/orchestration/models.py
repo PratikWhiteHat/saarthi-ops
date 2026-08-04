@@ -13,6 +13,15 @@ class OrchestrationStatus(StrEnum):
     CREATED = "created"
     RUNNING = "running"
     COMPLETED = "completed"
+    PARTIAL = "partial"
+    FAILED = "failed"
+
+
+class OrchestrationPhaseOutcome(StrEnum):
+    """Outcome recorded for one orchestration phase."""
+
+    COMPLETED = "completed"
+    SKIPPED = "skipped"
     FAILED = "failed"
 
 
@@ -41,12 +50,79 @@ class OrchestrationContext(BaseModel):
 
 
 class OrchestrationPhaseResult(BaseModel):
-    """Result identifiers produced by one child phase."""
+    """Structured outcome produced by one orchestration phase."""
 
     phase: OrchestrationPhase
-    execution_id: str
-    evidence_id: str
-    evidence_path: str
+    outcome: OrchestrationPhaseOutcome = (
+        OrchestrationPhaseOutcome.COMPLETED
+    )
+    required: bool = True
+
+    execution_id: str | None = None
+    evidence_id: str | None = None
+    evidence_path: str | None = None
+
+    reason: str | None = Field(
+        default=None,
+        max_length=2_000,
+    )
+    error_summary: str | None = Field(
+        default=None,
+        max_length=2_000,
+    )
+    metrics: dict[str, int | float | str | bool | None] = Field(
+        default_factory=dict,
+    )
+
+    @property
+    def completed(self) -> bool:
+        """Return whether this phase completed successfully."""
+
+        return self.outcome is OrchestrationPhaseOutcome.COMPLETED
+
+    @property
+    def skipped(self) -> bool:
+        """Return whether this phase was intentionally skipped."""
+
+        return self.outcome is OrchestrationPhaseOutcome.SKIPPED
+
+    @property
+    def failed(self) -> bool:
+        """Return whether this phase failed."""
+
+        return self.outcome is OrchestrationPhaseOutcome.FAILED
+
+
+def calculate_orchestration_status(
+    phase_results: list[OrchestrationPhaseResult],
+) -> OrchestrationStatus:
+    """Calculate the overall workflow status from child phase outcomes."""
+
+    if not phase_results:
+        return OrchestrationStatus.FAILED
+
+    required_failed = any(
+        result.required and result.failed
+        for result in phase_results
+    )
+
+    if required_failed:
+        return OrchestrationStatus.FAILED
+
+    optional_incomplete = any(
+        not result.required
+        and result.outcome
+        in {
+            OrchestrationPhaseOutcome.SKIPPED,
+            OrchestrationPhaseOutcome.FAILED,
+        }
+        for result in phase_results
+    )
+
+    if optional_incomplete:
+        return OrchestrationStatus.PARTIAL
+
+    return OrchestrationStatus.COMPLETED
 
 
 class InitialReconResult(BaseModel):
@@ -88,7 +164,7 @@ class IntelligencePipelineResult(BaseModel):
 
 
 class AssessmentPipelineResult(BaseModel):
-    """Results from the completed automated Phase 3A through 4A workflow."""
+    """Results from the automated Phase 3A through 4A workflow."""
 
     context: OrchestrationContext
     dns: OrchestrationPhaseResult
@@ -98,3 +174,23 @@ class AssessmentPipelineResult(BaseModel):
     javascript: OrchestrationPhaseResult
     security_headers: OrchestrationPhaseResult
     cors: OrchestrationPhaseResult
+
+    @property
+    def phase_results(self) -> list[OrchestrationPhaseResult]:
+        """Return all phase outcomes in execution order."""
+
+        return [
+            self.dns,
+            self.subdomains,
+            self.http_intelligence,
+            self.crawl,
+            self.javascript,
+            self.security_headers,
+            self.cors,
+        ]
+
+    @property
+    def calculated_status(self) -> OrchestrationStatus:
+        """Calculate the overall status from the phase outcomes."""
+
+        return calculate_orchestration_status(self.phase_results)
