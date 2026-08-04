@@ -886,6 +886,8 @@ def infer_phase(
         return "ACTIVE WORKFLOW"
 
     if normalized in {"planned", "created"}:
+        if "controlled_validation_plan" in normalized_evidence:
+            return "6B — CONTROLLED VALIDATION PLAN"
         return "PLANNING"
 
     if normalized == "failed":
@@ -902,6 +904,8 @@ def infer_phase_short(
 
     phase = infer_phase(state, evidence_types)
 
+    if phase.startswith("6B"):
+        return "6B"
     if phase.startswith("4D"):
         return "4D"
     if phase.startswith("4C"):

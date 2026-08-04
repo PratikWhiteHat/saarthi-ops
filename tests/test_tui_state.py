@@ -618,3 +618,38 @@ def test_load_orchestration_outcome_handles_missing_audit_data() -> None:
         set(),
         "execution-parent",
     ) == ("unknown", {}, None)
+
+
+def test_planned_controlled_validation_evidence_maps_to_phase_6b() -> None:
+    assert (
+        infer_phase(
+            "planned",
+            {"controlled_validation_plan"},
+        )
+        == "6B — CONTROLLED VALIDATION PLAN"
+    )
+
+
+def test_created_controlled_validation_evidence_maps_to_phase_6b() -> None:
+    assert (
+        infer_phase(
+            "created",
+            {"controlled_validation_plan"},
+        )
+        == "6B — CONTROLLED VALIDATION PLAN"
+    )
+
+
+def test_controlled_validation_compact_phase_is_6b() -> None:
+    assert (
+        infer_phase_short(
+            "planned",
+            {"controlled_validation_plan"},
+        )
+        == "6B"
+    )
+
+
+def test_planned_execution_without_phase_6_evidence_remains_generic() -> None:
+    assert infer_phase("planned") == "PLANNING"
+    assert infer_phase_short("planned") == "PLAN"
