@@ -1,0 +1,169 @@
+"""Bounded HTTP observation adapter for Phase 6F controlled validation."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from hashlib import sha256
+
+import httpx
+
+from saarthi_ai.controlled_validation.executor import (
+    ControlledValidationExecutionDecision,
+    ControlledValidationExecutionPolicy,
+    ControlledValidationExecutionRequest,
+    evaluate_controlled_validation_execution,
+)
+from saarthi_ai.execution.http_collector import (
+    read_limited_body,
+    sanitize_headers,
+)
+
+DEFAULT_USER_AGENT = "Saarthi-AI/0.6 controlled-validation"
+
+
+@dataclass(frozen=True)
+class ControlledValidationObservationResult:
+    """Structured result from one bounded HTTP observation."""
+
+    policy: ControlledValidationExecutionPolicy
+    request_attempted: bool
+    response_received: bool
+    method: str
+    target_url: str
+    final_url: str | None = None
+    status_code: int = 0
+    http_version: str | None = None
+    content_type: str | None = None
+    response_headers: dict[str, str] | None = None
+    body_bytes_captured: int = 0
+    body_truncated: bool = False
+    body_sha256: str | None = None
+    error_type: str | None = None
+    error: str | None = None
+
+    @property
+    def succeeded(self) -> bool:
+        """Return whether the bounded request received a response."""
+
+        return (
+            self.policy.decision
+            is ControlledValidationExecutionDecision.ALLOW
+            and self.request_attempted
+            and self.response_received
+            and self.error is None
+        )
+
+
+def _denied_result(
+    request: ControlledValidationExecutionRequest,
+    policy: ControlledValidationExecutionPolicy,
+) -> ControlledValidationObservationResult:
+    return ControlledValidationObservationResult(
+        policy=policy,
+        request_attempted=False,
+        response_received=False,
+        method=policy.method,
+        target_url=request.validation.target_url,
+        error_type="policy_denied",
+        error=policy.reason,
+    )
+
+
+def _error_result(
+    request: ControlledValidationExecutionRequest,
+    policy: ControlledValidationExecutionPolicy,
+    error: httpx.HTTPError,
+) -> ControlledValidationObservationResult:
+    return ControlledValidationObservationResult(
+        policy=policy,
+        request_attempted=True,
+        response_received=False,
+        method=policy.method,
+        target_url=request.validation.target_url,
+        error_type=type(error).__name__,
+        error=str(error),
+    )
+
+
+async def execute_bounded_observation(
+    request: ControlledValidationExecutionRequest,
+    *,
+    transport: httpx.AsyncBaseTransport | None = None,
+) -> ControlledValidationObservationResult:
+    """Perform exactly one approved GET or HEAD observation."""
+
+    policy = evaluate_controlled_validation_execution(request)
+
+    if not policy.allowed:
+        return _denied_result(request, policy)
+
+    timeout = httpx.Timeout(
+        timeout=policy.timeout_seconds,
+        connect=policy.timeout_seconds,
+        read=policy.timeout_seconds,
+        write=policy.timeout_seconds,
+        pool=policy.timeout_seconds,
+    )
+    limits = httpx.Limits(
+        max_connections=1,
+        max_keepalive_connections=0,
+    )
+
+    request_headers = {
+        "User-Agent": DEFAULT_USER_AGENT,
+        "Accept": "*/*",
+    }
+    request_headers.update(
+        {
+            name.strip(): value
+            for name, value in request.headers
+        }
+    )
+
+    try:
+        async with httpx.AsyncClient(
+            timeout=timeout,
+            limits=limits,
+            follow_redirects=False,
+            trust_env=False,
+            transport=transport,
+            headers=request_headers,
+        ) as client:
+            async with client.stream(
+                policy.method,
+                request.validation.target_url,
+            ) as response:
+                if policy.method == "HEAD":
+                    body = b""
+                    truncated = False
+                else:
+                    body, truncated = await read_limited_body(
+                        response,
+                        max_body_bytes=policy.max_response_bytes,
+                    )
+
+                return ControlledValidationObservationResult(
+                    policy=policy,
+                    request_attempted=True,
+                    response_received=True,
+                    method=policy.method,
+                    target_url=request.validation.target_url,
+                    final_url=str(response.url),
+                    status_code=response.status_code,
+                    http_version=response.http_version,
+                    content_type=response.headers.get(
+                        "content-type"
+                    ),
+                    response_headers=sanitize_headers(
+                        response.headers
+                    ),
+                    body_bytes_captured=len(body),
+                    body_truncated=truncated,
+                    body_sha256=sha256(body).hexdigest(),
+                )
+    except (
+        httpx.TimeoutException,
+        httpx.NetworkError,
+        httpx.ProtocolError,
+    ) as exc:
+        return _error_result(request, policy, exc)
