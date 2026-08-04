@@ -349,7 +349,7 @@ async def run_tracked_controlled_validation_observation(
     database: SaarthiDatabase,
     request: ControlledValidationExecutionRequest,
     *,
-    transport: httpx.AsyncBaseTransport,
+    transport: httpx.AsyncBaseTransport | None = None,
     actor: str = "controlled-validation-observer",
     evidence_root: Path | None = None,
 ) -> TrackedControlledValidationObservation:

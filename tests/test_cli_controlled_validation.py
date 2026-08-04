@@ -262,3 +262,189 @@ def test_controlled_plan_rejects_request_count_above_bound() -> None:
     )
 
     assert result.exit_code != 0
+
+
+def test_controlled_observe_requires_explicit_approval() -> None:
+    result = runner.invoke(
+        app,
+        [
+            "controlled",
+            "observe",
+            "--execution",
+            "execution-test",
+            "--url",
+            "https://example.com/account",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "Approval required" in result.stdout
+    assert "active network activity" in result.stdout
+
+
+def test_controlled_observe_builds_one_bounded_request(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    import saarthi_ai.cli as cli_module
+
+    captured: dict[str, object] = {}
+
+    async def fake_workflow(
+        database,
+        request,
+        *,
+        transport=None,
+        actor,
+        evidence_root,
+    ):
+        captured["database"] = database
+        captured["request"] = request
+        captured["transport"] = transport
+        captured["actor"] = actor
+        captured["evidence_root"] = evidence_root
+
+        return SimpleNamespace(
+            execution=SimpleNamespace(
+                state=SimpleNamespace(value="completed"),
+            ),
+            observation=SimpleNamespace(
+                policy=SimpleNamespace(
+                    decision=SimpleNamespace(value="allow"),
+                ),
+                method=request.method,
+                request_attempted=True,
+                response_received=True,
+                status_code=200,
+                final_url=request.validation.target_url,
+                body_bytes_captured=18,
+                body_truncated=False,
+                body_sha256="b" * 64,
+            ),
+            evidence=SimpleNamespace(
+                evidence_id="evidence-observation",
+                path=str(evidence_root / "observation.json"),
+                sha256="a" * 64,
+            ),
+        )
+
+    database = object()
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        cli_module,
+        "get_database",
+        lambda: database,
+    )
+    monkeypatch.setattr(
+        cli_module,
+        "run_tracked_controlled_validation_observation",
+        fake_workflow,
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "controlled",
+            "observe",
+            "--execution",
+            "execution-test",
+            "--url",
+            "https://example.com/account",
+            "--action",
+            "response_differential",
+            "--method",
+            "HEAD",
+            "--timeout",
+            "5",
+            "--max-response-bytes",
+            "4096",
+            "--approved",
+        ],
+    )
+
+    assert result.exit_code == 0
+
+    request = captured["request"]
+
+    assert request.validation.execution_id == "execution-test"
+    assert (
+        request.validation.target_url
+        == "https://example.com/account"
+    )
+    assert (
+        request.validation.action
+        is ControlledValidationAction.RESPONSE_DIFFERENTIAL
+    )
+    assert request.validation.authorized is True
+    assert request.validation.active_testing is True
+    assert request.validation.intrusive_testing is False
+    assert request.validation.explicitly_approved is True
+    assert request.validation.reversible is True
+    assert request.validation.requested_requests == 1
+
+    assert request.method == "HEAD"
+    assert request.timeout_seconds == 5.0
+    assert request.max_response_bytes == 4096
+    assert request.follow_redirects is False
+    assert request.headers == ()
+    assert request.body is None
+
+    assert captured["transport"] is None
+    assert captured["actor"] == (
+        "cli-controlled-validation-observer"
+    )
+    assert captured["evidence_root"] == (
+        tmp_path
+        / "evidence"
+        / "controlled-validation-observations"
+    )
+
+    assert "Active network observation approved" in result.stdout
+    assert "Request budget: 1" in result.stdout
+    assert "Redirects: disabled" in result.stdout
+    assert "Controlled-validation observation completed" in result.stdout
+    assert "Execution state: completed" in result.stdout
+    assert "HTTP status: 200" in result.stdout
+    assert "Captured bytes: 18" in result.stdout
+    assert "Evidence SHA-256" in result.stdout
+
+
+def test_controlled_observe_rejects_non_executable_action() -> None:
+    result = runner.invoke(
+        app,
+        [
+            "controlled",
+            "observe",
+            "--execution",
+            "execution-test",
+            "--url",
+            "https://example.com/account",
+            "--action",
+            "authorization_boundary",
+            "--approved",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "Unsupported executable action" in result.stdout
+
+
+def test_controlled_observe_rejects_unsupported_method() -> None:
+    result = runner.invoke(
+        app,
+        [
+            "controlled",
+            "observe",
+            "--execution",
+            "execution-test",
+            "--url",
+            "https://example.com/account",
+            "--method",
+            "POST",
+            "--approved",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "Only GET and HEAD are allowed" in result.stdout

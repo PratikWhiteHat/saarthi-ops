@@ -26,6 +26,9 @@ from saarthi_ai.blind_validation.models import (
 from saarthi_ai.checks.models import DirectCheckRequest
 from saarthi_ai.config import get_settings
 from saarthi_ai.confirmation.models import ConfirmationCandidate
+from saarthi_ai.controlled_validation.executor import (
+    ControlledValidationExecutionRequest,
+)
 from saarthi_ai.controlled_validation.models import (
     ControlledValidationAction,
     ControlledValidationRequest,
@@ -43,6 +46,10 @@ from saarthi_ai.persistence.blind_validation_workflow import (
 from saarthi_ai.persistence.confirmation_workflow import (
     ConfirmationWorkflowError,
     run_confirmation_workflow,
+)
+from saarthi_ai.persistence.controlled_validation_observation_workflow import (
+    ControlledValidationObservationWorkflowError,
+    run_tracked_controlled_validation_observation,
 )
 from saarthi_ai.persistence.controlled_validation_workflow import (
     ControlledValidationWorkflowError,
@@ -1750,6 +1757,207 @@ def controlled_plan(
         "[dim]This command persisted a validation plan only. "
         "No request, payload, or subprocess was executed.[/dim]"
     )
+
+
+@controlled_app.command("observe")
+def controlled_observe(
+    execution_id: Annotated[
+        str,
+        typer.Option(
+            "--execution",
+            help="Existing execution with a matching Phase 6B plan.",
+        ),
+    ],
+    target_url: Annotated[
+        str,
+        typer.Option(
+            "--url",
+            help="Approved in-scope HTTP or HTTPS target URL.",
+        ),
+    ],
+    action: Annotated[
+        ControlledValidationAction,
+        typer.Option(
+            "--action",
+            help=(
+                "Low-risk executable action: response_differential "
+                "or input_handling_observation."
+            ),
+        ),
+    ] = ControlledValidationAction.RESPONSE_DIFFERENTIAL,
+    method: Annotated[
+        str,
+        typer.Option(
+            "--method",
+            help="Bounded HTTP method: GET or HEAD.",
+        ),
+    ] = "GET",
+    timeout_seconds: Annotated[
+        float,
+        typer.Option(
+            "--timeout",
+            min=0.1,
+            max=10.0,
+            help="Request timeout in seconds, capped at 10.",
+        ),
+    ] = 8.0,
+    max_response_bytes: Annotated[
+        int,
+        typer.Option(
+            "--max-response-bytes",
+            min=1,
+            max=131_072,
+            help="Maximum response-body bytes captured for hashing.",
+        ),
+    ] = 65_536,
+    approved: Annotated[
+        bool,
+        typer.Option(
+            "--approved",
+            help=(
+                "Explicitly approve one active bounded HTTP observation."
+            ),
+        ),
+    ] = False,
+) -> None:
+    """Execute one approved Phase 6F GET or HEAD observation."""
+
+    if not approved:
+        console.print(
+            "[bold yellow]Approval required.[/bold yellow] "
+            "This command performs active network activity. Review the "
+            "execution, target, action, and method, then rerun with "
+            "--approved."
+        )
+        raise typer.Exit(code=1)
+
+    normalized_method = method.strip().upper()
+
+    if normalized_method not in {"GET", "HEAD"}:
+        console.print(
+            "[bold red]Invalid method.[/bold red] "
+            "Only GET and HEAD are allowed."
+        )
+        raise typer.Exit(code=1)
+
+    if action not in {
+        ControlledValidationAction.RESPONSE_DIFFERENTIAL,
+        ControlledValidationAction.INPUT_HANDLING_OBSERVATION,
+    }:
+        console.print(
+            "[bold red]Unsupported executable action.[/bold red] "
+            "Only response_differential and "
+            "input_handling_observation are allowed."
+        )
+        raise typer.Exit(code=1)
+
+    validation = ControlledValidationRequest(
+        execution_id=execution_id,
+        target_url=target_url,
+        action=action,
+        authorized=True,
+        active_testing=True,
+        intrusive_testing=False,
+        explicitly_approved=True,
+        reversible=True,
+        requested_requests=1,
+    )
+
+    request = ControlledValidationExecutionRequest(
+        validation=validation,
+        method=normalized_method,
+        timeout_seconds=timeout_seconds,
+        max_response_bytes=max_response_bytes,
+        follow_redirects=False,
+        headers=(),
+        body=None,
+    )
+
+    database = get_database()
+
+    console.print(
+        "[bold yellow]Active network observation approved.[/bold yellow]"
+    )
+    console.print(f"Execution: {execution_id}")
+    console.print(f"Target: {target_url}")
+    console.print(f"Action: {action.value}")
+    console.print(f"Method: {normalized_method}")
+    console.print("Request budget: 1")
+    console.print("Redirects: disabled")
+    console.print(f"Timeout: {timeout_seconds:g} seconds")
+    console.print(
+        f"Maximum response capture: {max_response_bytes} bytes"
+    )
+
+    async def run() -> None:
+        try:
+            result = await run_tracked_controlled_validation_observation(
+                database,
+                request,
+                actor="cli-controlled-validation-observer",
+                evidence_root=(
+                    Path.cwd()
+                    / "evidence"
+                    / "controlled-validation-observations"
+                ),
+            )
+        except (
+            ExecutionNotFoundError,
+            InvalidStateTransitionError,
+            ControlledValidationObservationWorkflowError,
+            ValueError,
+        ) as exc:
+            console.print(
+                "[bold red]Controlled-validation observation failed:"
+                f"[/bold red] {exc}"
+            )
+            raise typer.Exit(code=1) from exc
+
+        observation = result.observation
+
+        console.print()
+        console.print(
+            "[bold green]Controlled-validation observation "
+            "completed.[/bold green]"
+        )
+        console.print(
+            f"Execution state: {result.execution.state.value}"
+        )
+        console.print(
+            f"Policy decision: {observation.policy.decision.value}"
+        )
+        console.print(f"Method: {observation.method}")
+        console.print(
+            f"Request attempted: "
+            f"{str(observation.request_attempted).lower()}"
+        )
+        console.print(
+            f"Response received: "
+            f"{str(observation.response_received).lower()}"
+        )
+        console.print(f"HTTP status: {observation.status_code}")
+        console.print(f"Final URL: {observation.final_url or '-'}")
+        console.print(
+            f"Captured bytes: {observation.body_bytes_captured}"
+        )
+        console.print(
+            f"Body truncated: "
+            f"{str(observation.body_truncated).lower()}"
+        )
+        console.print(
+            f"Body SHA-256: {observation.body_sha256 or '-'}"
+        )
+        console.print(f"Evidence ID: {result.evidence.evidence_id}")
+        console.print(f"Evidence path: {result.evidence.path}")
+        console.print(
+            f"Evidence SHA-256: {result.evidence.sha256}"
+        )
+        console.print(
+            "[dim]No request body, credential header, redirect, "
+            "subprocess, batch target, or automatic retry was used.[/dim]"
+        )
+
+    asyncio.run(run())
 
 
 @workflow_app.command("run")
