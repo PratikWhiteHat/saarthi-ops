@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -31,6 +31,9 @@ class DashboardSnapshot:
     recent_executions: list[dict[str, str]]
     recent_activity: list[str]
     completed_phases: frozenset[str] = frozenset()
+    orchestration_status: str = "unknown"
+    outcome_counts: dict[str, int] = field(default_factory=dict)
+    optional_failure_summary: str | None = None
 
 
 class ReadOnlySaarthiRepository:
@@ -216,6 +219,16 @@ class ReadOnlySaarthiRepository:
         recent_executions[0]["evidence"] = str(evidence_count)
         recent_executions[0]["findings"] = str(finding_count)
 
+        (
+            orchestration_status,
+            outcome_counts,
+            optional_failure_summary,
+        ) = self._load_orchestration_outcome(
+            connection,
+            tables,
+            execution_id,
+        )
+
         return DashboardSnapshot(
             project_name=value(
                 latest,
@@ -241,6 +254,9 @@ class ReadOnlySaarthiRepository:
                 orchestration_execution_ids,
             ),
             completed_phases=completed_phases,
+            orchestration_status=orchestration_status,
+            outcome_counts=outcome_counts,
+            optional_failure_summary=optional_failure_summary,
         )
 
     def _evidence_types(
@@ -311,6 +327,136 @@ class ReadOnlySaarthiRepository:
                 (execution_id,),
             ).fetchone()
         return int(row["total"])
+
+    def _load_orchestration_outcome(
+        self,
+        connection: sqlite3.Connection,
+        tables: set[str],
+        parent_execution_id: str,
+    ) -> tuple[str, dict[str, int], str | None]:
+        """Load the latest calculated orchestration outcome."""
+
+        table = next(
+            (
+                name
+                for name in (
+                    "audit_events",
+                    "audit_log",
+                    "events",
+                )
+                if name in tables
+            ),
+            None,
+        )
+
+        if table is None:
+            return "unknown", {}, None
+
+        columns = self._columns(connection, table)
+        execution_column = self._pick(
+            columns,
+            "execution_id",
+            "execution",
+        )
+        details_column = self._pick(
+            columns,
+            "details_json",
+            "details",
+            "metadata_json",
+        )
+        timestamp_column = self._pick(
+            columns,
+            "created_at",
+            "timestamp",
+            "occurred_at",
+        )
+
+        if execution_column is None or details_column is None:
+            return "unknown", {}, None
+
+        order_sql = (
+            f'ORDER BY "{timestamp_column}" DESC'
+            if timestamp_column
+            else ""
+        )
+
+        rows = connection.execute(
+            f"""
+            SELECT "{details_column}"
+            FROM "{table}"
+            WHERE "{execution_column}" = ?
+            {order_sql}
+            LIMIT 200
+            """,
+            (parent_execution_id,),
+        ).fetchall()
+
+        for row in rows:
+            try:
+                details = json.loads(
+                    str(row[details_column])
+                )
+            except (
+                json.JSONDecodeError,
+                TypeError,
+                ValueError,
+            ):
+                continue
+
+            if not isinstance(details, dict):
+                continue
+
+            raw_status = details.get("orchestration_status")
+
+            if not isinstance(raw_status, str):
+                continue
+
+            raw_counts = details.get("outcome_counts")
+            outcome_counts: dict[str, int] = {}
+
+            if isinstance(raw_counts, dict):
+                outcome_counts = {
+                    str(key): int(value)
+                    for key, value in raw_counts.items()
+                    if isinstance(value, int)
+                    and not isinstance(value, bool)
+                }
+
+            optional_failure_summary = None
+            phase_outcomes = details.get("phase_outcomes")
+
+            if isinstance(phase_outcomes, list):
+                for phase in phase_outcomes:
+                    if not isinstance(phase, dict):
+                        continue
+
+                    if phase.get("required") is not False:
+                        continue
+
+                    if phase.get("outcome") != "failed":
+                        continue
+
+                    phase_name = str(
+                        phase.get("phase") or "optional phase"
+                    )
+                    error = (
+                        phase.get("error_summary")
+                        or phase.get("reason")
+                        or "No failure summary recorded."
+                    )
+
+                    optional_failure_summary = (
+                        f"{phase_name}: {error}"
+                    )
+                    break
+
+            return (
+                raw_status.lower(),
+                outcome_counts,
+                optional_failure_summary,
+            )
+
+        return "unknown", {}, None
 
     def _load_orchestration_activity(
         self,
@@ -1071,20 +1217,63 @@ class SaarthiDashboard(App[None]):
             self._render_snapshot(snapshot)
 
     def _render_snapshot(self, snapshot: DashboardSnapshot) -> None:
-        self.query_one("#scope-content", Static).update(
-            "\n".join(
+        status_value = snapshot.orchestration_status.upper()
+
+        if snapshot.orchestration_status == "partial":
+            status_display = (
+                "[yellow]PARTIAL — REVIEW REQUIRED[/yellow]"
+            )
+        elif snapshot.orchestration_status == "completed":
+            status_display = "[green]COMPLETED[/green]"
+        elif snapshot.orchestration_status == "failed":
+            status_display = "[red]FAILED[/red]"
+        else:
+            status_display = status_value
+
+        scope_lines = [
+            f"Project Name       : {snapshot.project_name}",
+            f"Execution ID       : {snapshot.execution_id}",
+            f"Target Scope       : {snapshot.target_scope}",
+            "Authorization      : [green]✓ CONFIRMED[/green]",
+            "Rules of Engagement: [green]✓ ACCEPTED[/green]",
+            "Data Handling      : LOCAL ONLY",
+            f"Mode               : {snapshot.mode}",
+            f"Current Phase      : {snapshot.current_phase}",
+            (
+                "Evidence / Findings: "
+                f"{snapshot.evidence_count} / "
+                f"{snapshot.finding_count}"
+            ),
+        ]
+
+        if snapshot.orchestration_status != "unknown":
+            counts = snapshot.outcome_counts
+
+            scope_lines.extend(
                 [
-                    f"Project Name       : {snapshot.project_name}",
-                    f"Execution ID       : {snapshot.execution_id}",
-                    f"Target Scope       : {snapshot.target_scope}",
-                    "Authorization      : [green]✓ CONFIRMED[/green]",
-                    "Rules of Engagement: [green]✓ ACCEPTED[/green]",
-                    "Data Handling      : LOCAL ONLY",
-                    f"Mode               : {snapshot.mode}",
-                    f"Current Phase      : {snapshot.current_phase}",
-                    f"Evidence / Findings: {snapshot.evidence_count} / {snapshot.finding_count}",
+                    f"Orchestration      : {status_display}",
+                    (
+                        "Phase Outcomes     : "
+                        f"{counts.get('completed', 0)} completed · "
+                        f"{counts.get('skipped', 0)} skipped · "
+                        f"{counts.get('failed', 0)} failed"
+                    ),
+                    (
+                        "Required / Optional: "
+                        f"{counts.get('required', 0)} / "
+                        f"{counts.get('optional', 0)}"
+                    ),
                 ]
             )
+
+        if snapshot.optional_failure_summary:
+            scope_lines.append(
+                "[yellow]Optional Failure   : "
+                f"{snapshot.optional_failure_summary}[/yellow]"
+            )
+
+        self.query_one("#scope-content", Static).update(
+            "\n".join(scope_lines)
         )
         self.query_one("#phase-progress", ProgressBar).update(progress=snapshot.phase_progress)
 

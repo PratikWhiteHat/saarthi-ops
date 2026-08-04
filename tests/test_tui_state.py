@@ -523,3 +523,98 @@ def test_select_dashboard_execution_rows_uses_parent_and_children() -> None:
             "4A-cors",
         }
     )
+
+
+def test_load_orchestration_outcome_reads_partial_summary() -> None:
+    import json
+    import sqlite3
+
+    from saarthi_ai.tui.app import ReadOnlySaarthiRepository
+
+    connection = sqlite3.connect(":memory:")
+    connection.row_factory = sqlite3.Row
+    connection.execute(
+        """
+        CREATE TABLE audit_events (
+            execution_id TEXT,
+            details_json TEXT,
+            created_at TEXT
+        )
+        """
+    )
+    connection.execute(
+        """
+        INSERT INTO audit_events (
+            execution_id,
+            details_json,
+            created_at
+        )
+        VALUES (?, ?, ?)
+        """,
+        (
+            "execution-parent",
+            json.dumps(
+                {
+                    "orchestration_status": "partial",
+                    "outcome_counts": {
+                        "completed": 6,
+                        "skipped": 0,
+                        "failed": 1,
+                        "required": 5,
+                        "optional": 2,
+                    },
+                    "phase_outcomes": [
+                        {
+                            "phase": "4A-cors",
+                            "outcome": "failed",
+                            "required": False,
+                            "reason": None,
+                            "error_summary": (
+                                "simulated bounded CORS failure"
+                            ),
+                        }
+                    ],
+                }
+            ),
+            "2026-08-04T11:00:00+04:00",
+        ),
+    )
+
+    repository = ReadOnlySaarthiRepository()
+
+    status, counts, failure = (
+        repository._load_orchestration_outcome(
+            connection,
+            {"audit_events"},
+            "execution-parent",
+        )
+    )
+
+    assert status == "partial"
+    assert counts == {
+        "completed": 6,
+        "skipped": 0,
+        "failed": 1,
+        "required": 5,
+        "optional": 2,
+    }
+    assert failure == (
+        "4A-cors: simulated bounded CORS failure"
+    )
+
+
+def test_load_orchestration_outcome_handles_missing_audit_data() -> None:
+    import sqlite3
+
+    from saarthi_ai.tui.app import ReadOnlySaarthiRepository
+
+    connection = sqlite3.connect(":memory:")
+    connection.row_factory = sqlite3.Row
+
+    repository = ReadOnlySaarthiRepository()
+
+    assert repository._load_orchestration_outcome(
+        connection,
+        set(),
+        "execution-parent",
+    ) == ("unknown", {}, None)
