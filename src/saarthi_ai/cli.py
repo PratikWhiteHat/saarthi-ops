@@ -1750,24 +1750,37 @@ def workflow_run(
 
     table = Table(title="Assessment Workflow Results")
     table.add_column("Phase")
+    table.add_column("Outcome")
+    table.add_column("Required")
     table.add_column("Execution")
     table.add_column("Evidence")
     table.add_column("Evidence Path")
+    table.add_column("Reason")
 
     for phase in phase_results:
         table.add_row(
             phase.phase.value,
-            phase.execution_id,
-            phase.evidence_id,
-            phase.evidence_path,
+            phase.outcome.value,
+            "yes" if phase.required else "no",
+            phase.execution_id or "-",
+            phase.evidence_id or "-",
+            phase.evidence_path or "-",
+            phase.reason or phase.error_summary or "-",
         )
 
     console.print()
     console.print(table)
     console.print()
-    console.print(
-        "[bold green]Assessment workflow completed.[/bold green]"
-    )
+
+    if result.context.status.value == "partial":
+        console.print(
+            "[bold yellow]Assessment workflow completed "
+            "with optional phases skipped or incomplete.[/bold yellow]"
+        )
+    else:
+        console.print(
+            "[bold green]Assessment workflow completed.[/bold green]"
+        )
     console.print(
         f"Parent execution: {result.context.parent_execution_id}"
     )

@@ -120,11 +120,15 @@ def test_workflow_run_forwards_scope_and_prints_results(
     ) -> SimpleNamespace:
         return SimpleNamespace(
             phase=phase,
+            outcome=SimpleNamespace(value="completed"),
+            required=True,
             execution_id=f"execution-{suffix}",
             evidence_id=f"evidence-{suffix}",
             evidence_path=str(
                 tmp_path / "evidence" / f"{suffix}.json"
             ),
+            reason=None,
+            error_summary=None,
         )
 
     workflow_result = SimpleNamespace(

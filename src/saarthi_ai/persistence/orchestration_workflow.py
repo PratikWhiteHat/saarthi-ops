@@ -36,6 +36,7 @@ from saarthi_ai.persistence.javascript_workflow import (
     run_tracked_javascript_intelligence,
 )
 from saarthi_ai.persistence.models import (
+    AuditEventType,
     ExecutionCreate,
     ExecutionRecord,
     ExecutionState,
@@ -639,35 +640,8 @@ def run_assessment_pipeline(
             evidence_root=evidence_root / "cors",
         )
 
-        parent = database.get_execution(
-            intelligence.context.parent_execution_id
-        )
-
-        if parent.state is not ExecutionState.RUNNING:
-            raise OrchestrationWorkflowError(
-                "Parent orchestration must be running before completion."
-            )
-
-        parent = database.transition_execution(
-            parent.execution_id,
-            ExecutionState.ANALYZING,
-            actor=actor,
-            reason="Automated assessment evidence is ready for review.",
-        )
-
-        database.transition_execution(
-            parent.execution_id,
-            ExecutionState.COMPLETED,
-            actor=actor,
-            reason="Phase 3A through 4A assessment workflow completed.",
-        )
-
-        completed_context = intelligence.context.model_copy(
-            update={"status": OrchestrationStatus.COMPLETED}
-        )
-
-        return AssessmentPipelineResult(
-            context=completed_context,
+        assessment_result = AssessmentPipelineResult(
+            context=intelligence.context,
             dns=intelligence.dns,
             subdomains=intelligence.subdomains,
             http_intelligence=intelligence.http_intelligence,
@@ -681,10 +655,90 @@ def run_assessment_pipeline(
             ),
             cors=OrchestrationPhaseResult(
                 phase=OrchestrationPhase.CORS,
+                required=False,
                 execution_id=cors_child.execution_id,
                 evidence_id=cors_result.evidence.evidence_id,
                 evidence_path=cors_result.evidence.path,
             ),
+        )
+
+        final_status = assessment_result.calculated_status
+
+        if final_status is OrchestrationStatus.FAILED:
+            raise OrchestrationWorkflowError(
+                "Required orchestration phases did not complete."
+            )
+
+        parent = database.get_execution(
+            intelligence.context.parent_execution_id
+        )
+
+        if parent.state is not ExecutionState.RUNNING:
+            raise OrchestrationWorkflowError(
+                "Parent orchestration must be running before completion."
+            )
+
+        phase_outcomes = [
+            {
+                "phase": phase.phase.value,
+                "outcome": phase.outcome.value,
+                "required": phase.required,
+                "reason": phase.reason,
+                "error_summary": phase.error_summary,
+            }
+            for phase in assessment_result.phase_results
+        ]
+
+        database.add_audit_event(
+            parent.execution_id,
+            event_type=AuditEventType.TOOL_COMPLETED,
+            actor=actor,
+            message=(
+                "[5C][orchestrator] Assessment outcome calculated: "
+                f"{final_status.value}"
+            ),
+            details={
+                "orchestration_id": (
+                    intelligence.context.orchestration_id
+                ),
+                "orchestration_status": final_status.value,
+                "phase_outcomes": phase_outcomes,
+                "required_phase_failure": False,
+            },
+        )
+
+        parent = database.transition_execution(
+            parent.execution_id,
+            ExecutionState.ANALYZING,
+            actor=actor,
+            reason=(
+                "Automated assessment evidence and orchestration "
+                "outcomes are ready for review."
+            ),
+        )
+
+        completion_reason = (
+            "Phase 3A through 4A assessment workflow completed."
+            if final_status is OrchestrationStatus.COMPLETED
+            else (
+                "Phase 3A through 4A assessment workflow completed "
+                "with optional phases skipped or incomplete."
+            )
+        )
+
+        database.transition_execution(
+            parent.execution_id,
+            ExecutionState.COMPLETED,
+            actor=actor,
+            reason=completion_reason,
+        )
+
+        final_context = intelligence.context.model_copy(
+            update={"status": final_status}
+        )
+
+        return assessment_result.model_copy(
+            update={"context": final_context}
         )
 
     except Exception as exc:

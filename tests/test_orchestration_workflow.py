@@ -1131,6 +1131,25 @@ def test_assessment_pipeline_runs_phase_4a_and_completes_parent(
 
     assert parent.state is ExecutionState.COMPLETED
     assert result.context.status.value == "completed"
+    assert result.calculated_status.value == "completed"
+    assert result.cors.required is False
+
+    parent_events = database.list_audit_events(
+        parent.execution_id,
+    )
+    outcome_events = [
+        event
+        for event in parent_events
+        if event.message.startswith(
+            "[5C][orchestrator] Assessment outcome calculated:"
+        )
+    ]
+
+    assert len(outcome_events) == 1
+    assert (
+        outcome_events[0].details["orchestration_status"]
+        == "completed"
+    )
 
     assert [request.check_id for request in requests] == [
         "security-headers",
@@ -1657,3 +1676,149 @@ def test_intelligence_pipeline_skips_javascript_when_none_found(
     ]
 
     assert javascript_children == []
+
+
+def test_assessment_pipeline_marks_optional_skip_as_partial(
+    database: SaarthiDatabase,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    import saarthi_ai.persistence.orchestration_workflow as workflow_module
+    from saarthi_ai.orchestration.models import (
+        OrchestrationPhaseOutcome,
+    )
+
+    context = create_orchestration(
+        database,
+        assessment_name="Partial Automated Assessment",
+        target_url="https://example.com/",
+        active_testing_allowed=True,
+    )
+
+    parent = database.get_execution(context.parent_execution_id)
+    database.transition_execution(
+        parent.execution_id,
+        ExecutionState.RUNNING,
+        actor="test",
+        reason="Simulated intelligence pipeline started.",
+    )
+
+    running_context = context.model_copy(
+        update={"status": "running"}
+    )
+
+    def completed_phase(
+        phase: OrchestrationPhase,
+        name: str,
+    ) -> OrchestrationPhaseResult:
+        return OrchestrationPhaseResult(
+            phase=phase,
+            execution_id=f"execution-{name}",
+            evidence_id=f"evidence-{name}",
+            evidence_path=str(tmp_path / f"{name}.json"),
+        )
+
+    fake_intelligence = type(
+        "IntelligenceResult",
+        (),
+        {
+            "context": running_context,
+            "dns": completed_phase(
+                OrchestrationPhase.DNS,
+                "dns",
+            ),
+            "subdomains": completed_phase(
+                OrchestrationPhase.SUBDOMAINS,
+                "subdomains",
+            ),
+            "http_intelligence": completed_phase(
+                OrchestrationPhase.HTTP_INTELLIGENCE,
+                "http",
+            ),
+            "crawl": completed_phase(
+                OrchestrationPhase.CRAWL,
+                "crawl",
+            ),
+            "javascript": OrchestrationPhaseResult(
+                phase=OrchestrationPhase.JAVASCRIPT,
+                outcome=OrchestrationPhaseOutcome.SKIPPED,
+                required=False,
+                reason="No JavaScript assets discovered.",
+                metrics={
+                    "input_javascript_count": 0,
+                },
+            ),
+        },
+    )()
+
+    monkeypatch.setattr(
+        workflow_module,
+        "run_intelligence_pipeline",
+        lambda *args, **kwargs: fake_intelligence,
+    )
+
+    def fake_direct_check(
+        database,
+        request,
+        *,
+        actor,
+        evidence_root,
+    ):
+        return type(
+            "Result",
+            (),
+            {
+                "evidence": type(
+                    "Evidence",
+                    (),
+                    {
+                        "evidence_id": (
+                            f"evidence-{request.check_id}"
+                        ),
+                        "path": str(
+                            evidence_root
+                            / f"{request.check_id}.json"
+                        ),
+                    },
+                )()
+            },
+        )()
+
+    monkeypatch.setattr(
+        workflow_module,
+        "run_tracked_direct_check",
+        fake_direct_check,
+    )
+
+    result = workflow_module.run_assessment_pipeline(
+        database,
+        context,
+        evidence_root=tmp_path / "workflow-evidence",
+        explicitly_approved=True,
+    )
+
+    parent = database.get_execution(context.parent_execution_id)
+
+    assert parent.state is ExecutionState.COMPLETED
+    assert result.context.status.value == "partial"
+    assert result.calculated_status.value == "partial"
+    assert result.javascript.skipped is True
+
+    parent_events = database.list_audit_events(
+        parent.execution_id,
+    )
+    outcome_events = [
+        event
+        for event in parent_events
+        if event.message
+        == (
+            "[5C][orchestrator] Assessment outcome "
+            "calculated: partial"
+        )
+    ]
+
+    assert len(outcome_events) == 1
+    assert (
+        outcome_events[0].details["orchestration_status"]
+        == "partial"
+    )
