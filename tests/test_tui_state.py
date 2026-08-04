@@ -776,3 +776,285 @@ def test_loads_safe_controlled_observation_summary() -> None:
     assert observation["request_attempted"] == "true"
     assert observation["follow_redirects"] == "false"
     assert observation["plan_evidence_id"] == "evidence-plan"
+
+
+def test_controlled_observation_skips_newest_malformed_metadata() -> None:
+    import json
+    import sqlite3
+
+    from saarthi_ai.tui.app import ReadOnlySaarthiRepository
+
+    connection = sqlite3.connect(":memory:")
+    connection.row_factory = sqlite3.Row
+
+    connection.execute(
+        """
+        CREATE TABLE evidence (
+            evidence_id TEXT PRIMARY KEY,
+            execution_id TEXT NOT NULL,
+            evidence_type TEXT NOT NULL,
+            sha256 TEXT,
+            metadata_json TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        )
+        """
+    )
+
+    connection.executemany(
+        """
+        INSERT INTO evidence (
+            evidence_id,
+            execution_id,
+            evidence_type,
+            sha256,
+            metadata_json,
+            created_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        [
+            (
+                "evidence-valid",
+                "execution-test",
+                "controlled_validation_observation",
+                "a" * 64,
+                json.dumps(
+                    {
+                        "target_url": "https://example.com/valid",
+                        "method": "GET",
+                        "status_code": 200,
+                    }
+                ),
+                "2026-08-04T10:00:00+00:00",
+            ),
+            (
+                "evidence-malformed",
+                "execution-test",
+                "controlled_validation_observation",
+                "b" * 64,
+                "{not-json",
+                "2026-08-04T11:00:00+00:00",
+            ),
+        ],
+    )
+
+    repository = ReadOnlySaarthiRepository()
+    observation = (
+        repository._load_controlled_validation_observation(
+            connection,
+            {"evidence"},
+            "execution-test",
+        )
+    )
+
+    assert observation is not None
+    assert observation["evidence_id"] == "evidence-valid"
+    assert observation["target_url"] == "https://example.com/valid"
+
+
+def test_controlled_observation_missing_fields_use_safe_defaults() -> None:
+    import sqlite3
+
+    from saarthi_ai.tui.app import ReadOnlySaarthiRepository
+
+    connection = sqlite3.connect(":memory:")
+    connection.row_factory = sqlite3.Row
+
+    connection.execute(
+        """
+        CREATE TABLE evidence (
+            execution_id TEXT NOT NULL,
+            evidence_type TEXT NOT NULL,
+            metadata_json TEXT NOT NULL
+        )
+        """
+    )
+
+    connection.execute(
+        """
+        INSERT INTO evidence (
+            execution_id,
+            evidence_type,
+            metadata_json
+        )
+        VALUES (?, ?, ?)
+        """,
+        (
+            "execution-test",
+            "controlled_validation_observation",
+            "{}",
+        ),
+    )
+
+    repository = ReadOnlySaarthiRepository()
+    observation = (
+        repository._load_controlled_validation_observation(
+            connection,
+            {"evidence"},
+            "execution-test",
+        )
+    )
+
+    assert observation is not None
+    assert observation["evidence_id"] == "—"
+    assert observation["evidence_sha256"] == "—"
+    assert observation["target_url"] == "—"
+    assert observation["status_code"] == "—"
+    assert observation["body_bytes_captured"] == "0"
+    assert observation["body_truncated"] == "false"
+    assert observation["network_activity"] == "false"
+    assert observation["request_attempted"] == "false"
+    assert observation["follow_redirects"] == "false"
+
+
+def test_controlled_observation_selects_newest_valid_record() -> None:
+    import json
+    import sqlite3
+
+    from saarthi_ai.tui.app import ReadOnlySaarthiRepository
+
+    connection = sqlite3.connect(":memory:")
+    connection.row_factory = sqlite3.Row
+
+    connection.execute(
+        """
+        CREATE TABLE evidence (
+            evidence_id TEXT PRIMARY KEY,
+            execution_id TEXT NOT NULL,
+            evidence_type TEXT NOT NULL,
+            metadata_json TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        )
+        """
+    )
+
+    connection.executemany(
+        """
+        INSERT INTO evidence (
+            evidence_id,
+            execution_id,
+            evidence_type,
+            metadata_json,
+            created_at
+        )
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        [
+            (
+                "evidence-old",
+                "execution-test",
+                "controlled_validation_observation",
+                json.dumps({"status_code": 200}),
+                "2026-08-04T10:00:00+00:00",
+            ),
+            (
+                "evidence-new",
+                "execution-test",
+                "controlled_validation_observation",
+                json.dumps({"status_code": 204}),
+                "2026-08-04T11:00:00+00:00",
+            ),
+        ],
+    )
+
+    repository = ReadOnlySaarthiRepository()
+    observation = (
+        repository._load_controlled_validation_observation(
+            connection,
+            {"evidence"},
+            "execution-test",
+        )
+    )
+
+    assert observation is not None
+    assert observation["evidence_id"] == "evidence-new"
+    assert observation["status_code"] == "204"
+
+
+def test_loads_matching_controlled_observation_reuse_event() -> None:
+    import json
+    import sqlite3
+
+    from saarthi_ai.tui.app import ReadOnlySaarthiRepository
+
+    connection = sqlite3.connect(":memory:")
+    connection.row_factory = sqlite3.Row
+
+    connection.execute(
+        """
+        CREATE TABLE audit_events (
+            execution_id TEXT NOT NULL,
+            details_json TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        )
+        """
+    )
+
+    connection.executemany(
+        """
+        INSERT INTO audit_events (
+            execution_id,
+            details_json,
+            created_at
+        )
+        VALUES (?, ?, ?)
+        """,
+        [
+            (
+                "execution-test",
+                json.dumps(
+                    {
+                        "evidence_id": "different-evidence",
+                        "idempotent_reuse": True,
+                        "second_request_sent": False,
+                    }
+                ),
+                "2026-08-04T10:00:00+00:00",
+            ),
+            (
+                "execution-test",
+                json.dumps(
+                    {
+                        "evidence_id": "evidence-observation",
+                        "idempotent_reuse": True,
+                        "second_request_sent": False,
+                    }
+                ),
+                "2026-08-04T11:00:00+00:00",
+            ),
+        ],
+    )
+
+    repository = ReadOnlySaarthiRepository()
+    reuse = repository._load_controlled_observation_reuse(
+        connection,
+        {"audit_events"},
+        "execution-test",
+        "evidence-observation",
+    )
+
+    assert reuse == {
+        "reused_existing_evidence": "true",
+        "second_request_sent": "false",
+    }
+
+
+def test_controlled_observation_reuse_defaults_without_audit_data() -> None:
+    import sqlite3
+
+    from saarthi_ai.tui.app import ReadOnlySaarthiRepository
+
+    connection = sqlite3.connect(":memory:")
+    connection.row_factory = sqlite3.Row
+
+    repository = ReadOnlySaarthiRepository()
+
+    assert repository._load_controlled_observation_reuse(
+        connection,
+        set(),
+        "execution-test",
+        "evidence-observation",
+    ) == {
+        "reused_existing_evidence": "false",
+        "second_request_sent": "—",
+    }

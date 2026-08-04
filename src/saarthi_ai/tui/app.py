@@ -238,6 +238,15 @@ class ReadOnlySaarthiRepository:
             )
         )
 
+        if controlled_observation is not None:
+            reuse = self._load_controlled_observation_reuse(
+                connection,
+                tables,
+                execution_id,
+                controlled_observation["evidence_id"],
+            )
+            controlled_observation.update(reuse)
+
         return DashboardSnapshot(
             project_name=value(
                 latest,
@@ -322,7 +331,7 @@ class ReadOnlySaarthiRepository:
         tables: set[str],
         execution_id: str,
     ) -> dict[str, str] | None:
-        """Load the latest safe controlled-observation evidence summary."""
+        """Load the newest valid safe controlled-observation summary."""
 
         table = next(
             (
@@ -378,35 +387,20 @@ class ReadOnlySaarthiRepository:
             else ""
         )
 
-        row = connection.execute(
+        rows = connection.execute(
             f"""
             SELECT *
             FROM "{table}"
             WHERE "{execution_column}" = ?
               AND LOWER("{type_column}") = ?
             {order_sql}
-            LIMIT 1
+            LIMIT 50
             """,
             (
                 execution_id,
                 "controlled_validation_observation",
             ),
-        ).fetchone()
-
-        if row is None:
-            return None
-
-        try:
-            metadata = json.loads(str(row[metadata_column]))
-        except (
-            json.JSONDecodeError,
-            TypeError,
-            ValueError,
-        ):
-            return None
-
-        if not isinstance(metadata, dict):
-            return None
+        ).fetchall()
 
         def display(value: Any, default: str = "—") -> str:
             if value is None:
@@ -417,47 +411,169 @@ class ReadOnlySaarthiRepository:
 
             return str(value)
 
-        return {
-            "evidence_id": (
-                display(row[evidence_id_column])
-                if evidence_id_column
-                else "—"
-            ),
-            "evidence_sha256": (
-                display(row[sha256_column])
-                if sha256_column
-                else "—"
-            ),
-            "target_url": display(metadata.get("target_url")),
-            "action": display(metadata.get("action")),
-            "method": display(metadata.get("method")),
-            "status_code": display(metadata.get("status_code")),
-            "final_url": display(metadata.get("final_url")),
-            "body_bytes_captured": display(
-                metadata.get("body_bytes_captured"),
-                "0",
-            ),
-            "body_truncated": display(
-                metadata.get("body_truncated"),
-                "false",
-            ),
-            "body_sha256": display(metadata.get("body_sha256")),
-            "plan_evidence_id": display(
-                metadata.get("plan_evidence_id")
-            ),
-            "network_activity": display(
-                metadata.get("network_activity"),
-                "false",
-            ),
-            "request_attempted": display(
-                metadata.get("request_attempted"),
-                "false",
-            ),
-            "follow_redirects": display(
-                metadata.get("follow_redirects"),
-                "false",
-            ),
+        for row in rows:
+            try:
+                metadata = json.loads(str(row[metadata_column]))
+            except (
+                json.JSONDecodeError,
+                TypeError,
+                ValueError,
+            ):
+                continue
+
+            if not isinstance(metadata, dict):
+                continue
+
+            return {
+                "evidence_id": (
+                    display(row[evidence_id_column])
+                    if evidence_id_column
+                    else "—"
+                ),
+                "evidence_sha256": (
+                    display(row[sha256_column])
+                    if sha256_column
+                    else "—"
+                ),
+                "target_url": display(metadata.get("target_url")),
+                "action": display(metadata.get("action")),
+                "method": display(metadata.get("method")),
+                "status_code": display(metadata.get("status_code")),
+                "final_url": display(metadata.get("final_url")),
+                "body_bytes_captured": display(
+                    metadata.get("body_bytes_captured"),
+                    "0",
+                ),
+                "body_truncated": display(
+                    metadata.get("body_truncated"),
+                    "false",
+                ),
+                "body_sha256": display(
+                    metadata.get("body_sha256")
+                ),
+                "plan_evidence_id": display(
+                    metadata.get("plan_evidence_id")
+                ),
+                "network_activity": display(
+                    metadata.get("network_activity"),
+                    "false",
+                ),
+                "request_attempted": display(
+                    metadata.get("request_attempted"),
+                    "false",
+                ),
+                "follow_redirects": display(
+                    metadata.get("follow_redirects"),
+                    "false",
+                ),
+                "reused_existing_evidence": "false",
+                "second_request_sent": "—",
+            }
+
+        return None
+
+    def _load_controlled_observation_reuse(
+        self,
+        connection: sqlite3.Connection,
+        tables: set[str],
+        execution_id: str,
+        evidence_id: str,
+    ) -> dict[str, str]:
+        """Load the latest matching idempotent-reuse audit summary."""
+
+        defaults = {
+            "reused_existing_evidence": "false",
+            "second_request_sent": "—",
         }
+
+        table = next(
+            (
+                name
+                for name in (
+                    "audit_events",
+                    "audit_log",
+                    "events",
+                )
+                if name in tables
+            ),
+            None,
+        )
+
+        if table is None:
+            return defaults
+
+        columns = self._columns(connection, table)
+        execution_column = self._pick(
+            columns,
+            "execution_id",
+            "execution",
+        )
+        details_column = self._pick(
+            columns,
+            "details_json",
+            "details",
+            "metadata_json",
+        )
+        timestamp_column = self._pick(
+            columns,
+            "created_at",
+            "timestamp",
+            "occurred_at",
+        )
+
+        if execution_column is None or details_column is None:
+            return defaults
+
+        order_sql = (
+            f'ORDER BY "{timestamp_column}" DESC'
+            if timestamp_column
+            else ""
+        )
+
+        rows = connection.execute(
+            f"""
+            SELECT "{details_column}"
+            FROM "{table}"
+            WHERE "{execution_column}" = ?
+            {order_sql}
+            LIMIT 200
+            """,
+            (execution_id,),
+        ).fetchall()
+
+        for row in rows:
+            try:
+                details = json.loads(str(row[details_column]))
+            except (
+                json.JSONDecodeError,
+                TypeError,
+                ValueError,
+            ):
+                continue
+
+            if not isinstance(details, dict):
+                continue
+
+            if details.get("idempotent_reuse") is not True:
+                continue
+
+            if str(details.get("evidence_id") or "") != evidence_id:
+                continue
+
+            second_request_sent = details.get(
+                "second_request_sent"
+            )
+
+            return {
+                "reused_existing_evidence": "true",
+                "second_request_sent": (
+                    str(second_request_sent).lower()
+                    if isinstance(second_request_sent, bool)
+                    else "—"
+                ),
+            }
+
+        return defaults
 
     def _count_related(
         self,
@@ -1481,6 +1597,14 @@ class SaarthiDashboard(App[None]):
                     (
                         "Request Attempted  : "
                         f"{observation['request_attempted']}"
+                    ),
+                    (
+                        "Evidence Reused    : "
+                        f"{observation['reused_existing_evidence']}"
+                    ),
+                    (
+                        "Second Request Sent: "
+                        f"{observation['second_request_sent']}"
                     ),
                     (
                         "Redirects Followed : "
