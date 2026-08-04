@@ -52,6 +52,7 @@ class EvidenceType(StrEnum):
     BLIND_VALIDATION_RESULT = "blind_validation_result"
     OAST_OBSERVATION = "oast_observation"
     CONFIRMATION_RESULT = "confirmation_result"
+    CONTROLLED_VALIDATION_PLAN = "controlled_validation_plan"
     TLS_RESULT = "tls_result"
     TOOL_OUTPUT = "tool_output"
     SCREENSHOT = "screenshot"
