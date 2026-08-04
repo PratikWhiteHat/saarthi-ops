@@ -1911,6 +1911,12 @@ def controlled_observe(
                 "[bold red]Controlled-validation observation failed:"
                 f"[/bold red] {exc}"
             )
+            console.print("[yellow]Automatic retry: disabled.[/yellow]")
+            console.print(
+                "[dim]If this execution is now in the failed terminal "
+                "state, create and approve a new execution before "
+                "attempting another observation.[/dim]"
+            )
             raise typer.Exit(code=1) from exc
 
         observation = result.observation
@@ -1952,6 +1958,21 @@ def controlled_observe(
         console.print(
             f"Evidence SHA-256: {result.evidence.sha256}"
         )
+        console.print(
+            "Existing evidence reused: "
+            f"{str(result.reused_existing_evidence).lower()}"
+        )
+
+        if result.reused_existing_evidence:
+            console.print(
+                "[bold cyan]Existing persisted observation reused."
+                "[/bold cyan]"
+            )
+            console.print(
+                "[dim]No second network request was sent and no "
+                "duplicate observation evidence was created.[/dim]"
+            )
+
         console.print(
             "[dim]No request body, credential header, redirect, "
             "subprocess, batch target, or automatic retry was used.[/dim]"

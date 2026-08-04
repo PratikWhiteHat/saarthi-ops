@@ -10,6 +10,10 @@ from saarthi_ai.cli import app
 from saarthi_ai.controlled_validation.models import (
     ControlledValidationAction,
 )
+from saarthi_ai.persistence.controlled_validation_observation_workflow import (
+    ControlledValidationObservationWorkflowError,
+)
+from saarthi_ai.persistence.database import InvalidStateTransitionError
 
 runner = CliRunner()
 
@@ -326,6 +330,7 @@ def test_controlled_observe_builds_one_bounded_request(
                 path=str(evidence_root / "observation.json"),
                 sha256="a" * 64,
             ),
+            reused_existing_evidence=False,
         )
 
     database = object()
@@ -448,3 +453,210 @@ def test_controlled_observe_rejects_unsupported_method() -> None:
 
     assert result.exit_code == 1
     assert "Only GET and HEAD are allowed" in result.stdout
+
+
+def test_controlled_observe_reports_missing_matching_plan(
+    monkeypatch,
+) -> None:
+    import saarthi_ai.cli as cli_module
+
+    workflow_calls = 0
+
+    async def fake_workflow(*args, **kwargs):
+        nonlocal workflow_calls
+        workflow_calls += 1
+        raise ControlledValidationObservationWorkflowError(
+            "A matching approved Phase 6B controlled-validation plan "
+            "is required before observation."
+        )
+
+    monkeypatch.setattr(
+        cli_module,
+        "get_database",
+        lambda: object(),
+    )
+    monkeypatch.setattr(
+        cli_module,
+        "run_tracked_controlled_validation_observation",
+        fake_workflow,
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "controlled",
+            "observe",
+            "--execution",
+            "execution-test",
+            "--url",
+            "https://example.com/account",
+            "--approved",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert workflow_calls == 1
+    assert "matching approved Phase 6B" in result.stdout
+    assert "Automatic retry: disabled" in result.stdout
+
+
+def test_controlled_observe_reports_out_of_scope_target(
+    monkeypatch,
+) -> None:
+    import saarthi_ai.cli as cli_module
+
+    async def fake_workflow(*args, **kwargs):
+        raise InvalidStateTransitionError(
+            "Target 'outside.example' is not associated with this execution."
+        )
+
+    monkeypatch.setattr(
+        cli_module,
+        "get_database",
+        lambda: object(),
+    )
+    monkeypatch.setattr(
+        cli_module,
+        "run_tracked_controlled_validation_observation",
+        fake_workflow,
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "controlled",
+            "observe",
+            "--execution",
+            "execution-test",
+            "--url",
+            "https://outside.example/account",
+            "--approved",
+        ],
+    )
+
+    assert result.exit_code == 1
+    normalized_output = " ".join(result.stdout.split())
+    assert "not associated with this execution" in normalized_output
+    assert "Automatic retry: disabled" in normalized_output
+
+
+def test_controlled_observe_failure_requires_new_execution(
+    monkeypatch,
+) -> None:
+    import saarthi_ai.cli as cli_module
+
+    async def fake_workflow(*args, **kwargs):
+        raise ControlledValidationObservationWorkflowError(
+            "simulated bounded network failure"
+        )
+
+    monkeypatch.setattr(
+        cli_module,
+        "get_database",
+        lambda: object(),
+    )
+    monkeypatch.setattr(
+        cli_module,
+        "run_tracked_controlled_validation_observation",
+        fake_workflow,
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "controlled",
+            "observe",
+            "--execution",
+            "execution-test",
+            "--url",
+            "https://example.com/account",
+            "--approved",
+        ],
+    )
+
+    assert result.exit_code == 1
+    normalized_output = " ".join(result.stdout.split())
+    assert "simulated bounded network failure" in normalized_output
+    assert "Automatic retry: disabled" in normalized_output
+    assert "create and approve a new execution" in normalized_output
+
+
+def test_controlled_observe_reports_idempotent_evidence_reuse(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    import saarthi_ai.cli as cli_module
+
+    workflow_calls = 0
+
+    async def fake_workflow(
+        database,
+        request,
+        *,
+        transport=None,
+        actor,
+        evidence_root,
+    ):
+        nonlocal workflow_calls
+        workflow_calls += 1
+
+        assert transport is None
+
+        return SimpleNamespace(
+            execution=SimpleNamespace(
+                state=SimpleNamespace(value="completed"),
+            ),
+            observation=SimpleNamespace(
+                policy=SimpleNamespace(
+                    decision=SimpleNamespace(value="allow"),
+                ),
+                method=request.method,
+                request_attempted=True,
+                response_received=True,
+                status_code=200,
+                final_url=request.validation.target_url,
+                body_bytes_captured=18,
+                body_truncated=False,
+                body_sha256="b" * 64,
+            ),
+            evidence=SimpleNamespace(
+                evidence_id="existing-observation-evidence",
+                path=str(evidence_root / "existing-observation.json"),
+                sha256="c" * 64,
+            ),
+            reused_existing_evidence=True,
+        )
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        cli_module,
+        "get_database",
+        lambda: object(),
+    )
+    monkeypatch.setattr(
+        cli_module,
+        "run_tracked_controlled_validation_observation",
+        fake_workflow,
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "controlled",
+            "observe",
+            "--execution",
+            "execution-test",
+            "--url",
+            "https://example.com/account",
+            "--approved",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert workflow_calls == 1
+    normalized_output = " ".join(result.stdout.split())
+    assert "existing-observation-evidence" in normalized_output
+    assert "Existing evidence reused: true" in normalized_output
+    assert "Existing persisted observation reused" in normalized_output
+    assert "No second network request was sent" in normalized_output
+    assert "no duplicate observation evidence" in normalized_output

@@ -56,6 +56,7 @@ class TrackedControlledValidationObservation:
     execution: ExecutionRecord
     observation: ControlledValidationObservationResult
     evidence: EvidenceRecord
+    reused_existing_evidence: bool = False
 
 
 def _validate_target_scope(
@@ -449,6 +450,7 @@ async def run_tracked_controlled_validation_observation(
             execution=execution,
             observation=observation,
             evidence=existing_evidence,
+            reused_existing_evidence=True,
         )
 
     if execution.state is not ExecutionState.PLANNED:

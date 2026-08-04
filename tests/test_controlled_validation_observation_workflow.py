@@ -115,6 +115,7 @@ async def test_tracked_observation_persists_one_mocked_result(
 
     assert len(captured_requests) == 1
     assert result.execution.state is ExecutionState.COMPLETED
+    assert result.reused_existing_evidence is False
     assert result.observation.succeeded is True
     assert result.observation.status_code == 200
     assert (
@@ -418,6 +419,7 @@ async def test_completed_observation_is_reused_without_second_request(
 
     assert request_count == 1
     assert first.evidence.evidence_id == second.evidence.evidence_id
+    assert second.reused_existing_evidence is True
     assert second.observation.succeeded is True
 
     evidence_items = database.list_evidence(
