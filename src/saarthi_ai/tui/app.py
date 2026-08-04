@@ -34,6 +34,7 @@ class DashboardSnapshot:
     orchestration_status: str = "unknown"
     outcome_counts: dict[str, int] = field(default_factory=dict)
     optional_failure_summary: str | None = None
+    controlled_observation: dict[str, str] | None = None
 
 
 class ReadOnlySaarthiRepository:
@@ -229,6 +230,14 @@ class ReadOnlySaarthiRepository:
             execution_id,
         )
 
+        controlled_observation = (
+            self._load_controlled_validation_observation(
+                connection,
+                tables,
+                execution_id,
+            )
+        )
+
         return DashboardSnapshot(
             project_name=value(
                 latest,
@@ -257,6 +266,7 @@ class ReadOnlySaarthiRepository:
             orchestration_status=orchestration_status,
             outcome_counts=outcome_counts,
             optional_failure_summary=optional_failure_summary,
+            controlled_observation=controlled_observation,
         )
 
     def _evidence_types(
@@ -304,6 +314,149 @@ class ReadOnlySaarthiRepository:
 
         return {
             str(row[type_column]).strip().lower() for row in rows if row[type_column] is not None
+        }
+
+    def _load_controlled_validation_observation(
+        self,
+        connection: sqlite3.Connection,
+        tables: set[str],
+        execution_id: str,
+    ) -> dict[str, str] | None:
+        """Load the latest safe controlled-observation evidence summary."""
+
+        table = next(
+            (
+                name
+                for name in ("evidence", "evidence_items")
+                if name in tables
+            ),
+            None,
+        )
+
+        if table is None:
+            return None
+
+        columns = self._columns(connection, table)
+        execution_column = self._pick(
+            columns,
+            "execution_id",
+            "execution",
+        )
+        type_column = self._pick(
+            columns,
+            "evidence_type",
+            "type",
+            "kind",
+        )
+        evidence_id_column = self._pick(
+            columns,
+            "evidence_id",
+            "id",
+        )
+        sha256_column = self._pick(columns, "sha256")
+        metadata_column = self._pick(
+            columns,
+            "metadata_json",
+            "metadata",
+        )
+        created_column = self._pick(
+            columns,
+            "created_at",
+            "timestamp",
+        )
+
+        if (
+            execution_column is None
+            or type_column is None
+            or metadata_column is None
+        ):
+            return None
+
+        order_sql = (
+            f'ORDER BY "{created_column}" DESC'
+            if created_column
+            else ""
+        )
+
+        row = connection.execute(
+            f"""
+            SELECT *
+            FROM "{table}"
+            WHERE "{execution_column}" = ?
+              AND LOWER("{type_column}") = ?
+            {order_sql}
+            LIMIT 1
+            """,
+            (
+                execution_id,
+                "controlled_validation_observation",
+            ),
+        ).fetchone()
+
+        if row is None:
+            return None
+
+        try:
+            metadata = json.loads(str(row[metadata_column]))
+        except (
+            json.JSONDecodeError,
+            TypeError,
+            ValueError,
+        ):
+            return None
+
+        if not isinstance(metadata, dict):
+            return None
+
+        def display(value: Any, default: str = "—") -> str:
+            if value is None:
+                return default
+
+            if isinstance(value, bool):
+                return str(value).lower()
+
+            return str(value)
+
+        return {
+            "evidence_id": (
+                display(row[evidence_id_column])
+                if evidence_id_column
+                else "—"
+            ),
+            "evidence_sha256": (
+                display(row[sha256_column])
+                if sha256_column
+                else "—"
+            ),
+            "target_url": display(metadata.get("target_url")),
+            "action": display(metadata.get("action")),
+            "method": display(metadata.get("method")),
+            "status_code": display(metadata.get("status_code")),
+            "final_url": display(metadata.get("final_url")),
+            "body_bytes_captured": display(
+                metadata.get("body_bytes_captured"),
+                "0",
+            ),
+            "body_truncated": display(
+                metadata.get("body_truncated"),
+                "false",
+            ),
+            "body_sha256": display(metadata.get("body_sha256")),
+            "plan_evidence_id": display(
+                metadata.get("plan_evidence_id")
+            ),
+            "network_activity": display(
+                metadata.get("network_activity"),
+                "false",
+            ),
+            "request_attempted": display(
+                metadata.get("request_attempted"),
+                "false",
+            ),
+            "follow_redirects": display(
+                metadata.get("follow_redirects"),
+                "false",
+            ),
         }
 
     def _count_related(
@@ -842,6 +995,11 @@ def infer_phase(
     normalized_evidence = {evidence_type.strip().lower() for evidence_type in evidence_types}
 
     if normalized == "completed":
+        if (
+            "controlled_validation_observation"
+            in normalized_evidence
+        ):
+            return "6F — CONTROLLED VALIDATION OBSERVATION"
         if "confirmation_result" in normalized_evidence:
             return "4D — CONFIRMATION ENGINE"
         if "oast_observation" in normalized_evidence:
@@ -865,6 +1023,11 @@ def infer_phase(
         return "3B — SUBDOMAIN ENUMERATION"
 
     if normalized in {"running", "analyzing"}:
+        if (
+            "controlled_validation_observation"
+            in normalized_evidence
+        ):
+            return "6F — CONTROLLED VALIDATION OBSERVATION"
         if "confirmation_result" in normalized_evidence:
             return "4D — CONFIRMATION ENGINE"
         if "oast_observation" in normalized_evidence:
@@ -891,6 +1054,11 @@ def infer_phase(
         return "PLANNING"
 
     if normalized == "failed":
+        if (
+            "controlled_validation_observation"
+            in normalized_evidence
+        ):
+            return "6F — CONTROLLED VALIDATION REVIEW"
         return "EXECUTION REVIEW"
 
     return "CURRENT WORKFLOW"
@@ -904,6 +1072,8 @@ def infer_phase_short(
 
     phase = infer_phase(state, evidence_types)
 
+    if phase.startswith("6F"):
+        return "6F"
     if phase.startswith("6B"):
         return "6B"
     if phase.startswith("4D"):
@@ -1269,6 +1439,67 @@ class SaarthiDashboard(App[None]):
                     ),
                 ]
             )
+
+        if snapshot.controlled_observation:
+            observation = snapshot.controlled_observation
+
+            scope_lines.extend(
+                [
+                    "",
+                    "[bold cyan]CONTROLLED OBSERVATION[/bold cyan]",
+                    (
+                        "Observation ID     : "
+                        f"{observation['evidence_id']}"
+                    ),
+                    (
+                        "Target / Action    : "
+                        f"{observation['target_url']} · "
+                        f"{observation['action']}"
+                    ),
+                    (
+                        "Method / Status    : "
+                        f"{observation['method']} · "
+                        f"HTTP {observation['status_code']}"
+                    ),
+                    (
+                        "Captured / Truncated: "
+                        f"{observation['body_bytes_captured']} bytes · "
+                        f"{observation['body_truncated']}"
+                    ),
+                    (
+                        "Body SHA-256       : "
+                        f"{observation['body_sha256']}"
+                    ),
+                    (
+                        "Plan Evidence      : "
+                        f"{observation['plan_evidence_id']}"
+                    ),
+                    (
+                        "Network Activity   : "
+                        f"{observation['network_activity']}"
+                    ),
+                    (
+                        "Request Attempted  : "
+                        f"{observation['request_attempted']}"
+                    ),
+                    (
+                        "Redirects Followed : "
+                        f"{observation['follow_redirects']}"
+                    ),
+                    (
+                        "Evidence SHA-256   : "
+                        f"{observation['evidence_sha256']}"
+                    ),
+                ]
+            )
+
+            if snapshot.execution_state.lower() == "failed":
+                scope_lines.append(
+                    "[yellow]Failure Guidance   : Automatic retry is "
+                    "disabled. Review the audit log and create a new "
+                    "approved execution before another observation."
+                    "[/yellow]"
+                )
 
         if snapshot.optional_failure_summary:
             scope_lines.append(

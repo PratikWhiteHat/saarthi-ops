@@ -653,3 +653,126 @@ def test_controlled_validation_compact_phase_is_6b() -> None:
 def test_planned_execution_without_phase_6_evidence_remains_generic() -> None:
     assert infer_phase("planned") == "PLANNING"
     assert infer_phase_short("planned") == "PLAN"
+
+
+def test_completed_controlled_observation_maps_to_phase_6f() -> None:
+    assert (
+        infer_phase(
+            "completed",
+            {"controlled_validation_observation"},
+        )
+        == "6F — CONTROLLED VALIDATION OBSERVATION"
+    )
+
+
+def test_running_controlled_observation_maps_to_phase_6f() -> None:
+    assert (
+        infer_phase(
+            "running",
+            {"controlled_validation_observation"},
+        )
+        == "6F — CONTROLLED VALIDATION OBSERVATION"
+    )
+
+
+def test_failed_controlled_observation_maps_to_phase_6f_review() -> None:
+    assert (
+        infer_phase(
+            "failed",
+            {"controlled_validation_observation"},
+        )
+        == "6F — CONTROLLED VALIDATION REVIEW"
+    )
+
+
+def test_controlled_observation_compact_phase_is_6f() -> None:
+    assert (
+        infer_phase_short(
+            "completed",
+            {"controlled_validation_observation"},
+        )
+        == "6F"
+    )
+
+
+def test_loads_safe_controlled_observation_summary() -> None:
+    import json
+    import sqlite3
+
+    from saarthi_ai.tui.app import ReadOnlySaarthiRepository
+
+    connection = sqlite3.connect(":memory:")
+    connection.row_factory = sqlite3.Row
+
+    connection.execute(
+        """
+        CREATE TABLE evidence (
+            evidence_id TEXT PRIMARY KEY,
+            execution_id TEXT NOT NULL,
+            evidence_type TEXT NOT NULL,
+            sha256 TEXT,
+            metadata_json TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        )
+        """
+    )
+
+    connection.execute(
+        """
+        INSERT INTO evidence (
+            evidence_id,
+            execution_id,
+            evidence_type,
+            sha256,
+            metadata_json,
+            created_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (
+            "evidence-observation",
+            "execution-test",
+            "controlled_validation_observation",
+            "a" * 64,
+            json.dumps(
+                {
+                    "target_url": "https://example.com/account",
+                    "action": "response_differential",
+                    "method": "HEAD",
+                    "status_code": 200,
+                    "final_url": "https://example.com/account",
+                    "body_bytes_captured": 0,
+                    "body_truncated": False,
+                    "body_sha256": None,
+                    "plan_evidence_id": "evidence-plan",
+                    "network_activity": True,
+                    "request_attempted": True,
+                    "follow_redirects": False,
+                }
+            ),
+            "2026-08-04T10:00:00+00:00",
+        ),
+    )
+
+    repository = ReadOnlySaarthiRepository()
+
+    observation = (
+        repository._load_controlled_validation_observation(
+            connection,
+            {"evidence"},
+            "execution-test",
+        )
+    )
+
+    assert observation is not None
+    assert observation["evidence_id"] == "evidence-observation"
+    assert observation["target_url"] == "https://example.com/account"
+    assert observation["action"] == "response_differential"
+    assert observation["method"] == "HEAD"
+    assert observation["status_code"] == "200"
+    assert observation["body_bytes_captured"] == "0"
+    assert observation["body_truncated"] == "false"
+    assert observation["network_activity"] == "true"
+    assert observation["request_attempted"] == "true"
+    assert observation["follow_redirects"] == "false"
+    assert observation["plan_evidence_id"] == "evidence-plan"
