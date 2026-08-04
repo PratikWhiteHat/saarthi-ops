@@ -23,6 +23,7 @@ from saarthi_ai.orchestration.models import (
 from saarthi_ai.persistence.crawl_workflow import run_tracked_crawl
 from saarthi_ai.persistence.database import SaarthiDatabase
 from saarthi_ai.persistence.direct_check_workflow import (
+    DirectCheckWorkflowError,
     run_tracked_direct_check,
 )
 from saarthi_ai.persistence.dns_workflow import (
@@ -618,27 +619,66 @@ def run_assessment_pipeline(
             previous_execution_id=security_headers_child.execution_id,
         )
 
-        cors_result = run_tracked_direct_check(
-            database,
-            DirectCheckRequest(
+        try:
+            cors_result = run_tracked_direct_check(
+                database,
+                DirectCheckRequest(
+                    execution_id=cors_child.execution_id,
+                    target_url=intelligence.context.target_url,
+                    check_id="cors-configuration",
+                    authorized=True,
+                    active_testing=True,
+                    explicitly_approved=True,
+                    requested_method="GET",
+                    requested_requests=3,
+                    metadata={
+                        "orchestration_id": (
+                            intelligence.context.orchestration_id
+                        ),
+                        "phase": "4A-cors",
+                    },
+                ),
+                actor=actor,
+                evidence_root=evidence_root / "cors",
+            )
+
+            cors_phase_result = OrchestrationPhaseResult(
+                phase=OrchestrationPhase.CORS,
+                required=False,
                 execution_id=cors_child.execution_id,
-                target_url=intelligence.context.target_url,
-                check_id="cors-configuration",
-                authorized=True,
-                active_testing=True,
-                explicitly_approved=True,
-                requested_method="GET",
-                requested_requests=3,
-                metadata={
+                evidence_id=cors_result.evidence.evidence_id,
+                evidence_path=cors_result.evidence.path,
+            )
+        except DirectCheckWorkflowError as exc:
+            cors_phase_result = OrchestrationPhaseResult(
+                phase=OrchestrationPhase.CORS,
+                outcome=OrchestrationPhaseOutcome.FAILED,
+                required=False,
+                execution_id=cors_child.execution_id,
+                error_summary=str(exc),
+            )
+
+            database.add_audit_event(
+                intelligence.context.parent_execution_id,
+                event_type=AuditEventType.TOOL_FAILED,
+                actor=actor,
+                message=(
+                    "[5D][orchestrator] Optional CORS phase "
+                    "failed; assessment will continue."
+                ),
+                details={
                     "orchestration_id": (
                         intelligence.context.orchestration_id
                     ),
-                    "phase": "4A-cors",
+                    "phase": OrchestrationPhase.CORS.value,
+                    "required": False,
+                    "outcome": (
+                        OrchestrationPhaseOutcome.FAILED.value
+                    ),
+                    "child_execution_id": cors_child.execution_id,
+                    "error": str(exc),
                 },
-            ),
-            actor=actor,
-            evidence_root=evidence_root / "cors",
-        )
+            )
 
         assessment_result = AssessmentPipelineResult(
             context=intelligence.context,
@@ -653,13 +693,7 @@ def run_assessment_pipeline(
                 evidence_id=security_headers_result.evidence.evidence_id,
                 evidence_path=security_headers_result.evidence.path,
             ),
-            cors=OrchestrationPhaseResult(
-                phase=OrchestrationPhase.CORS,
-                required=False,
-                execution_id=cors_child.execution_id,
-                evidence_id=cors_result.evidence.evidence_id,
-                evidence_path=cors_result.evidence.path,
-            ),
+            cors=cors_phase_result,
         )
 
         final_status = assessment_result.calculated_status
@@ -689,6 +723,29 @@ def run_assessment_pipeline(
             for phase in assessment_result.phase_results
         ]
 
+        outcome_counts = {
+            "completed": sum(
+                phase.completed
+                for phase in assessment_result.phase_results
+            ),
+            "skipped": sum(
+                phase.skipped
+                for phase in assessment_result.phase_results
+            ),
+            "failed": sum(
+                phase.failed
+                for phase in assessment_result.phase_results
+            ),
+            "required": sum(
+                phase.required
+                for phase in assessment_result.phase_results
+            ),
+            "optional": sum(
+                not phase.required
+                for phase in assessment_result.phase_results
+            ),
+        }
+
         database.add_audit_event(
             parent.execution_id,
             event_type=AuditEventType.TOOL_COMPLETED,
@@ -703,6 +760,7 @@ def run_assessment_pipeline(
                 ),
                 "orchestration_status": final_status.value,
                 "phase_outcomes": phase_outcomes,
+                "outcome_counts": outcome_counts,
                 "required_phase_failure": False,
             },
         )

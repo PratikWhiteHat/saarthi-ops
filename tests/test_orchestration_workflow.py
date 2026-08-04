@@ -1822,3 +1822,173 @@ def test_assessment_pipeline_marks_optional_skip_as_partial(
         outcome_events[0].details["orchestration_status"]
         == "partial"
     )
+
+
+def test_assessment_pipeline_continues_after_optional_cors_failure(
+    database: SaarthiDatabase,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    import saarthi_ai.persistence.orchestration_workflow as workflow_module
+    from saarthi_ai.persistence.direct_check_workflow import (
+        DirectCheckWorkflowError,
+    )
+
+    context = create_orchestration(
+        database,
+        assessment_name="Assessment With CORS Failure",
+        target_url="https://example.com/",
+        active_testing_allowed=True,
+    )
+
+    parent = database.get_execution(context.parent_execution_id)
+    database.transition_execution(
+        parent.execution_id,
+        ExecutionState.RUNNING,
+        actor="test",
+        reason="Simulated intelligence pipeline started.",
+    )
+
+    running_context = context.model_copy(
+        update={"status": "running"}
+    )
+
+    def completed_phase(
+        phase: OrchestrationPhase,
+        name: str,
+    ) -> OrchestrationPhaseResult:
+        return OrchestrationPhaseResult(
+            phase=phase,
+            execution_id=f"execution-{name}",
+            evidence_id=f"evidence-{name}",
+            evidence_path=str(tmp_path / f"{name}.json"),
+        )
+
+    fake_intelligence = type(
+        "IntelligenceResult",
+        (),
+        {
+            "context": running_context,
+            "dns": completed_phase(
+                OrchestrationPhase.DNS,
+                "dns",
+            ),
+            "subdomains": completed_phase(
+                OrchestrationPhase.SUBDOMAINS,
+                "subdomains",
+            ),
+            "http_intelligence": completed_phase(
+                OrchestrationPhase.HTTP_INTELLIGENCE,
+                "http",
+            ),
+            "crawl": completed_phase(
+                OrchestrationPhase.CRAWL,
+                "crawl",
+            ),
+            "javascript": completed_phase(
+                OrchestrationPhase.JAVASCRIPT,
+                "javascript",
+            ).model_copy(update={"required": False}),
+        },
+    )()
+
+    monkeypatch.setattr(
+        workflow_module,
+        "run_intelligence_pipeline",
+        lambda *args, **kwargs: fake_intelligence,
+    )
+
+    def fake_direct_check(
+        database,
+        request,
+        *,
+        actor,
+        evidence_root,
+    ):
+        if request.check_id == "cors-configuration":
+            raise DirectCheckWorkflowError(
+                "simulated bounded CORS request failure"
+            )
+
+        return type(
+            "Result",
+            (),
+            {
+                "evidence": type(
+                    "Evidence",
+                    (),
+                    {
+                        "evidence_id": (
+                            f"evidence-{request.check_id}"
+                        ),
+                        "path": str(
+                            evidence_root
+                            / f"{request.check_id}.json"
+                        ),
+                    },
+                )()
+            },
+        )()
+
+    monkeypatch.setattr(
+        workflow_module,
+        "run_tracked_direct_check",
+        fake_direct_check,
+    )
+
+    result = workflow_module.run_assessment_pipeline(
+        database,
+        context,
+        evidence_root=tmp_path / "workflow-evidence",
+        explicitly_approved=True,
+    )
+
+    parent = database.get_execution(context.parent_execution_id)
+
+    assert parent.state is ExecutionState.COMPLETED
+    assert result.context.status.value == "partial"
+    assert result.calculated_status.value == "partial"
+    assert result.security_headers.completed is True
+    assert result.cors.failed is True
+    assert result.cors.required is False
+    assert result.cors.execution_id is not None
+    assert result.cors.evidence_id is None
+    assert (
+        result.cors.error_summary
+        == "simulated bounded CORS request failure"
+    )
+
+    parent_events = database.list_audit_events(
+        parent.execution_id,
+    )
+
+    optional_failure_events = [
+        event
+        for event in parent_events
+        if event.message
+        == (
+            "[5D][orchestrator] Optional CORS phase "
+            "failed; assessment will continue."
+        )
+    ]
+
+    assert len(optional_failure_events) == 1
+
+    outcome_events = [
+        event
+        for event in parent_events
+        if event.message
+        == (
+            "[5C][orchestrator] Assessment outcome "
+            "calculated: partial"
+        )
+    ]
+
+    assert len(outcome_events) == 1
+    assert outcome_events[0].details["outcome_counts"] == {
+        "completed": 6,
+        "skipped": 0,
+        "failed": 1,
+        "required": 5,
+        "optional": 2,
+    }
