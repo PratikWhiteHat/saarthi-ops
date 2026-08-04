@@ -1,0 +1,69 @@
+"""Domain models for Phase 6 controlled attack validation."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from enum import StrEnum
+
+
+class ControlledValidationRisk(StrEnum):
+    """Safety classification assigned to a validation action."""
+
+    LOW = "low"
+    MODERATE = "moderate"
+    HIGH = "high"
+    DESTRUCTIVE = "destructive"
+
+
+class ControlledValidationDecision(StrEnum):
+    """Policy decision for a controlled validation request."""
+
+    ALLOW = "allow"
+    DENY = "deny"
+    REQUIRE_APPROVAL = "require_approval"
+    MANUAL_ONLY = "manual_only"
+
+
+class ControlledValidationAction(StrEnum):
+    """Supported Phase 6 validation actions.
+
+    Phase 6A defines policy classifications only. It performs no network
+    requests, payload execution, subprocess execution, or state changes.
+    """
+
+    RESPONSE_DIFFERENTIAL = "response_differential"
+    INPUT_HANDLING_OBSERVATION = "input_handling_observation"
+    AUTHORIZATION_BOUNDARY = "authorization_boundary"
+    STATE_CHANGE_VALIDATION = "state_change_validation"
+    FILE_PROCESSING_VALIDATION = "file_processing_validation"
+    DESTRUCTIVE_VALIDATION = "destructive_validation"
+
+
+@dataclass(frozen=True)
+class ControlledValidationRequest:
+    """One operator-requested controlled validation action."""
+
+    execution_id: str
+    target_url: str
+    action: ControlledValidationAction
+    authorized: bool
+    active_testing: bool
+    intrusive_testing: bool = False
+    explicitly_approved: bool = False
+    reversible: bool = True
+    requested_requests: int = 1
+
+
+@dataclass(frozen=True)
+class ControlledValidationPolicyResult:
+    """Fail-closed policy outcome for a validation request."""
+
+    decision: ControlledValidationDecision
+    risk: ControlledValidationRisk
+    reason: str
+
+    @property
+    def allowed(self) -> bool:
+        """Return whether automated execution is permitted."""
+
+        return self.decision is ControlledValidationDecision.ALLOW
