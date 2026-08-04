@@ -30,6 +30,7 @@ from saarthi_ai.persistence.database import (
 from saarthi_ai.persistence.http_intelligence_workflow import (
     _domain_in_execution_scope,
 )
+from saarthi_ai.persistence.http_workflow import fail_execution_safely
 from saarthi_ai.persistence.models import (
     AuditEventType,
     EvidenceCreate,
@@ -107,6 +108,140 @@ def _find_matching_plan(
 
     return None
 
+
+
+def _find_matching_observation(
+    database: SaarthiDatabase,
+    request: ControlledValidationExecutionRequest,
+    *,
+    plan_evidence: EvidenceRecord,
+) -> EvidenceRecord | None:
+    """Return an equivalent persisted observation, if one exists."""
+
+    validation = request.validation
+    policy = evaluate_controlled_validation_execution(request)
+
+    evidence_items = database.list_evidence(
+        validation.execution_id,
+        evidence_type=(
+            EvidenceType.CONTROLLED_VALIDATION_OBSERVATION
+        ),
+    )
+
+    for evidence in evidence_items:
+        metadata = evidence.metadata
+
+        if (
+            metadata.get("target_url") == validation.target_url
+            and metadata.get("action") == validation.action.value
+            and metadata.get("method") == policy.method
+            and metadata.get("plan_evidence_id")
+            == plan_evidence.evidence_id
+            and metadata.get("max_response_bytes")
+            == policy.max_response_bytes
+            and metadata.get("follow_redirects")
+            is policy.follow_redirects
+            and metadata.get("request_attempted") is True
+            and metadata.get("network_activity") is True
+        ):
+            return evidence
+
+    return None
+
+
+def _observation_from_evidence(
+    request: ControlledValidationExecutionRequest,
+    evidence: EvidenceRecord,
+) -> ControlledValidationObservationResult:
+    """Rebuild a safe observation summary without another request."""
+
+    policy = evaluate_controlled_validation_execution(request)
+    metadata = evidence.metadata
+
+    return ControlledValidationObservationResult(
+        policy=policy,
+        request_attempted=True,
+        response_received=True,
+        method=str(metadata.get("method") or policy.method),
+        target_url=request.validation.target_url,
+        final_url=(
+            str(metadata["final_url"])
+            if metadata.get("final_url") is not None
+            else request.validation.target_url
+        ),
+        status_code=int(metadata.get("status_code") or 0),
+        http_version=(
+            str(metadata["http_version"])
+            if metadata.get("http_version") is not None
+            else None
+        ),
+        content_type=(
+            str(metadata["content_type"])
+            if metadata.get("content_type") is not None
+            else None
+        ),
+        response_headers=None,
+        body_bytes_captured=int(
+            metadata.get("body_bytes_captured") or 0
+        ),
+        body_truncated=bool(metadata.get("body_truncated")),
+        body_sha256=(
+            str(metadata["body_sha256"])
+            if metadata.get("body_sha256") is not None
+            else None
+        ),
+    )
+
+
+def _audit_failure_safely(
+    database: SaarthiDatabase,
+    execution_id: str,
+    *,
+    actor: str,
+    error: Exception,
+    evidence_path: str | None,
+    evidence_registered: bool,
+    request_attempted: bool,
+) -> None:
+    """Record a failure without replacing the original exception."""
+
+    orphan_file_removed = False
+
+    if evidence_path is not None and not evidence_registered:
+        try:
+            Path(evidence_path).unlink(missing_ok=True)
+            orphan_file_removed = not Path(evidence_path).exists()
+        except OSError:
+            orphan_file_removed = False
+
+    try:
+        current_state = database.get_execution(execution_id).state
+    except RuntimeError:
+        current_state = ExecutionState.RUNNING
+
+    try:
+        database.add_audit_event(
+            execution_id,
+            event_type=AuditEventType.TOOL_FAILED,
+            actor=actor,
+            message=(
+                "[6F3C][controlled-validation] "
+                "Bounded HTTP observation failed."
+            ),
+            details={
+                "phase_code": "6F3C",
+                "error_type": type(error).__name__,
+                "error": str(error),
+                "execution_state": current_state.value,
+                "request_attempted": request_attempted,
+                "evidence_registered": evidence_registered,
+                "orphan_file_removed": orphan_file_removed,
+                "retry_allowed": False,
+                "requires_new_execution": True,
+            },
+        )
+    except RuntimeError:
+        pass
 
 def _serialize_observation(
     request: ControlledValidationExecutionRequest,
@@ -218,7 +353,7 @@ async def run_tracked_controlled_validation_observation(
     actor: str = "controlled-validation-observer",
     evidence_root: Path | None = None,
 ) -> TrackedControlledValidationObservation:
-    """Run and persist exactly one preplanned bounded observation."""
+    """Run or safely reuse one preplanned bounded observation."""
 
     validation = request.validation
     execution = database.get_execution(validation.execution_id)
@@ -249,12 +384,6 @@ async def run_tracked_controlled_validation_observation(
             "Execution does not allow intrusive testing."
         )
 
-    if execution.state is not ExecutionState.PLANNED:
-        raise InvalidStateTransitionError(
-            "Controlled-validation observation requires an execution in "
-            f"'planned' state; current state is '{execution.state.value}'."
-        )
-
     _validate_target_scope(validation.target_url, execution)
 
     policy = evaluate_controlled_validation_execution(request)
@@ -276,6 +405,62 @@ async def run_tracked_controlled_validation_observation(
             "is required before observation."
         )
 
+    existing_evidence = _find_matching_observation(
+        database,
+        request,
+        plan_evidence=plan_evidence,
+    )
+
+    if existing_evidence is not None:
+        if execution.state not in {
+            ExecutionState.COMPLETED,
+            ExecutionState.FAILED,
+        }:
+            raise InvalidStateTransitionError(
+                "Existing controlled-validation observation evidence "
+                "requires a terminal execution state."
+            )
+
+        observation = _observation_from_evidence(
+            request,
+            existing_evidence,
+        )
+
+        database.add_audit_event(
+            validation.execution_id,
+            event_type=AuditEventType.TOOL_COMPLETED,
+            actor=actor,
+            message=(
+                "[6F3C][controlled-validation] "
+                "Existing bounded observation reused."
+            ),
+            details={
+                "phase_code": "6F3C",
+                "evidence_id": existing_evidence.evidence_id,
+                "evidence_sha256": existing_evidence.sha256,
+                "plan_evidence_id": plan_evidence.evidence_id,
+                "idempotent_reuse": True,
+                "network_activity": False,
+                "second_request_sent": False,
+            },
+        )
+
+        return TrackedControlledValidationObservation(
+            execution=execution,
+            observation=observation,
+            evidence=existing_evidence,
+        )
+
+    if execution.state is not ExecutionState.PLANNED:
+        raise InvalidStateTransitionError(
+            "Controlled-validation observation requires an execution in "
+            f"'planned' state; current state is '{execution.state.value}'."
+        )
+
+    evidence_path: str | None = None
+    evidence_registered = False
+    observation: ControlledValidationObservationResult | None = None
+
     execution = database.transition_execution(
         validation.execution_id,
         ExecutionState.RUNNING,
@@ -283,141 +468,197 @@ async def run_tracked_controlled_validation_observation(
         reason="Approved bounded controlled-validation observation started.",
     )
 
-    database.add_audit_event(
-        validation.execution_id,
-        event_type=AuditEventType.TOOL_STARTED,
-        actor=actor,
-        message=(
-            "[6F3B][controlled-validation] "
-            "Bounded HTTP observation started."
-        ),
-        details={
-            "phase_code": "6F3B",
-            "tool": "saarthi-controlled-validation-observer",
-            "target_url": validation.target_url,
-            "action": validation.action.value,
-            "method": policy.method,
-            "plan_evidence_id": plan_evidence.evidence_id,
-            "requested_requests": validation.requested_requests,
-        },
-    )
-
-    observation = await execute_bounded_observation(
-        request,
-        transport=transport,
-    )
-
-    if not observation.succeeded:
-        raise ControlledValidationObservationWorkflowError(
-            observation.error
-            or "Controlled-validation observation did not succeed."
-        )
-
-    database.add_audit_event(
-        validation.execution_id,
-        event_type=AuditEventType.TOOL_OUTPUT,
-        actor=actor,
-        message=(
-            "[6F3B][controlled-validation] "
-            f"HTTP {observation.status_code}; "
-            f"captured={observation.body_bytes_captured}; "
-            f"truncated={str(observation.body_truncated).lower()}."
-        ),
-        details={
-            "phase_code": "6F3B",
-            "status_code": observation.status_code,
-            "final_url": observation.final_url,
-            "http_version": observation.http_version,
-            "content_type": observation.content_type,
-            "body_bytes_captured": observation.body_bytes_captured,
-            "body_truncated": observation.body_truncated,
-            "body_sha256": observation.body_sha256,
-        },
-    )
-
-    payload = _serialize_observation(
-        request,
-        observation,
-        plan_evidence=plan_evidence,
-    )
-
-    evidence_path, evidence_sha256, evidence_size = (
-        _write_evidence_atomically(
-            payload,
-            evidence_root=evidence_root,
-        )
-    )
-
-    evidence = database.add_evidence(
-        validation.execution_id,
-        EvidenceCreate(
-            evidence_type=(
-                EvidenceType.CONTROLLED_VALIDATION_OBSERVATION
+    try:
+        database.add_audit_event(
+            validation.execution_id,
+            event_type=AuditEventType.TOOL_STARTED,
+            actor=actor,
+            message=(
+                "[6F3C][controlled-validation] "
+                "Bounded HTTP observation started."
             ),
-            source="saarthi-controlled-validation-observer",
-            path=evidence_path,
-            sha256=evidence_sha256,
-            size_bytes=evidence_size,
-            content_type="application/json",
-            step_id="controlled-validation-observation-001",
-            tool_name="saarthi-controlled-validation-observer",
-            metadata={
-                "phase": "6F3B",
+            details={
+                "phase_code": "6F3C",
+                "tool": "saarthi-controlled-validation-observer",
                 "target_url": validation.target_url,
                 "action": validation.action.value,
-                "method": observation.method,
+                "method": policy.method,
+                "plan_evidence_id": plan_evidence.evidence_id,
+                "requested_requests": validation.requested_requests,
+            },
+        )
+
+        observation = await execute_bounded_observation(
+            request,
+            transport=transport,
+        )
+
+        if not observation.succeeded:
+            raise ControlledValidationObservationWorkflowError(
+                observation.error
+                or "Controlled-validation observation did not succeed."
+            )
+
+        database.add_audit_event(
+            validation.execution_id,
+            event_type=AuditEventType.TOOL_OUTPUT,
+            actor=actor,
+            message=(
+                "[6F3C][controlled-validation] "
+                f"HTTP {observation.status_code}; "
+                f"captured={observation.body_bytes_captured}; "
+                f"truncated="
+                f"{str(observation.body_truncated).lower()}."
+            ),
+            details={
+                "phase_code": "6F3C",
                 "status_code": observation.status_code,
+                "final_url": observation.final_url,
+                "http_version": observation.http_version,
+                "content_type": observation.content_type,
                 "body_bytes_captured": (
                     observation.body_bytes_captured
                 ),
                 "body_truncated": observation.body_truncated,
                 "body_sha256": observation.body_sha256,
-                "plan_evidence_id": plan_evidence.evidence_id,
-                "request_attempted": True,
-                "network_activity": True,
             },
-        ),
-        actor=actor,
-    )
+        )
 
-    database.add_audit_event(
-        validation.execution_id,
-        event_type=AuditEventType.TOOL_COMPLETED,
-        actor=actor,
-        message=(
-            "[6F3B][controlled-validation] "
-            "Bounded HTTP observation persisted."
-        ),
-        details={
-            "phase_code": "6F3B",
-            "evidence_id": evidence.evidence_id,
-            "evidence_sha256": evidence.sha256,
-            "plan_evidence_id": plan_evidence.evidence_id,
-            "status_code": observation.status_code,
-        },
-    )
+        payload = _serialize_observation(
+            request,
+            observation,
+            plan_evidence=plan_evidence,
+        )
+        payload["phase"] = "6F3C"
 
-    execution = database.transition_execution(
-        validation.execution_id,
-        ExecutionState.ANALYZING,
-        actor=actor,
-        reason=(
-            "Controlled-validation observation evidence is ready "
-            "for analysis."
-        ),
-    )
+        evidence_path, evidence_sha256, evidence_size = (
+            _write_evidence_atomically(
+                payload,
+                evidence_root=evidence_root,
+            )
+        )
 
-    execution = database.transition_execution(
-        validation.execution_id,
-        ExecutionState.COMPLETED,
-        actor=actor,
-        reason=(
-            "Phase 6F tracked controlled-validation observation completed."
-        ),
-    )
+        evidence = database.add_evidence(
+            validation.execution_id,
+            EvidenceCreate(
+                evidence_type=(
+                    EvidenceType.CONTROLLED_VALIDATION_OBSERVATION
+                ),
+                source="saarthi-controlled-validation-observer",
+                path=evidence_path,
+                sha256=evidence_sha256,
+                size_bytes=evidence_size,
+                content_type="application/json",
+                step_id="controlled-validation-observation-001",
+                tool_name="saarthi-controlled-validation-observer",
+                metadata={
+                    "phase": "6F3C",
+                    "target_url": validation.target_url,
+                    "action": validation.action.value,
+                    "method": observation.method,
+                    "status_code": observation.status_code,
+                    "final_url": observation.final_url,
+                    "http_version": observation.http_version,
+                    "content_type": observation.content_type,
+                    "body_bytes_captured": (
+                        observation.body_bytes_captured
+                    ),
+                    "body_truncated": (
+                        observation.body_truncated
+                    ),
+                    "body_sha256": observation.body_sha256,
+                    "plan_evidence_id": plan_evidence.evidence_id,
+                    "max_response_bytes": (
+                        observation.policy.max_response_bytes
+                    ),
+                    "follow_redirects": (
+                        observation.policy.follow_redirects
+                    ),
+                    "request_attempted": True,
+                    "network_activity": True,
+                },
+            ),
+            actor=actor,
+        )
+        evidence_registered = True
 
-    return TrackedControlledValidationObservation(
-        execution=execution,
-        observation=observation,
-        evidence=evidence,
-    )
+        database.add_audit_event(
+            validation.execution_id,
+            event_type=AuditEventType.TOOL_COMPLETED,
+            actor=actor,
+            message=(
+                "[6F3C][controlled-validation] "
+                "Bounded HTTP observation persisted."
+            ),
+            details={
+                "phase_code": "6F3C",
+                "evidence_id": evidence.evidence_id,
+                "evidence_sha256": evidence.sha256,
+                "plan_evidence_id": plan_evidence.evidence_id,
+                "status_code": observation.status_code,
+            },
+        )
+
+        execution = database.transition_execution(
+            validation.execution_id,
+            ExecutionState.ANALYZING,
+            actor=actor,
+            reason=(
+                "Controlled-validation observation evidence "
+                "is ready for analysis."
+            ),
+        )
+
+        execution = database.transition_execution(
+            validation.execution_id,
+            ExecutionState.COMPLETED,
+            actor=actor,
+            reason=(
+                "Phase 6F tracked controlled-validation "
+                "observation completed."
+            ),
+        )
+
+        return TrackedControlledValidationObservation(
+            execution=execution,
+            observation=observation,
+            evidence=evidence,
+        )
+
+    except (
+        ControlledValidationObservationWorkflowError,
+        InvalidStateTransitionError,
+        OSError,
+        RuntimeError,
+        ValueError,
+    ) as exc:
+        _audit_failure_safely(
+            database,
+            validation.execution_id,
+            actor=actor,
+            error=exc,
+            evidence_path=evidence_path,
+            evidence_registered=evidence_registered,
+            request_attempted=(
+                observation.request_attempted
+                if observation is not None
+                else False
+            ),
+        )
+
+        fail_execution_safely(
+            database,
+            validation.execution_id,
+            actor=actor,
+            reason=str(exc),
+        )
+
+        if isinstance(
+            exc,
+            ControlledValidationObservationWorkflowError,
+        ):
+            raise
+
+        raise ControlledValidationObservationWorkflowError(
+            "Controlled-validation observation failed safely."
+        ) from exc

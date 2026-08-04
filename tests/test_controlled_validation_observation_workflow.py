@@ -17,6 +17,7 @@ from saarthi_ai.controlled_validation.models import (
     ControlledValidationRequest,
 )
 from saarthi_ai.persistence.controlled_validation_observation_workflow import (
+    ControlledValidationObservationWorkflowError,
     run_tracked_controlled_validation_observation,
 )
 from saarthi_ai.persistence.controlled_validation_workflow import (
@@ -129,7 +130,7 @@ async def test_tracked_observation_persists_one_mocked_result(
         hashlib.sha256(evidence_bytes).hexdigest()
         == result.evidence.sha256
     )
-    assert payload["phase"] == "6F3B"
+    assert payload["phase"] == "6F3C"
     assert payload["plan"]["evidence_id"] == plan.evidence.evidence_id
     assert payload["response"]["status_code"] == 200
     assert (
@@ -169,3 +170,270 @@ async def test_tracked_observation_persists_one_mocked_result(
     assert ExecutionState.RUNNING.value in state_changes
     assert ExecutionState.ANALYZING.value in state_changes
     assert ExecutionState.COMPLETED.value in state_changes
+
+
+@pytest.mark.asyncio
+async def test_network_failure_moves_execution_to_failed(
+    database: SaarthiDatabase,
+    tmp_path: Path,
+) -> None:
+    execution_id = create_execution(database)
+    request = make_request(execution_id)
+
+    create_tracked_controlled_validation_plan(
+        database,
+        request.validation,
+        evidence_root=tmp_path / "plans",
+    )
+
+    request_count = 0
+
+    def handler(request_object: httpx.Request) -> httpx.Response:
+        nonlocal request_count
+        request_count += 1
+        raise httpx.ConnectError(
+            "simulated connection failure",
+            request=request_object,
+        )
+
+    with pytest.raises(
+        Exception,
+        match="simulated connection failure",
+    ):
+        await run_tracked_controlled_validation_observation(
+            database,
+            request,
+            transport=httpx.MockTransport(handler),
+            evidence_root=tmp_path / "observations",
+        )
+
+    assert request_count == 1
+    assert (
+        database.get_execution(execution_id).state
+        is ExecutionState.FAILED
+    )
+    assert database.list_evidence(
+        execution_id,
+        evidence_type=(
+            EvidenceType.CONTROLLED_VALIDATION_OBSERVATION
+        ),
+    ) == []
+
+    failure_events = [
+        event
+        for event in database.list_audit_events(execution_id)
+        if event.event_type is AuditEventType.TOOL_FAILED
+    ]
+
+    assert len(failure_events) == 1
+    assert failure_events[0].details["request_attempted"] is True
+    assert failure_events[0].details["retry_allowed"] is False
+    assert (
+        failure_events[0].details["requires_new_execution"]
+        is True
+    )
+
+
+@pytest.mark.asyncio
+async def test_evidence_write_failure_is_fail_closed(
+    database: SaarthiDatabase,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import saarthi_ai.persistence.controlled_validation_observation_workflow as workflow
+
+    execution_id = create_execution(database)
+    request = make_request(execution_id)
+
+    create_tracked_controlled_validation_plan(
+        database,
+        request.validation,
+        evidence_root=tmp_path / "plans",
+    )
+
+    def fail_write(*args: object, **kwargs: object) -> object:
+        raise OSError("simulated observation evidence write failure")
+
+    monkeypatch.setattr(
+        workflow,
+        "_write_evidence_atomically",
+        fail_write,
+    )
+
+    def handler(request_object: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            content=b"bounded result",
+            request=request_object,
+        )
+
+    with pytest.raises(
+        workflow.ControlledValidationObservationWorkflowError,
+        match="failed safely",
+    ):
+        await workflow.run_tracked_controlled_validation_observation(
+            database,
+            request,
+            transport=httpx.MockTransport(handler),
+            evidence_root=tmp_path / "observations",
+        )
+
+    assert (
+        database.get_execution(execution_id).state
+        is ExecutionState.FAILED
+    )
+    assert database.list_evidence(
+        execution_id,
+        evidence_type=(
+            EvidenceType.CONTROLLED_VALIDATION_OBSERVATION
+        ),
+    ) == []
+
+
+@pytest.mark.asyncio
+async def test_registration_failure_removes_orphan_json(
+    database: SaarthiDatabase,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    execution_id = create_execution(database)
+    request = make_request(execution_id)
+    evidence_root = tmp_path / "observations"
+
+    create_tracked_controlled_validation_plan(
+        database,
+        request.validation,
+        evidence_root=tmp_path / "plans",
+    )
+
+    original_add_evidence = database.add_evidence
+
+    def fail_observation_registration(
+        execution_id_value: str,
+        evidence_request: object,
+        *,
+        actor: str = "system",
+    ) -> object:
+        if (
+            getattr(evidence_request, "evidence_type", None)
+            is EvidenceType.CONTROLLED_VALIDATION_OBSERVATION
+        ):
+            raise RuntimeError(
+                "simulated observation registration failure"
+            )
+
+        return original_add_evidence(
+            execution_id_value,
+            evidence_request,  # type: ignore[arg-type]
+            actor=actor,
+        )
+
+    monkeypatch.setattr(
+        database,
+        "add_evidence",
+        fail_observation_registration,
+    )
+
+    def handler(request_object: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            content=b"bounded result",
+            request=request_object,
+        )
+
+    with pytest.raises(
+        ControlledValidationObservationWorkflowError,
+        match="failed safely",
+    ):
+        await run_tracked_controlled_validation_observation(
+            database,
+            request,
+            transport=httpx.MockTransport(handler),
+            evidence_root=evidence_root,
+        )
+
+    assert list(evidence_root.glob("*.json")) == []
+    assert (
+        database.get_execution(execution_id).state
+        is ExecutionState.FAILED
+    )
+
+    failure_events = [
+        event
+        for event in database.list_audit_events(execution_id)
+        if event.event_type is AuditEventType.TOOL_FAILED
+    ]
+
+    assert len(failure_events) == 1
+    assert (
+        failure_events[0].details["orphan_file_removed"]
+        is True
+    )
+    assert (
+        failure_events[0].details["evidence_registered"]
+        is False
+    )
+
+
+@pytest.mark.asyncio
+async def test_completed_observation_is_reused_without_second_request(
+    database: SaarthiDatabase,
+    tmp_path: Path,
+) -> None:
+    execution_id = create_execution(database)
+    request = make_request(execution_id)
+
+    create_tracked_controlled_validation_plan(
+        database,
+        request.validation,
+        evidence_root=tmp_path / "plans",
+    )
+
+    request_count = 0
+
+    def handler(request_object: httpx.Request) -> httpx.Response:
+        nonlocal request_count
+        request_count += 1
+        return httpx.Response(
+            200,
+            content=b"idempotent result",
+            request=request_object,
+        )
+
+    transport = httpx.MockTransport(handler)
+
+    first = await run_tracked_controlled_validation_observation(
+        database,
+        request,
+        transport=transport,
+        evidence_root=tmp_path / "observations",
+    )
+
+    second = await run_tracked_controlled_validation_observation(
+        database,
+        request,
+        transport=transport,
+        evidence_root=tmp_path / "observations",
+    )
+
+    assert request_count == 1
+    assert first.evidence.evidence_id == second.evidence.evidence_id
+    assert second.observation.succeeded is True
+
+    evidence_items = database.list_evidence(
+        execution_id,
+        evidence_type=(
+            EvidenceType.CONTROLLED_VALIDATION_OBSERVATION
+        ),
+    )
+
+    assert len(evidence_items) == 1
+
+    reuse_events = [
+        event
+        for event in database.list_audit_events(execution_id)
+        if event.details.get("idempotent_reuse") is True
+    ]
+
+    assert len(reuse_events) == 1
+    assert reuse_events[0].details["second_request_sent"] is False
