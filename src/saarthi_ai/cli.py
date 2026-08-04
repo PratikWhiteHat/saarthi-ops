@@ -26,6 +26,10 @@ from saarthi_ai.blind_validation.models import (
 from saarthi_ai.checks.models import DirectCheckRequest
 from saarthi_ai.config import get_settings
 from saarthi_ai.confirmation.models import ConfirmationCandidate
+from saarthi_ai.controlled_validation.models import (
+    ControlledValidationAction,
+    ControlledValidationRequest,
+)
 from saarthi_ai.execution.http_collector import HttpCollectionError
 from saarthi_ai.execution.http_models import HttpMetadataCollectionRequest
 from saarthi_ai.llm import (
@@ -39,6 +43,10 @@ from saarthi_ai.persistence.blind_validation_workflow import (
 from saarthi_ai.persistence.confirmation_workflow import (
     ConfirmationWorkflowError,
     run_confirmation_workflow,
+)
+from saarthi_ai.persistence.controlled_validation_workflow import (
+    ControlledValidationWorkflowError,
+    create_tracked_controlled_validation_plan,
 )
 from saarthi_ai.persistence.crawl_workflow import (
     run_tracked_crawl,
@@ -136,6 +144,11 @@ confirm_app = typer.Typer(
     help="Run deterministic Phase 4D evidence confirmation.",
 )
 
+controlled_app = typer.Typer(
+    no_args_is_help=True,
+    help="Prepare bounded Phase 6 controlled-validation plans.",
+)
+
 workflow_app = typer.Typer(
     no_args_is_help=True,
     help="Run authorized multi-phase assessment workflows.",
@@ -148,6 +161,7 @@ app.add_typer(recon_app, name="recon")
 app.add_typer(check_app, name="check")
 app.add_typer(blind_app, name="blind")
 app.add_typer(confirm_app, name="confirm")
+app.add_typer(controlled_app, name="controlled")
 app.add_typer(workflow_app, name="workflow")
 
 console = Console()
@@ -1611,6 +1625,130 @@ def confirm_run(
     console.print(f"Evidence SHA-256: {evidence.sha256}")
     console.print(
         "[dim]No additional security test or payload was executed.[/dim]"
+    )
+
+
+@controlled_app.command("plan")
+def controlled_plan(
+    execution_id: Annotated[
+        str,
+        typer.Option(
+            "--execution",
+            help="Authorized assessment execution identifier.",
+        ),
+    ],
+    target_url: Annotated[
+        str,
+        typer.Option(
+            "--url",
+            help="In-scope HTTP or HTTPS target URL.",
+        ),
+    ],
+    action: Annotated[
+        ControlledValidationAction,
+        typer.Option(
+            "--action",
+            help="Supported controlled-validation action.",
+            case_sensitive=False,
+        ),
+    ] = ControlledValidationAction.RESPONSE_DIFFERENTIAL,
+    requests_count: Annotated[
+        int,
+        typer.Option(
+            "--requests",
+            min=1,
+            max=5,
+            help="Maximum bounded request count recorded in the plan.",
+        ),
+    ] = 1,
+    intrusive: Annotated[
+        bool,
+        typer.Option(
+            "--intrusive",
+            help="Confirm that intrusive testing is permitted.",
+        ),
+    ] = False,
+    approved: Annotated[
+        bool,
+        typer.Option(
+            "--approved",
+            help="Confirm explicit approval to persist this validation plan.",
+        ),
+    ] = False,
+) -> None:
+    """Persist one bounded Phase 6 plan without executing an action."""
+
+    if not approved:
+        console.print(
+            "[bold yellow]Approval required.[/bold yellow] "
+            "Review the target, action, and request bound, then rerun "
+            "with --approved."
+        )
+        raise typer.Exit(code=1)
+
+    database = get_database()
+
+    request = ControlledValidationRequest(
+        execution_id=execution_id,
+        target_url=target_url,
+        action=action,
+        authorized=True,
+        active_testing=True,
+        intrusive_testing=intrusive,
+        explicitly_approved=True,
+        reversible=True,
+        requested_requests=requests_count,
+    )
+
+    console.print(
+        "[bold]Preparing bounded Phase 6 controlled-validation plan...[/bold]"
+    )
+    console.print(f"Execution: {execution_id}")
+    console.print(f"Target: {target_url}")
+    console.print(f"Action: {action.value}")
+    console.print(f"Requested requests: {requests_count}")
+    console.print(f"Intrusive permission requested: {intrusive}")
+
+    try:
+        result = create_tracked_controlled_validation_plan(
+            database,
+            request,
+            actor="cli-controlled-validation-planner",
+            evidence_root=(
+                Path.cwd()
+                / "evidence"
+                / "controlled-validation-plans"
+            ),
+        )
+    except (
+        ExecutionNotFoundError,
+        InvalidStateTransitionError,
+        ControlledValidationWorkflowError,
+        ValueError,
+    ) as exc:
+        console.print(
+            "[bold red]Controlled-validation planning failed:"
+            f"[/bold red] {exc}"
+        )
+        raise typer.Exit(code=1) from exc
+
+    console.print()
+    console.print(
+        "[bold green]Controlled-validation plan persisted.[/bold green]"
+    )
+    console.print(f"Execution state: {result.execution.state.value}")
+    console.print(f"Policy decision: {result.policy.decision.value}")
+    console.print(f"Risk: {result.policy.risk.value}")
+    console.print(f"Reason: {result.policy.reason}")
+    console.print("Executed: false")
+    console.print("Network activity: false")
+    console.print("Payload sent: false")
+    console.print(f"Evidence ID: {result.evidence.evidence_id}")
+    console.print(f"Evidence path: {result.evidence.path}")
+    console.print(f"Evidence SHA-256: {result.evidence.sha256}")
+    console.print(
+        "[dim]This command persisted a validation plan only. "
+        "No request, payload, or subprocess was executed.[/dim]"
     )
 
 
