@@ -155,6 +155,34 @@ def _serialize_plan(
     }
 
 
+def _find_matching_plan_evidence(
+    database: SaarthiDatabase,
+    request: ControlledValidationRequest,
+) -> EvidenceRecord | None:
+    """Return an existing equivalent Phase 6B plan, if one exists."""
+
+    evidence_items = database.list_evidence(
+        request.execution_id,
+        evidence_type=EvidenceType.CONTROLLED_VALIDATION_PLAN,
+    )
+
+    for evidence in evidence_items:
+        metadata = evidence.metadata
+
+        if (
+            metadata.get("target_url") == request.target_url
+            and metadata.get("action") == request.action.value
+            and metadata.get("requested_requests")
+            == request.requested_requests
+            and metadata.get("reversible") is request.reversible
+            and metadata.get("executed") is False
+            and metadata.get("network_activity") is False
+        ):
+            return evidence
+
+    return None
+
+
 def _write_evidence_atomically(
     payload: dict[str, object],
     *,
@@ -250,6 +278,38 @@ def create_tracked_controlled_validation_plan(
         actor=actor,
     )
 
+    existing_evidence = _find_matching_plan_evidence(
+        database,
+        request,
+    )
+
+    if existing_evidence is not None:
+        database.add_audit_event(
+            request.execution_id,
+            event_type=AuditEventType.TOOL_COMPLETED,
+            actor=actor,
+            message=(
+                "[6B][controlled-validation] "
+                "Existing non-executed validation plan reused."
+            ),
+            details={
+                "phase_code": "6B",
+                "action": request.action.value,
+                "risk": policy.risk.value,
+                "evidence_id": existing_evidence.evidence_id,
+                "evidence_sha256": existing_evidence.sha256,
+                "executed": False,
+                "network_activity": False,
+                "idempotent_reuse": True,
+            },
+        )
+
+        return TrackedControlledValidationPlan(
+            execution=execution,
+            policy=policy,
+            evidence=existing_evidence,
+        )
+
     database.add_audit_event(
         request.execution_id,
         event_type=AuditEventType.APPROVAL_RECORDED,
@@ -287,6 +347,9 @@ def create_tracked_controlled_validation_plan(
     )
 
     payload = _serialize_plan(request, policy)
+
+    evidence_path: str | None = None
+    evidence_registered = False
 
     try:
         evidence_path, evidence_sha256, evidence_size = (
@@ -327,7 +390,17 @@ def create_tracked_controlled_validation_plan(
             ),
             actor=actor,
         )
+        evidence_registered = True
     except (OSError, RuntimeError, ValueError) as exc:
+        if (
+            evidence_path is not None
+            and not evidence_registered
+        ):
+            try:
+                Path(evidence_path).unlink(missing_ok=True)
+            except OSError:
+                pass
+
         database.add_audit_event(
             request.execution_id,
             event_type=AuditEventType.TOOL_FAILED,
@@ -340,6 +413,13 @@ def create_tracked_controlled_validation_plan(
                 "phase_code": "6B",
                 "action": request.action.value,
                 "error_type": type(exc).__name__,
+                "execution_state": ExecutionState.PLANNED.value,
+                "retry_allowed": True,
+                "evidence_registered": False,
+                "orphan_file_removed": (
+                    evidence_path is not None
+                    and not Path(evidence_path).exists()
+                ),
             },
         )
         raise ControlledValidationWorkflowError(
