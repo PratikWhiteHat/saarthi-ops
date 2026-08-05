@@ -37,6 +37,8 @@ from saarthi_ai.execution.http_collector import HttpCollectionError
 from saarthi_ai.execution.http_models import HttpMetadataCollectionRequest
 from saarthi_ai.execution.nuclei_adapter import (
     NucleiDryRunRequest,
+    NucleiExecutionRequest,
+    build_nuclei_invocation_preview,
 )
 from saarthi_ai.llm import (
     OllamaUnavailableError,
@@ -87,6 +89,10 @@ from saarthi_ai.persistence.models import (
     EvidenceType,
     ExecutionCreate,
     ExecutionState,
+)
+from saarthi_ai.persistence.nuclei_preparation_workflow import (
+    NucleiPreparationWorkflowError,
+    create_tracked_nuclei_preparation,
 )
 from saarthi_ai.persistence.nuclei_preview_workflow import (
     NucleiPreviewWorkflowError,
@@ -1917,6 +1923,194 @@ def controlled_nuclei_preview(
         "[dim]This command persisted a fixed invocation preview only. "
         "Nuclei was not started and no network request was sent.[/dim]"
     )
+
+
+@controlled_app.command("nuclei-prepare")
+def controlled_nuclei_prepare(
+    execution_id: Annotated[
+        str,
+        typer.Option(
+            "--execution",
+            help="Execution containing a matching persisted Nuclei preview.",
+        ),
+    ],
+    target_url: Annotated[
+        str,
+        typer.Option(
+            "--url",
+            help="Exact in-scope URL from the persisted Nuclei preview.",
+        ),
+    ],
+    rate_limit: Annotated[
+        int,
+        typer.Option(
+            "--rate-limit",
+            min=1,
+            max=2,
+            help="Approved Nuclei request rate per second, capped at 2.",
+        ),
+    ] = 1,
+    concurrency: Annotated[
+        int,
+        typer.Option(
+            "--concurrency",
+            min=1,
+            max=2,
+            help="Approved Nuclei concurrency, capped at 2.",
+        ),
+    ] = 1,
+    timeout_seconds: Annotated[
+        int,
+        typer.Option(
+            "--timeout",
+            min=1,
+            max=10,
+            help="Approved per-request timeout in seconds, capped at 10.",
+        ),
+    ] = 10,
+    approved: Annotated[
+        bool,
+        typer.Option(
+            "--approved",
+            help=(
+                "Explicitly approve persistence of the bounded, "
+                "non-executed Nuclei runner preparation."
+            ),
+        ),
+    ] = False,
+) -> None:
+    """Persist a bounded Nuclei execution preparation without execution."""
+
+    if not approved:
+        console.print(
+            "[bold yellow]Approval required.[/bold yellow] "
+            "Review the matching preview, target, rate, concurrency, "
+            "request timeout, 120-second process bound, and output cap, "
+            "then rerun with --approved."
+        )
+        console.print("Executed: false")
+        console.print("Network activity: false")
+        console.print("Subprocess started: false")
+        console.print("Runner invoked: false")
+        console.print("Executable resolved: false")
+        raise typer.Exit(code=1)
+
+    preview = build_nuclei_invocation_preview(
+        NucleiDryRunRequest(
+            target_url=target_url,
+            authorized=True,
+            active_testing=True,
+            approval_granted=True,
+            rate_limit_per_second=rate_limit,
+            concurrency=concurrency,
+            timeout_seconds=timeout_seconds,
+            dry_run=True,
+        )
+    )
+
+    request = NucleiExecutionRequest(
+        preview=preview,
+        authorization_confirmed=True,
+        active_testing_allowed=True,
+        explicitly_approved=True,
+    )
+
+    console.print(
+        "[bold]Preparing bounded non-executed Nuclei runner binding...[/bold]"
+    )
+    console.print(f"Execution: {execution_id}")
+    console.print(f"Target: {preview.target_url}")
+    console.print(
+        f"Rate limit: {preview.rate_limit_per_second} request(s)/second"
+    )
+    console.print(f"Concurrency: {preview.concurrency}")
+    console.print(
+        f"Request timeout: {preview.timeout_seconds} second(s)"
+    )
+    console.print("Process timeout bound: 120 second(s)")
+    console.print("Output cap per stream: 1000000 byte(s)")
+
+    try:
+        result = create_tracked_nuclei_preparation(
+            get_database(),
+            execution_id,
+            request,
+            actor="cli-controlled-nuclei-preparation",
+            evidence_root=(
+                Path.cwd()
+                / "evidence"
+                / "controlled-nuclei-preparations"
+            ),
+        )
+    except (
+        ExecutionNotFoundError,
+        InvalidStateTransitionError,
+        NucleiPreparationWorkflowError,
+        ValueError,
+    ) as exc:
+        console.print(
+            "[bold red]Nuclei preparation failed:[/bold red] "
+            f"{exc}"
+        )
+        console.print("Executed: false")
+        console.print("Network activity: false")
+        console.print("Subprocess started: false")
+        console.print("Runner invoked: false")
+        console.print("Executable resolved: false")
+        raise typer.Exit(code=1) from exc
+
+    plan = result.plan
+    binding = result.binding
+
+    console.print()
+    console.print(
+        "[bold green]Controlled Nuclei preparation persisted.[/bold green]"
+    )
+    console.print(f"Execution state: {result.execution.state.value}")
+    console.print(f"Tool: {plan.tool_name}")
+    console.print(f"Target: {plan.target_url}")
+    console.print("Arguments:")
+    console.print("  " + " ".join(plan.arguments))
+    console.print(
+        f"Rate limit: {plan.rate_limit_per_second} request(s)/second"
+    )
+    console.print(f"Concurrency: {plan.concurrency}")
+    console.print(
+        f"Request timeout: {plan.request_timeout_seconds} second(s)"
+    )
+    console.print(
+        "Process timeout: "
+        f"{binding.profile.timeout_seconds} second(s)"
+    )
+    console.print(
+        "Output cap per stream: "
+        f"{binding.profile.max_output_bytes} byte(s)"
+    )
+    console.print(
+        f"Maximum arguments: {binding.profile.max_arguments}"
+    )
+    console.print("Executed: false")
+    console.print("Network activity: false")
+    console.print("Subprocess started: false")
+    console.print("Runner invoked: false")
+    console.print("Executable resolved: false")
+    console.print(
+        "Existing evidence reused: "
+        f"{str(result.reused_existing_evidence).lower()}"
+    )
+    console.print(
+        f"Preview evidence ID: "
+        f"{result.preview_evidence.evidence_id}"
+    )
+    console.print(f"Evidence ID: {result.evidence.evidence_id}")
+    console.print(f"Evidence path: {result.evidence.path}")
+    console.print(f"Evidence SHA-256: {result.evidence.sha256}")
+    console.print(
+        "[dim]This command persisted an immutable runner preparation only. "
+        "The runner was not invoked, no executable was resolved, "
+        "Nuclei was not started, and no network request was sent.[/dim]"
+    )
+
 
 
 @controlled_app.command("observe")
