@@ -1146,3 +1146,293 @@ def test_safe_tui_display_rejects_invalid_bound() -> None:
         match="max_length must be at least 2",
     ):
         safe_tui_display("value", max_length=1)
+
+
+def test_planned_nuclei_preview_maps_to_phase_6i() -> None:
+    assert (
+        infer_phase(
+            "planned",
+            {"controlled_nuclei_preview"},
+        )
+        == "6I — CONTROLLED NUCLEI PREVIEW"
+    )
+
+
+def test_created_nuclei_preview_maps_to_phase_6i() -> None:
+    assert (
+        infer_phase(
+            "created",
+            {"controlled_nuclei_preview"},
+        )
+        == "6I — CONTROLLED NUCLEI PREVIEW"
+    )
+
+
+def test_nuclei_preview_compact_phase_is_6i() -> None:
+    assert (
+        infer_phase_short(
+            "planned",
+            {"controlled_nuclei_preview"},
+        )
+        == "6I"
+    )
+
+
+def test_loads_safe_controlled_nuclei_preview() -> None:
+    import json
+    import sqlite3
+
+    from saarthi_ai.tui.app import ReadOnlySaarthiRepository
+
+    connection = sqlite3.connect(":memory:")
+    connection.row_factory = sqlite3.Row
+
+    connection.execute(
+        """
+        CREATE TABLE evidence (
+            evidence_id TEXT PRIMARY KEY,
+            execution_id TEXT NOT NULL,
+            evidence_type TEXT NOT NULL,
+            sha256 TEXT,
+            metadata_json TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        )
+        """
+    )
+
+    connection.execute(
+        """
+        INSERT INTO evidence (
+            evidence_id,
+            execution_id,
+            evidence_type,
+            sha256,
+            metadata_json,
+            created_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (
+            "evidence-nuclei-preview",
+            "execution-test",
+            "controlled_nuclei_preview",
+            "a" * 64,
+            json.dumps(
+                {
+                    "target_url": "https://example.com/",
+                    "arguments": [
+                        "-u",
+                        "https://example.com/",
+                        "-tags",
+                        "exposure,misconfig,tech",
+                        "-exclude-tags",
+                        (
+                            "bruteforce,dos,fuzz,headless,"
+                            "intrusive,token-spray"
+                        ),
+                    ],
+                    "rate_limit_per_second": 2,
+                    "concurrency": 2,
+                    "timeout_seconds": 7,
+                    "executed": False,
+                    "network_activity": False,
+                    "subprocess_started": False,
+                }
+            ),
+            "2026-08-05T08:00:00+00:00",
+        ),
+    )
+
+    repository = ReadOnlySaarthiRepository()
+    preview = repository._load_controlled_nuclei_preview(
+        connection,
+        {"evidence"},
+        "execution-test",
+    )
+
+    assert preview is not None
+    assert preview["evidence_id"] == "evidence-nuclei-preview"
+    assert preview["tool_name"] == "nuclei"
+    assert preview["target_url"] == "https://example.com/"
+    assert preview["rate_limit_per_second"] == "2"
+    assert preview["concurrency"] == "2"
+    assert preview["timeout_seconds"] == "7"
+    assert preview["allowed_tags"] == "exposure,misconfig,tech"
+    assert (
+        preview["excluded_tags"]
+        == "bruteforce,dos,fuzz,headless,intrusive,token-spray"
+    )
+    assert preview["executed"] == "false"
+    assert preview["network_activity"] == "false"
+    assert preview["subprocess_started"] == "false"
+
+
+def test_nuclei_preview_skips_newest_malformed_metadata() -> None:
+    import json
+    import sqlite3
+
+    from saarthi_ai.tui.app import ReadOnlySaarthiRepository
+
+    connection = sqlite3.connect(":memory:")
+    connection.row_factory = sqlite3.Row
+
+    connection.execute(
+        """
+        CREATE TABLE evidence (
+            evidence_id TEXT PRIMARY KEY,
+            execution_id TEXT NOT NULL,
+            evidence_type TEXT NOT NULL,
+            metadata_json TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        )
+        """
+    )
+
+    connection.executemany(
+        """
+        INSERT INTO evidence (
+            evidence_id,
+            execution_id,
+            evidence_type,
+            metadata_json,
+            created_at
+        )
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        [
+            (
+                "evidence-valid-preview",
+                "execution-test",
+                "controlled_nuclei_preview",
+                json.dumps(
+                    {
+                        "target_url": "https://example.com/",
+                        "executed": False,
+                    }
+                ),
+                "2026-08-05T08:00:00+00:00",
+            ),
+            (
+                "evidence-malformed-preview",
+                "execution-test",
+                "controlled_nuclei_preview",
+                "{not-json",
+                "2026-08-05T09:00:00+00:00",
+            ),
+        ],
+    )
+
+    repository = ReadOnlySaarthiRepository()
+    preview = repository._load_controlled_nuclei_preview(
+        connection,
+        {"evidence"},
+        "execution-test",
+    )
+
+    assert preview is not None
+    assert preview["evidence_id"] == "evidence-valid-preview"
+    assert preview["target_url"] == "https://example.com/"
+
+
+def test_nuclei_preview_missing_fields_use_safe_defaults() -> None:
+    import sqlite3
+
+    from saarthi_ai.tui.app import ReadOnlySaarthiRepository
+
+    connection = sqlite3.connect(":memory:")
+    connection.row_factory = sqlite3.Row
+
+    connection.execute(
+        """
+        CREATE TABLE evidence (
+            execution_id TEXT NOT NULL,
+            evidence_type TEXT NOT NULL,
+            metadata_json TEXT NOT NULL
+        )
+        """
+    )
+
+    connection.execute(
+        """
+        INSERT INTO evidence (
+            execution_id,
+            evidence_type,
+            metadata_json
+        )
+        VALUES (?, ?, ?)
+        """,
+        (
+            "execution-test",
+            "controlled_nuclei_preview",
+            "{}",
+        ),
+    )
+
+    repository = ReadOnlySaarthiRepository()
+    preview = repository._load_controlled_nuclei_preview(
+        connection,
+        {"evidence"},
+        "execution-test",
+    )
+
+    assert preview is not None
+    assert preview["evidence_id"] == "—"
+    assert preview["evidence_sha256"] == "—"
+    assert preview["target_url"] == "—"
+    assert preview["arguments"] == "—"
+    assert preview["executed"] == "false"
+    assert preview["network_activity"] == "false"
+    assert preview["subprocess_started"] == "false"
+
+
+def test_loads_matching_nuclei_preview_reuse_event() -> None:
+    import json
+    import sqlite3
+
+    from saarthi_ai.tui.app import ReadOnlySaarthiRepository
+
+    connection = sqlite3.connect(":memory:")
+    connection.row_factory = sqlite3.Row
+
+    connection.execute(
+        """
+        CREATE TABLE audit_events (
+            execution_id TEXT NOT NULL,
+            details_json TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        )
+        """
+    )
+
+    connection.execute(
+        """
+        INSERT INTO audit_events (
+            execution_id,
+            details_json,
+            created_at
+        )
+        VALUES (?, ?, ?)
+        """,
+        (
+            "execution-test",
+            json.dumps(
+                {
+                    "tool": "nuclei",
+                    "evidence_id": "evidence-nuclei-preview",
+                    "idempotent_reuse": True,
+                }
+            ),
+            "2026-08-05T09:00:00+00:00",
+        ),
+    )
+
+    repository = ReadOnlySaarthiRepository()
+
+    assert repository._load_nuclei_preview_reuse(
+        connection,
+        {"audit_events"},
+        "execution-test",
+        "evidence-nuclei-preview",
+    ) == {
+        "reused_existing_evidence": "true",
+    }

@@ -37,6 +37,7 @@ class DashboardSnapshot:
     outcome_counts: dict[str, int] = field(default_factory=dict)
     optional_failure_summary: str | None = None
     controlled_observation: dict[str, str] | None = None
+    controlled_nuclei_preview: dict[str, str] | None = None
 
 
 class ReadOnlySaarthiRepository:
@@ -249,6 +250,21 @@ class ReadOnlySaarthiRepository:
             )
             controlled_observation.update(reuse)
 
+        controlled_nuclei_preview = self._load_controlled_nuclei_preview(
+            connection,
+            tables,
+            execution_id,
+        )
+
+        if controlled_nuclei_preview is not None:
+            preview_reuse = self._load_nuclei_preview_reuse(
+                connection,
+                tables,
+                execution_id,
+                controlled_nuclei_preview["evidence_id"],
+            )
+            controlled_nuclei_preview.update(preview_reuse)
+
         return DashboardSnapshot(
             project_name=value(
                 latest,
@@ -278,6 +294,7 @@ class ReadOnlySaarthiRepository:
             outcome_counts=outcome_counts,
             optional_failure_summary=optional_failure_summary,
             controlled_observation=controlled_observation,
+            controlled_nuclei_preview=controlled_nuclei_preview,
         )
 
     def _evidence_types(
@@ -573,6 +590,286 @@ class ReadOnlySaarthiRepository:
                     if isinstance(second_request_sent, bool)
                     else "—"
                 ),
+            }
+
+        return defaults
+
+    def _load_controlled_nuclei_preview(
+        self,
+        connection: sqlite3.Connection,
+        tables: set[str],
+        execution_id: str,
+    ) -> dict[str, str] | None:
+        """Load the newest valid non-executed Nuclei preview summary."""
+
+        table = next(
+            (
+                name
+                for name in ("evidence", "evidence_items")
+                if name in tables
+            ),
+            None,
+        )
+
+        if table is None:
+            return None
+
+        columns = self._columns(connection, table)
+        execution_column = self._pick(
+            columns,
+            "execution_id",
+            "execution",
+        )
+        type_column = self._pick(
+            columns,
+            "evidence_type",
+            "type",
+            "kind",
+        )
+        evidence_id_column = self._pick(
+            columns,
+            "evidence_id",
+            "id",
+        )
+        sha256_column = self._pick(columns, "sha256")
+        metadata_column = self._pick(
+            columns,
+            "metadata_json",
+            "metadata",
+        )
+        created_column = self._pick(
+            columns,
+            "created_at",
+            "timestamp",
+        )
+
+        if (
+            execution_column is None
+            or type_column is None
+            or metadata_column is None
+        ):
+            return None
+
+        order_sql = (
+            f'ORDER BY "{created_column}" DESC'
+            if created_column
+            else ""
+        )
+
+        rows = connection.execute(
+            f"""
+            SELECT *
+            FROM "{table}"
+            WHERE "{execution_column}" = ?
+              AND LOWER("{type_column}") = ?
+            {order_sql}
+            LIMIT 50
+            """,
+            (
+                execution_id,
+                "controlled_nuclei_preview",
+            ),
+        ).fetchall()
+
+        def display(value: Any, default: str = "—") -> str:
+            if value is None:
+                return default
+
+            if isinstance(value, bool):
+                return str(value).lower()
+
+            if isinstance(value, int) and not isinstance(value, bool):
+                return str(value)
+
+            if isinstance(value, str):
+                return value
+
+            return default
+
+        def argument_value(
+            arguments: object,
+            flag: str,
+        ) -> str:
+            if not isinstance(arguments, list):
+                return "—"
+
+            if not all(isinstance(item, str) for item in arguments):
+                return "—"
+
+            try:
+                index = arguments.index(flag)
+            except ValueError:
+                return "—"
+
+            value_index = index + 1
+
+            if value_index >= len(arguments):
+                return "—"
+
+            return arguments[value_index]
+
+        for row in rows:
+            try:
+                metadata = json.loads(str(row[metadata_column]))
+            except (
+                json.JSONDecodeError,
+                TypeError,
+                ValueError,
+            ):
+                continue
+
+            if not isinstance(metadata, dict):
+                continue
+
+            arguments = metadata.get("arguments")
+
+            if isinstance(arguments, list) and all(
+                isinstance(item, str) for item in arguments
+            ):
+                argument_summary = " ".join(arguments)
+            else:
+                argument_summary = "—"
+
+            return {
+                "evidence_id": (
+                    display(row[evidence_id_column])
+                    if evidence_id_column
+                    else "—"
+                ),
+                "evidence_sha256": (
+                    display(row[sha256_column])
+                    if sha256_column
+                    else "—"
+                ),
+                "tool_name": "nuclei",
+                "target_url": display(metadata.get("target_url")),
+                "arguments": argument_summary,
+                "rate_limit_per_second": display(
+                    metadata.get("rate_limit_per_second")
+                ),
+                "concurrency": display(
+                    metadata.get("concurrency")
+                ),
+                "timeout_seconds": display(
+                    metadata.get("timeout_seconds")
+                ),
+                "allowed_tags": argument_value(
+                    arguments,
+                    "-tags",
+                ),
+                "excluded_tags": argument_value(
+                    arguments,
+                    "-exclude-tags",
+                ),
+                "executed": display(
+                    metadata.get("executed"),
+                    "false",
+                ),
+                "network_activity": display(
+                    metadata.get("network_activity"),
+                    "false",
+                ),
+                "subprocess_started": display(
+                    metadata.get("subprocess_started"),
+                    "false",
+                ),
+                "reused_existing_evidence": "false",
+            }
+
+        return None
+
+    def _load_nuclei_preview_reuse(
+        self,
+        connection: sqlite3.Connection,
+        tables: set[str],
+        execution_id: str,
+        evidence_id: str,
+    ) -> dict[str, str]:
+        """Load the latest matching Nuclei-preview reuse event."""
+
+        defaults = {
+            "reused_existing_evidence": "false",
+        }
+
+        table = next(
+            (
+                name
+                for name in (
+                    "audit_events",
+                    "audit_log",
+                    "events",
+                )
+                if name in tables
+            ),
+            None,
+        )
+
+        if table is None:
+            return defaults
+
+        columns = self._columns(connection, table)
+        execution_column = self._pick(
+            columns,
+            "execution_id",
+            "execution",
+        )
+        details_column = self._pick(
+            columns,
+            "details_json",
+            "details",
+            "metadata_json",
+        )
+        timestamp_column = self._pick(
+            columns,
+            "created_at",
+            "timestamp",
+            "occurred_at",
+        )
+
+        if execution_column is None or details_column is None:
+            return defaults
+
+        order_sql = (
+            f'ORDER BY "{timestamp_column}" DESC'
+            if timestamp_column
+            else ""
+        )
+
+        rows = connection.execute(
+            f"""
+            SELECT "{details_column}"
+            FROM "{table}"
+            WHERE "{execution_column}" = ?
+            {order_sql}
+            LIMIT 200
+            """,
+            (execution_id,),
+        ).fetchall()
+
+        for row in rows:
+            try:
+                details = json.loads(str(row[details_column]))
+            except (
+                json.JSONDecodeError,
+                TypeError,
+                ValueError,
+            ):
+                continue
+
+            if not isinstance(details, dict):
+                continue
+
+            if details.get("idempotent_reuse") is not True:
+                continue
+
+            if str(details.get("evidence_id") or "") != evidence_id:
+                continue
+
+            if str(details.get("tool") or "").lower() != "nuclei":
+                continue
+
+            return {
+                "reused_existing_evidence": "true",
             }
 
         return defaults
@@ -1228,6 +1525,8 @@ def infer_phase(
         return "ACTIVE WORKFLOW"
 
     if normalized in {"planned", "created"}:
+        if "controlled_nuclei_preview" in normalized_evidence:
+            return "6I — CONTROLLED NUCLEI PREVIEW"
         if "controlled_validation_plan" in normalized_evidence:
             return "6B — CONTROLLED VALIDATION PLAN"
         return "PLANNING"
@@ -1251,6 +1550,8 @@ def infer_phase_short(
 
     phase = infer_phase(state, evidence_types)
 
+    if phase.startswith("6I"):
+        return "6I"
     if phase.startswith("6F"):
         return "6F"
     if phase.startswith("6B"):
