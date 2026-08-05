@@ -161,3 +161,111 @@ def build_nuclei_invocation_preview(
         allowed_tags=ALLOWED_NUCLEI_TAGS,
         excluded_tags=EXCLUDED_NUCLEI_TAGS,
     )
+
+
+@dataclass(frozen=True)
+class NucleiExecutionRequest:
+    """Approved request to validate one fixed Nuclei invocation."""
+
+    preview: NucleiInvocationPreview
+    authorization_confirmed: bool
+    active_testing_allowed: bool
+    explicitly_approved: bool
+
+
+@dataclass(frozen=True)
+class NucleiExecutionPlan:
+    """Validated fixed Nuclei invocation ready for a later runner phase."""
+
+    tool_name: str
+    target_url: str
+    arguments: tuple[str, ...]
+    request_timeout_seconds: int
+    rate_limit_per_second: int
+    concurrency: int
+    process_timeout_seconds: int
+    max_output_bytes: int
+    executed: bool = False
+    network_activity: bool = False
+    subprocess_started: bool = False
+
+
+MAX_NUCLEI_PROCESS_TIMEOUT_SECONDS = 120
+MAX_NUCLEI_OUTPUT_BYTES = 1_000_000
+
+
+def build_nuclei_execution_plan(
+    request: NucleiExecutionRequest,
+) -> NucleiExecutionPlan:
+    """Validate an exact conservative Nuclei invocation without execution."""
+
+    if request.authorization_confirmed is not True:
+        raise NucleiAdapterError(
+            "Stored Nuclei target authorization must be confirmed."
+        )
+
+    if request.active_testing_allowed is not True:
+        raise NucleiAdapterError(
+            "Stored active-testing permission is required for Nuclei."
+        )
+
+    if request.explicitly_approved is not True:
+        raise NucleiAdapterError(
+            "Explicit operator approval is required for Nuclei execution."
+        )
+
+    preview = request.preview
+
+    if preview.executed is not False:
+        raise NucleiAdapterError(
+            "Nuclei execution requires a non-executed preview."
+        )
+
+    if preview.subprocess_started is not False:
+        raise NucleiAdapterError(
+            "Nuclei preview indicates that a subprocess already started."
+        )
+
+    rebuilt = build_nuclei_invocation_preview(
+        NucleiDryRunRequest(
+            target_url=preview.target_url,
+            authorized=True,
+            active_testing=True,
+            approval_granted=True,
+            rate_limit_per_second=preview.rate_limit_per_second,
+            concurrency=preview.concurrency,
+            timeout_seconds=preview.timeout_seconds,
+            dry_run=True,
+        )
+    )
+
+    if preview.tool_name != NUCLEI_PROFILE.name:
+        raise NucleiAdapterError(
+            "Nuclei preview tool identity does not match the approved profile."
+        )
+
+    if preview.arguments != rebuilt.arguments:
+        raise NucleiAdapterError(
+            "Nuclei arguments do not match the fixed approved invocation."
+        )
+
+    if preview.allowed_tags != ALLOWED_NUCLEI_TAGS:
+        raise NucleiAdapterError(
+            "Nuclei allowed tags do not match the approved safe set."
+        )
+
+    if preview.excluded_tags != EXCLUDED_NUCLEI_TAGS:
+        raise NucleiAdapterError(
+            "Nuclei excluded tags do not match the approved safe set."
+        )
+
+    return NucleiExecutionPlan(
+        tool_name=preview.tool_name,
+        target_url=preview.target_url,
+        arguments=preview.arguments,
+        request_timeout_seconds=preview.timeout_seconds,
+        rate_limit_per_second=preview.rate_limit_per_second,
+        concurrency=preview.concurrency,
+        process_timeout_seconds=MAX_NUCLEI_PROCESS_TIMEOUT_SECONDS,
+        max_output_bytes=MAX_NUCLEI_OUTPUT_BYTES,
+    )
