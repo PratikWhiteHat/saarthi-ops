@@ -262,3 +262,121 @@ sleep 2
     assert result.exit_code == -1
     assert result.stdout == "started\n"
     assert lines == ["started"]
+
+
+def test_run_tool_rejects_excessive_argument_count(
+    tmp_path: Path,
+) -> None:
+    """The runner should reject argument lists beyond the profile boundary."""
+
+    from pytest import raises
+
+    from saarthi_ai.execution.tool_runner import ToolRunnerError
+
+    executable = create_executable(
+        tmp_path / "argument-count-tool",
+        "#!/bin/sh\nexit 0\n",
+    )
+
+    profile = ToolProfile(
+        name="argument-count-tool",
+        executable_candidates=(str(executable),),
+        timeout_seconds=5,
+        max_arguments=2,
+    )
+
+    with raises(ToolRunnerError, match="too many arguments"):
+        run_tool(
+            profile,
+            ["one", "two", "three"],
+        )
+
+
+def test_run_tool_rejects_oversized_argument(
+    tmp_path: Path,
+) -> None:
+    """The runner should reject individual arguments beyond the limit."""
+
+    from pytest import raises
+
+    from saarthi_ai.execution.tool_runner import ToolRunnerError
+
+    executable = create_executable(
+        tmp_path / "argument-length-tool",
+        "#!/bin/sh\nexit 0\n",
+    )
+
+    profile = ToolProfile(
+        name="argument-length-tool",
+        executable_candidates=(str(executable),),
+        timeout_seconds=5,
+        max_argument_length=8,
+    )
+
+    with raises(ToolRunnerError, match="exceeds 8 characters"):
+        run_tool(
+            profile,
+            ["123456789"],
+        )
+
+
+def test_run_tool_rejects_argument_control_characters(
+    tmp_path: Path,
+) -> None:
+    """Arguments containing control characters must not reach a tool."""
+
+    from pytest import raises
+
+    from saarthi_ai.execution.tool_runner import ToolRunnerError
+
+    marker = tmp_path / "must-not-run"
+
+    executable = create_executable(
+        tmp_path / "control-character-tool",
+        f"#!/bin/sh\ntouch '{marker}'\n",
+    )
+
+    profile = ToolProfile(
+        name="control-character-tool",
+        executable_candidates=(str(executable),),
+        timeout_seconds=5,
+    )
+
+    with raises(ToolRunnerError, match="prohibited control character"):
+        run_tool(
+            profile,
+            ["approved\nsecond-line"],
+        )
+
+    assert marker.exists() is False
+
+
+def test_run_tool_reports_output_truncation(
+    tmp_path: Path,
+) -> None:
+    """Captured output should report when either stream exceeded its cap."""
+
+    executable = create_executable(
+        tmp_path / "truncation-tool",
+        """#!/bin/sh
+printf '1234567890'
+printf 'abcdefghij' >&2
+""",
+    )
+
+    profile = ToolProfile(
+        name="truncation-tool",
+        executable_candidates=(str(executable),),
+        timeout_seconds=5,
+        max_output_bytes=5,
+    )
+
+    result = run_tool(
+        profile,
+        [],
+    )
+
+    assert result.stdout == "12345"
+    assert result.stderr == "abcde"
+    assert result.stdout_truncated is True
+    assert result.stderr_truncated is True

@@ -23,6 +23,8 @@ class ToolProfile:
     executable_candidates: tuple[str, ...]
     timeout_seconds: int
     max_output_bytes: int = 5_000_000
+    max_arguments: int = 128
+    max_argument_length: int = 8_192
 
 
 @dataclass(frozen=True)
@@ -47,6 +49,8 @@ class ToolRunResult:
     stdout_sha256: str
     stderr_sha256: str
     timed_out: bool
+    stdout_truncated: bool = False
+    stderr_truncated: bool = False
 
 
 SUBFINDER_PROFILE = ToolProfile(
@@ -116,6 +120,47 @@ NUCLEI_PROFILE = ToolProfile(
 )
 
 
+def validate_tool_arguments(
+    profile: ToolProfile,
+    arguments: list[str],
+) -> None:
+    """Reject arguments that exceed the generic runner safety boundary."""
+
+    if profile.max_arguments < 0:
+        raise ToolRunnerError(
+            f"Approved tool '{profile.name}' has an invalid argument limit."
+        )
+
+    if profile.max_argument_length < 1:
+        raise ToolRunnerError(
+            f"Approved tool '{profile.name}' has an invalid argument-length limit."
+        )
+
+    if len(arguments) > profile.max_arguments:
+        raise ToolRunnerError(
+            f"Approved tool '{profile.name}' received too many arguments: "
+            f"{len(arguments)} exceeds {profile.max_arguments}."
+        )
+
+    for index, argument in enumerate(arguments):
+        if not isinstance(argument, str):
+            raise ToolRunnerError(
+                f"Approved tool '{profile.name}' argument {index} is not text."
+            )
+
+        if len(argument) > profile.max_argument_length:
+            raise ToolRunnerError(
+                f"Approved tool '{profile.name}' argument {index} exceeds "
+                f"{profile.max_argument_length} characters."
+            )
+
+        if any(ord(character) < 32 or ord(character) == 127 for character in argument):
+            raise ToolRunnerError(
+                f"Approved tool '{profile.name}' argument {index} contains "
+                "a prohibited control character."
+            )
+
+
 def resolve_executable(profile: ToolProfile) -> str | None:
     """Resolve the first executable matching an approved profile."""
 
@@ -143,6 +188,8 @@ def run_tool(
     on_output: Callable[[ToolOutputEvent], None] | None = None,
 ) -> ToolRunResult:
     """Run an approved tool and optionally stream bounded output lines."""
+
+    validate_tool_arguments(profile, arguments)
 
     executable = resolve_executable(profile)
 
@@ -174,6 +221,10 @@ def run_tool(
     stdout_buffer = bytearray()
     stderr_buffer = bytearray()
     buffer_lock = threading.Lock()
+    truncated_streams = {
+        "stdout": False,
+        "stderr": False,
+    }
 
     max_stream_events = 500
     max_event_line_chars = 1_000
@@ -236,6 +287,9 @@ def run_tool(
                         destination.extend(
                             raw_line[:remaining]
                         )
+
+                    if len(raw_line) > remaining:
+                        truncated_streams[stream_name] = True
 
                 emit(stream_name, raw_line)
         finally:
@@ -310,4 +364,6 @@ def run_tool(
             raw_stderr
         ).hexdigest(),
         timed_out=timed_out,
+        stdout_truncated=truncated_streams["stdout"],
+        stderr_truncated=truncated_streams["stderr"],
     )
