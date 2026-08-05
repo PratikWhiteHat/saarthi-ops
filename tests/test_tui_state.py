@@ -1436,3 +1436,169 @@ def test_loads_matching_nuclei_preview_reuse_event() -> None:
     ) == {
         "reused_existing_evidence": "true",
     }
+
+
+def test_scope_lines_render_controlled_nuclei_preview() -> None:
+    from dataclasses import replace
+
+    from saarthi_ai.tui.app import (
+        build_scope_lines,
+        demo_snapshot,
+    )
+
+    snapshot = replace(
+        demo_snapshot(),
+        current_phase="6I — CONTROLLED NUCLEI PREVIEW",
+        execution_state="planned",
+        controlled_nuclei_preview={
+            "evidence_id": "evidence-nuclei-preview",
+            "evidence_sha256": "a" * 64,
+            "tool_name": "nuclei",
+            "target_url": "https://example.com/",
+            "arguments": (
+                "-u https://example.com/ -jsonl -silent "
+                "-rate-limit 1 -concurrency 1 -timeout 10"
+            ),
+            "rate_limit_per_second": "1",
+            "concurrency": "1",
+            "timeout_seconds": "10",
+            "allowed_tags": "exposure,misconfig,tech",
+            "excluded_tags": (
+                "bruteforce,dos,fuzz,headless,"
+                "intrusive,token-spray"
+            ),
+            "executed": "false",
+            "network_activity": "false",
+            "subprocess_started": "false",
+            "reused_existing_evidence": "false",
+        },
+    )
+
+    rendered = "\n".join(build_scope_lines(snapshot))
+
+    assert "CONTROLLED NUCLEI PREVIEW" in rendered
+    assert "evidence-nuclei-preview" in rendered
+    assert "nuclei · https://example.com/" in rendered
+    assert "1 req/s · 1" in rendered
+    assert "10 seconds" in rendered
+    assert "exposure,misconfig,tech" in rendered
+    assert "Executed           : false" in rendered
+    assert "Network Activity   : false" in rendered
+    assert "Subprocess Started : false" in rendered
+    assert "Evidence Reused    : false" in rendered
+    assert "Nuclei was not started" in rendered
+    assert "no network request was sent" in rendered
+
+
+def test_controlled_observation_has_render_priority_over_nuclei() -> None:
+    from dataclasses import replace
+
+    from saarthi_ai.tui.app import (
+        build_scope_lines,
+        demo_snapshot,
+    )
+
+    snapshot = replace(
+        demo_snapshot(),
+        controlled_observation={
+            "evidence_id": "evidence-observation",
+            "target_url": "https://example.com/account",
+            "action": "response_differential",
+            "method": "HEAD",
+            "status_code": "200",
+            "body_bytes_captured": "0",
+            "body_truncated": "false",
+            "body_sha256": "—",
+            "plan_evidence_id": "evidence-plan",
+            "network_activity": "true",
+            "request_attempted": "true",
+            "reused_existing_evidence": "false",
+            "second_request_sent": "—",
+            "follow_redirects": "false",
+            "evidence_sha256": "a" * 64,
+        },
+        controlled_nuclei_preview={
+            "evidence_id": "evidence-nuclei-preview",
+            "tool_name": "nuclei",
+            "target_url": "https://example.com/",
+        },
+    )
+
+    rendered = "\n".join(build_scope_lines(snapshot))
+
+    assert "CONTROLLED OBSERVATION" in rendered
+    assert "evidence-observation" in rendered
+    assert "CONTROLLED NUCLEI PREVIEW" not in rendered
+    assert "evidence-nuclei-preview" not in rendered
+
+
+def test_nuclei_preview_rendering_escapes_and_redacts_values() -> None:
+    from dataclasses import replace
+
+    from saarthi_ai.tui.app import (
+        build_scope_lines,
+        demo_snapshot,
+    )
+
+    snapshot = replace(
+        demo_snapshot(),
+        controlled_nuclei_preview={
+            "evidence_id": "[red]forged[/red]",
+            "evidence_sha256": "a" * 64,
+            "tool_name": "nuclei",
+            "target_url": (
+                "https://operator:password@example.test/"
+                "?token=super-secret"
+            ),
+            "arguments": "x" * 500,
+            "rate_limit_per_second": "1",
+            "concurrency": "1",
+            "timeout_seconds": "10",
+            "allowed_tags": "exposure",
+            "excluded_tags": "dos",
+            "executed": "false",
+            "network_activity": "false",
+            "subprocess_started": "false",
+            "reused_existing_evidence": "false",
+        },
+    )
+
+    rendered = "\n".join(build_scope_lines(snapshot))
+
+    assert r"\[red]forged\[/red]" in rendered
+    assert "operator" not in rendered
+    assert "password" not in rendered
+    assert "super-secret" not in rendered
+    assert "[REDACTED]" in rendered
+    assert "x" * 121 not in rendered
+
+
+def test_scope_lines_without_controlled_evidence_remain_normal() -> None:
+    from saarthi_ai.tui.app import (
+        build_scope_lines,
+        demo_snapshot,
+    )
+
+    rendered = "\n".join(build_scope_lines(demo_snapshot()))
+
+    assert "Project Name" in rendered
+    assert "CONTROLLED OBSERVATION" not in rendered
+    assert "CONTROLLED NUCLEI PREVIEW" not in rendered
+
+
+def test_nuclei_tool_row_is_dry_run_only() -> None:
+    from saarthi_ai.tui.app import TOOLS
+
+    nuclei_rows = [
+        row
+        for row in TOOLS
+        if row[0] == "nuclei"
+    ]
+
+    assert nuclei_rows == [
+        (
+            "nuclei",
+            "Controlled Invocation Preview",
+            "DRY-RUN",
+        )
+    ]

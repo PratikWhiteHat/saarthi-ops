@@ -1734,12 +1734,229 @@ TOOLS = [
     ("crt.sh", "Certificate Transparency", "ENABLED"),
     ("httpx", "Live Host & Service Probe", "ENABLED"),
     ("katana", "Web Crawler", "ENABLED"),
-    ("nuclei", "Template-based Scanning", "PLANNED"),
+    ("nuclei", "Controlled Invocation Preview", "DRY-RUN"),
     ("sqlmap", "SQL Injection Testing", "PHASE 4A"),
     ("ghauri", "Blind SQLi Cross-check", "PHASE 4B"),
     ("Saarthi JS", "JavaScript Intelligence", "ENABLED"),
     ("OAST Manager", "Out-of-band Correlation", "PHASE 4C"),
 ]
+
+
+def build_scope_lines(
+    snapshot: DashboardSnapshot,
+) -> list[str]:
+    """Build safe read-only scope-panel lines for one snapshot."""
+
+    status_value = snapshot.orchestration_status.upper()
+
+    if snapshot.orchestration_status == "partial":
+        status_display = (
+            "[yellow]PARTIAL — REVIEW REQUIRED[/yellow]"
+        )
+    elif snapshot.orchestration_status == "completed":
+        status_display = "[green]COMPLETED[/green]"
+    elif snapshot.orchestration_status == "failed":
+        status_display = "[red]FAILED[/red]"
+    else:
+        status_display = status_value
+
+    scope_lines = [
+        f"Project Name       : {snapshot.project_name}",
+        f"Execution ID       : {snapshot.execution_id}",
+        f"Target Scope       : {snapshot.target_scope}",
+        "Authorization      : [green]✓ CONFIRMED[/green]",
+        "Rules of Engagement: [green]✓ ACCEPTED[/green]",
+        "Data Handling      : LOCAL ONLY",
+        f"Mode               : {snapshot.mode}",
+        f"Current Phase      : {snapshot.current_phase}",
+        (
+            "Evidence / Findings: "
+            f"{snapshot.evidence_count} / "
+            f"{snapshot.finding_count}"
+        ),
+    ]
+
+    if snapshot.orchestration_status != "unknown":
+        counts = snapshot.outcome_counts
+
+        scope_lines.extend(
+            [
+                f"Orchestration      : {status_display}",
+                (
+                    "Phase Outcomes     : "
+                    f"{counts.get('completed', 0)} completed · "
+                    f"{counts.get('skipped', 0)} skipped · "
+                    f"{counts.get('failed', 0)} failed"
+                ),
+                (
+                    "Required / Optional: "
+                    f"{counts.get('required', 0)} / "
+                    f"{counts.get('optional', 0)}"
+                ),
+            ]
+        )
+
+    if snapshot.controlled_observation:
+        observation = snapshot.controlled_observation
+
+        def observation_value(
+            key: str,
+            *,
+            max_length: int = 96,
+        ) -> str:
+            return safe_tui_display(
+                observation.get(key),
+                max_length=max_length,
+            )
+
+        scope_lines.extend(
+            [
+                "",
+                "[bold cyan]CONTROLLED OBSERVATION[/bold cyan]",
+                (
+                    "Observation ID     : "
+                    f"{observation_value('evidence_id', max_length=72)}"
+                ),
+                (
+                    "Target / Action    : "
+                    f"{observation_value('target_url', max_length=88)} · "
+                    f"{observation_value('action', max_length=40)}"
+                ),
+                (
+                    "Method / Status    : "
+                    f"{observation_value('method', max_length=12)} · "
+                    f"HTTP {observation_value('status_code', max_length=12)}"
+                ),
+                (
+                    "Captured / Truncated: "
+                    f"{observation_value('body_bytes_captured', max_length=20)} bytes · "
+                    f"{observation_value('body_truncated', max_length=12)}"
+                ),
+                (
+                    "Body SHA-256       : "
+                    f"{observation_value('body_sha256', max_length=72)}"
+                ),
+                (
+                    "Plan Evidence      : "
+                    f"{observation_value('plan_evidence_id', max_length=72)}"
+                ),
+                (
+                    "Network Activity   : "
+                    f"{observation_value('network_activity', max_length=12)}"
+                ),
+                (
+                    "Request Attempted  : "
+                    f"{observation_value('request_attempted', max_length=12)}"
+                ),
+                (
+                    "Evidence Reused    : "
+                    f"{observation_value('reused_existing_evidence', max_length=12)}"
+                ),
+                (
+                    "Second Request Sent: "
+                    f"{observation_value('second_request_sent', max_length=12)}"
+                ),
+                (
+                    "Redirects Followed : "
+                    f"{observation_value('follow_redirects', max_length=12)}"
+                ),
+                (
+                    "Evidence SHA-256   : "
+                    f"{observation_value('evidence_sha256', max_length=72)}"
+                ),
+            ]
+        )
+
+        if snapshot.execution_state.lower() == "failed":
+            scope_lines.append(
+                "[yellow]Failure Guidance   : Automatic retry is "
+                "disabled. Review the audit log and create a new "
+                "approved execution before another observation."
+                "[/yellow]"
+            )
+
+    elif snapshot.controlled_nuclei_preview:
+        preview = snapshot.controlled_nuclei_preview
+
+        def preview_value(
+            key: str,
+            *,
+            max_length: int = 96,
+        ) -> str:
+            return safe_tui_display(
+                preview.get(key),
+                max_length=max_length,
+            )
+
+        scope_lines.extend(
+            [
+                "",
+                "[bold cyan]CONTROLLED NUCLEI PREVIEW[/bold cyan]",
+                (
+                    "Evidence ID        : "
+                    f"{preview_value('evidence_id', max_length=72)}"
+                ),
+                (
+                    "Tool / Target      : "
+                    f"{preview_value('tool_name', max_length=20)} · "
+                    f"{preview_value('target_url', max_length=88)}"
+                ),
+                (
+                    "Rate / Concurrency : "
+                    f"{preview_value('rate_limit_per_second', max_length=12)} req/s · "
+                    f"{preview_value('concurrency', max_length=12)}"
+                ),
+                (
+                    "Timeout            : "
+                    f"{preview_value('timeout_seconds', max_length=12)} seconds"
+                ),
+                (
+                    "Allowed Tags       : "
+                    f"{preview_value('allowed_tags', max_length=88)}"
+                ),
+                (
+                    "Excluded Tags      : "
+                    f"{preview_value('excluded_tags', max_length=88)}"
+                ),
+                (
+                    "Arguments          : "
+                    f"{preview_value('arguments', max_length=120)}"
+                ),
+                (
+                    "Executed           : "
+                    f"{preview_value('executed', max_length=12)}"
+                ),
+                (
+                    "Network Activity   : "
+                    f"{preview_value('network_activity', max_length=12)}"
+                ),
+                (
+                    "Subprocess Started : "
+                    f"{preview_value('subprocess_started', max_length=12)}"
+                ),
+                (
+                    "Evidence Reused    : "
+                    f"{preview_value('reused_existing_evidence', max_length=12)}"
+                ),
+                (
+                    "Evidence SHA-256   : "
+                    f"{preview_value('evidence_sha256', max_length=72)}"
+                ),
+                (
+                    "[dim]Preview only. Nuclei was not started and "
+                    "no network request was sent.[/dim]"
+                ),
+            ]
+        )
+
+    if snapshot.optional_failure_summary:
+        scope_lines.append(
+            "[yellow]Optional Failure   : "
+            f"{safe_tui_display(snapshot.optional_failure_summary, max_length=160)}"
+            "[/yellow]"
+        )
+
+    return scope_lines
 
 
 class SaarthiDashboard(App[None]):
@@ -1871,139 +2088,7 @@ class SaarthiDashboard(App[None]):
             self._render_snapshot(snapshot)
 
     def _render_snapshot(self, snapshot: DashboardSnapshot) -> None:
-        status_value = snapshot.orchestration_status.upper()
-
-        if snapshot.orchestration_status == "partial":
-            status_display = (
-                "[yellow]PARTIAL — REVIEW REQUIRED[/yellow]"
-            )
-        elif snapshot.orchestration_status == "completed":
-            status_display = "[green]COMPLETED[/green]"
-        elif snapshot.orchestration_status == "failed":
-            status_display = "[red]FAILED[/red]"
-        else:
-            status_display = status_value
-
-        scope_lines = [
-            f"Project Name       : {snapshot.project_name}",
-            f"Execution ID       : {snapshot.execution_id}",
-            f"Target Scope       : {snapshot.target_scope}",
-            "Authorization      : [green]✓ CONFIRMED[/green]",
-            "Rules of Engagement: [green]✓ ACCEPTED[/green]",
-            "Data Handling      : LOCAL ONLY",
-            f"Mode               : {snapshot.mode}",
-            f"Current Phase      : {snapshot.current_phase}",
-            (
-                "Evidence / Findings: "
-                f"{snapshot.evidence_count} / "
-                f"{snapshot.finding_count}"
-            ),
-        ]
-
-        if snapshot.orchestration_status != "unknown":
-            counts = snapshot.outcome_counts
-
-            scope_lines.extend(
-                [
-                    f"Orchestration      : {status_display}",
-                    (
-                        "Phase Outcomes     : "
-                        f"{counts.get('completed', 0)} completed · "
-                        f"{counts.get('skipped', 0)} skipped · "
-                        f"{counts.get('failed', 0)} failed"
-                    ),
-                    (
-                        "Required / Optional: "
-                        f"{counts.get('required', 0)} / "
-                        f"{counts.get('optional', 0)}"
-                    ),
-                ]
-            )
-
-        if snapshot.controlled_observation:
-            observation = snapshot.controlled_observation
-
-            def observation_value(
-                key: str,
-                *,
-                max_length: int = 96,
-            ) -> str:
-                return safe_tui_display(
-                    observation.get(key),
-                    max_length=max_length,
-                )
-
-            scope_lines.extend(
-                [
-                    "",
-                    "[bold cyan]CONTROLLED OBSERVATION[/bold cyan]",
-                    (
-                        "Observation ID     : "
-                        f"{observation_value('evidence_id', max_length=72)}"
-                    ),
-                    (
-                        "Target / Action    : "
-                        f"{observation_value('target_url', max_length=88)} · "
-                        f"{observation_value('action', max_length=40)}"
-                    ),
-                    (
-                        "Method / Status    : "
-                        f"{observation_value('method', max_length=12)} · "
-                        f"HTTP {observation_value('status_code', max_length=12)}"
-                    ),
-                    (
-                        "Captured / Truncated: "
-                        f"{observation_value('body_bytes_captured', max_length=20)} bytes · "
-                        f"{observation_value('body_truncated', max_length=12)}"
-                    ),
-                    (
-                        "Body SHA-256       : "
-                        f"{observation_value('body_sha256', max_length=72)}"
-                    ),
-                    (
-                        "Plan Evidence      : "
-                        f"{observation_value('plan_evidence_id', max_length=72)}"
-                    ),
-                    (
-                        "Network Activity   : "
-                        f"{observation_value('network_activity', max_length=12)}"
-                    ),
-                    (
-                        "Request Attempted  : "
-                        f"{observation_value('request_attempted', max_length=12)}"
-                    ),
-                    (
-                        "Evidence Reused    : "
-                        f"{observation_value('reused_existing_evidence', max_length=12)}"
-                    ),
-                    (
-                        "Second Request Sent: "
-                        f"{observation_value('second_request_sent', max_length=12)}"
-                    ),
-                    (
-                        "Redirects Followed : "
-                        f"{observation_value('follow_redirects', max_length=12)}"
-                    ),
-                    (
-                        "Evidence SHA-256   : "
-                        f"{observation_value('evidence_sha256', max_length=72)}"
-                    ),
-                ]
-            )
-
-            if snapshot.execution_state.lower() == "failed":
-                scope_lines.append(
-                    "[yellow]Failure Guidance   : Automatic retry is "
-                    "disabled. Review the audit log and create a new "
-                    "approved execution before another observation."
-                    "[/yellow]"
-                )
-
-        if snapshot.optional_failure_summary:
-            scope_lines.append(
-                "[yellow]Optional Failure   : "
-                f"{snapshot.optional_failure_summary}[/yellow]"
-            )
+        scope_lines = build_scope_lines(snapshot)
 
         self.query_one("#scope-content", Static).update(
             "\n".join(scope_lines)
