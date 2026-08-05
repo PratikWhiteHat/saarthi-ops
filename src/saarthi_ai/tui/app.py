@@ -37,6 +37,7 @@ class DashboardSnapshot:
     outcome_counts: dict[str, int] = field(default_factory=dict)
     optional_failure_summary: str | None = None
     controlled_observation: dict[str, str] | None = None
+    controlled_nuclei_preparation: dict[str, str] | None = None
     controlled_nuclei_preview: dict[str, str] | None = None
 
 
@@ -250,6 +251,25 @@ class ReadOnlySaarthiRepository:
             )
             controlled_observation.update(reuse)
 
+        controlled_nuclei_preparation = (
+            self._load_controlled_nuclei_preparation(
+                connection,
+                tables,
+                execution_id,
+            )
+        )
+
+        if controlled_nuclei_preparation is not None:
+            preparation_reuse = self._load_nuclei_preparation_reuse(
+                connection,
+                tables,
+                execution_id,
+                controlled_nuclei_preparation["evidence_id"],
+            )
+            controlled_nuclei_preparation.update(
+                preparation_reuse
+            )
+
         controlled_nuclei_preview = self._load_controlled_nuclei_preview(
             connection,
             tables,
@@ -294,6 +314,9 @@ class ReadOnlySaarthiRepository:
             outcome_counts=outcome_counts,
             optional_failure_summary=optional_failure_summary,
             controlled_observation=controlled_observation,
+            controlled_nuclei_preparation=(
+                controlled_nuclei_preparation
+            ),
             controlled_nuclei_preview=controlled_nuclei_preview,
         )
 
@@ -590,6 +613,275 @@ class ReadOnlySaarthiRepository:
                     if isinstance(second_request_sent, bool)
                     else "—"
                 ),
+            }
+
+        return defaults
+
+    def _load_controlled_nuclei_preparation(
+        self,
+        connection: sqlite3.Connection,
+        tables: set[str],
+        execution_id: str,
+    ) -> dict[str, str] | None:
+        """Load the newest valid non-executed Nuclei preparation."""
+
+        table = next(
+            (
+                name
+                for name in ("evidence", "evidence_items")
+                if name in tables
+            ),
+            None,
+        )
+
+        if table is None:
+            return None
+
+        columns = self._columns(connection, table)
+        execution_column = self._pick(
+            columns,
+            "execution_id",
+            "execution",
+        )
+        type_column = self._pick(
+            columns,
+            "evidence_type",
+            "type",
+            "kind",
+        )
+        evidence_id_column = self._pick(
+            columns,
+            "evidence_id",
+            "id",
+        )
+        sha256_column = self._pick(columns, "sha256")
+        metadata_column = self._pick(
+            columns,
+            "metadata_json",
+            "metadata",
+        )
+        created_column = self._pick(
+            columns,
+            "created_at",
+            "timestamp",
+        )
+
+        if (
+            execution_column is None
+            or type_column is None
+            or metadata_column is None
+        ):
+            return None
+
+        order_sql = (
+            f'ORDER BY "{created_column}" DESC'
+            if created_column
+            else ""
+        )
+
+        rows = connection.execute(
+            f"""
+            SELECT *
+            FROM "{table}"
+            WHERE "{execution_column}" = ?
+              AND LOWER("{type_column}") = ?
+            {order_sql}
+            LIMIT 50
+            """,
+            (
+                execution_id,
+                "controlled_nuclei_preparation",
+            ),
+        ).fetchall()
+
+        def display(value: Any, default: str = "—") -> str:
+            if value is None:
+                return default
+
+            if isinstance(value, bool):
+                return str(value).lower()
+
+            if isinstance(value, int) and not isinstance(value, bool):
+                return str(value)
+
+            if isinstance(value, str):
+                return value
+
+            return default
+
+        for row in rows:
+            try:
+                metadata = json.loads(str(row[metadata_column]))
+            except (
+                json.JSONDecodeError,
+                TypeError,
+                ValueError,
+            ):
+                continue
+
+            if not isinstance(metadata, dict):
+                continue
+
+            arguments = metadata.get("arguments")
+
+            if isinstance(arguments, list) and all(
+                isinstance(item, str) for item in arguments
+            ):
+                argument_summary = " ".join(arguments)
+            else:
+                argument_summary = "—"
+
+            return {
+                "evidence_id": (
+                    display(row[evidence_id_column])
+                    if evidence_id_column
+                    else "—"
+                ),
+                "evidence_sha256": (
+                    display(row[sha256_column])
+                    if sha256_column
+                    else "—"
+                ),
+                "preview_evidence_id": display(
+                    metadata.get("preview_evidence_id")
+                ),
+                "tool_name": "nuclei",
+                "target_url": display(
+                    metadata.get("target_url")
+                ),
+                "arguments": argument_summary,
+                "rate_limit_per_second": display(
+                    metadata.get("rate_limit_per_second")
+                ),
+                "concurrency": display(
+                    metadata.get("concurrency")
+                ),
+                "request_timeout_seconds": display(
+                    metadata.get("request_timeout_seconds")
+                ),
+                "process_timeout_seconds": display(
+                    metadata.get("process_timeout_seconds")
+                ),
+                "max_output_bytes": display(
+                    metadata.get("max_output_bytes")
+                ),
+                "executed": display(
+                    metadata.get("executed"),
+                    "false",
+                ),
+                "network_activity": display(
+                    metadata.get("network_activity"),
+                    "false",
+                ),
+                "subprocess_started": display(
+                    metadata.get("subprocess_started"),
+                    "false",
+                ),
+                "runner_invoked": display(
+                    metadata.get("runner_invoked"),
+                    "false",
+                ),
+                "executable_resolved": display(
+                    metadata.get("executable_resolved"),
+                    "false",
+                ),
+                "reused_existing_evidence": "false",
+            }
+
+        return None
+
+    def _load_nuclei_preparation_reuse(
+        self,
+        connection: sqlite3.Connection,
+        tables: set[str],
+        execution_id: str,
+        evidence_id: str,
+    ) -> dict[str, str]:
+        """Load the latest matching Nuclei-preparation reuse event."""
+
+        defaults = {
+            "reused_existing_evidence": "false",
+        }
+
+        table = next(
+            (
+                name
+                for name in (
+                    "audit_events",
+                    "audit_log",
+                    "events",
+                )
+                if name in tables
+            ),
+            None,
+        )
+
+        if table is None:
+            return defaults
+
+        columns = self._columns(connection, table)
+        execution_column = self._pick(
+            columns,
+            "execution_id",
+            "execution",
+        )
+        details_column = self._pick(
+            columns,
+            "details_json",
+            "details",
+            "metadata_json",
+        )
+        timestamp_column = self._pick(
+            columns,
+            "created_at",
+            "timestamp",
+            "occurred_at",
+        )
+
+        if execution_column is None or details_column is None:
+            return defaults
+
+        order_sql = (
+            f'ORDER BY "{timestamp_column}" DESC'
+            if timestamp_column
+            else ""
+        )
+
+        rows = connection.execute(
+            f"""
+            SELECT "{details_column}"
+            FROM "{table}"
+            WHERE "{execution_column}" = ?
+            {order_sql}
+            LIMIT 200
+            """,
+            (execution_id,),
+        ).fetchall()
+
+        for row in rows:
+            try:
+                details = json.loads(str(row[details_column]))
+            except (
+                json.JSONDecodeError,
+                TypeError,
+                ValueError,
+            ):
+                continue
+
+            if not isinstance(details, dict):
+                continue
+
+            if details.get("idempotent_reuse") is not True:
+                continue
+
+            if str(details.get("evidence_id") or "") != evidence_id:
+                continue
+
+            if str(details.get("phase_code") or "") != "6J.2":
+                continue
+
+            return {
+                "reused_existing_evidence": "true",
             }
 
         return defaults
@@ -1525,6 +1817,11 @@ def infer_phase(
         return "ACTIVE WORKFLOW"
 
     if normalized in {"planned", "created"}:
+        if (
+            "controlled_nuclei_preparation"
+            in normalized_evidence
+        ):
+            return "6J — CONTROLLED NUCLEI PREPARATION"
         if "controlled_nuclei_preview" in normalized_evidence:
             return "6I — CONTROLLED NUCLEI PREVIEW"
         if "controlled_validation_plan" in normalized_evidence:
@@ -1550,6 +1847,8 @@ def infer_phase_short(
 
     phase = infer_phase(state, evidence_types)
 
+    if phase.startswith("6J"):
+        return "6J"
     if phase.startswith("6I"):
         return "6I"
     if phase.startswith("6F"):
@@ -1874,6 +2173,93 @@ def build_scope_lines(
                 "approved execution before another observation."
                 "[/yellow]"
             )
+
+    elif snapshot.controlled_nuclei_preparation:
+        preparation = snapshot.controlled_nuclei_preparation
+
+        def preparation_value(
+            key: str,
+            *,
+            max_length: int = 96,
+        ) -> str:
+            return safe_tui_display(
+                preparation.get(key),
+                max_length=max_length,
+            )
+
+        scope_lines.extend(
+            [
+                "",
+                "[bold cyan]CONTROLLED NUCLEI PREPARATION[/bold cyan]",
+                (
+                    "Evidence ID        : "
+                    f"{preparation_value('evidence_id', max_length=72)}"
+                ),
+                (
+                    "Preview Evidence   : "
+                    f"{preparation_value('preview_evidence_id', max_length=72)}"
+                ),
+                (
+                    "Tool / Target      : "
+                    f"{preparation_value('tool_name', max_length=20)} · "
+                    f"{preparation_value('target_url', max_length=88)}"
+                ),
+                (
+                    "Rate / Concurrency : "
+                    f"{preparation_value('rate_limit_per_second', max_length=12)} req/s · "
+                    f"{preparation_value('concurrency', max_length=12)}"
+                ),
+                (
+                    "Request Timeout    : "
+                    f"{preparation_value('request_timeout_seconds', max_length=12)} seconds"
+                ),
+                (
+                    "Process Timeout    : "
+                    f"{preparation_value('process_timeout_seconds', max_length=12)} seconds"
+                ),
+                (
+                    "Output Cap / Stream: "
+                    f"{preparation_value('max_output_bytes', max_length=20)} bytes"
+                ),
+                (
+                    "Arguments          : "
+                    f"{preparation_value('arguments', max_length=120)}"
+                ),
+                (
+                    "Executed           : "
+                    f"{preparation_value('executed', max_length=12)}"
+                ),
+                (
+                    "Network Activity   : "
+                    f"{preparation_value('network_activity', max_length=12)}"
+                ),
+                (
+                    "Subprocess Started : "
+                    f"{preparation_value('subprocess_started', max_length=12)}"
+                ),
+                (
+                    "Runner Invoked     : "
+                    f"{preparation_value('runner_invoked', max_length=12)}"
+                ),
+                (
+                    "Executable Resolved: "
+                    f"{preparation_value('executable_resolved', max_length=12)}"
+                ),
+                (
+                    "Evidence Reused    : "
+                    f"{preparation_value('reused_existing_evidence', max_length=12)}"
+                ),
+                (
+                    "Evidence SHA-256   : "
+                    f"{preparation_value('evidence_sha256', max_length=72)}"
+                ),
+                (
+                    "[dim]Read-only preparation evidence. The runner was not "
+                    "invoked, no executable was resolved, Nuclei was not "
+                    "started, and no network request was sent.[/dim]"
+                ),
+            ]
+        )
 
     elif snapshot.controlled_nuclei_preview:
         preview = snapshot.controlled_nuclei_preview

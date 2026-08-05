@@ -1602,3 +1602,501 @@ def test_nuclei_tool_row_is_dry_run_only() -> None:
             "DRY-RUN",
         )
     ]
+
+
+def test_planned_nuclei_preparation_maps_to_phase_6j() -> None:
+    assert (
+        infer_phase(
+            "planned",
+            {"controlled_nuclei_preparation"},
+        )
+        == "6J — CONTROLLED NUCLEI PREPARATION"
+    )
+
+
+def test_nuclei_preparation_takes_precedence_over_preview() -> None:
+    assert (
+        infer_phase(
+            "planned",
+            {
+                "controlled_nuclei_preview",
+                "controlled_nuclei_preparation",
+            },
+        )
+        == "6J — CONTROLLED NUCLEI PREPARATION"
+    )
+
+
+def test_nuclei_preparation_compact_phase_is_6j() -> None:
+    assert (
+        infer_phase_short(
+            "planned",
+            {"controlled_nuclei_preparation"},
+        )
+        == "6J"
+    )
+
+
+def test_loads_safe_controlled_nuclei_preparation() -> None:
+    import json
+    import sqlite3
+
+    from saarthi_ai.tui.app import ReadOnlySaarthiRepository
+
+    connection = sqlite3.connect(":memory:")
+    connection.row_factory = sqlite3.Row
+
+    connection.execute(
+        """
+        CREATE TABLE evidence (
+            evidence_id TEXT PRIMARY KEY,
+            execution_id TEXT NOT NULL,
+            evidence_type TEXT NOT NULL,
+            sha256 TEXT,
+            metadata_json TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        )
+        """
+    )
+
+    connection.execute(
+        """
+        INSERT INTO evidence (
+            evidence_id,
+            execution_id,
+            evidence_type,
+            sha256,
+            metadata_json,
+            created_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (
+            "evidence-nuclei-preparation",
+            "execution-test",
+            "controlled_nuclei_preparation",
+            "b" * 64,
+            json.dumps(
+                {
+                    "preview_evidence_id": (
+                        "evidence-nuclei-preview"
+                    ),
+                    "target_url": "https://example.com/",
+                    "arguments": [
+                        "-u",
+                        "https://example.com/",
+                        "-jsonl",
+                        "-silent",
+                        "-rate-limit",
+                        "1",
+                        "-concurrency",
+                        "1",
+                        "-timeout",
+                        "7",
+                    ],
+                    "rate_limit_per_second": 1,
+                    "concurrency": 1,
+                    "request_timeout_seconds": 7,
+                    "process_timeout_seconds": 120,
+                    "max_output_bytes": 1_000_000,
+                    "executed": False,
+                    "network_activity": False,
+                    "subprocess_started": False,
+                    "runner_invoked": False,
+                    "executable_resolved": False,
+                }
+            ),
+            "2026-08-05T10:00:00+00:00",
+        ),
+    )
+
+    repository = ReadOnlySaarthiRepository()
+    preparation = (
+        repository._load_controlled_nuclei_preparation(
+            connection,
+            {"evidence"},
+            "execution-test",
+        )
+    )
+
+    assert preparation is not None
+    assert (
+        preparation["evidence_id"]
+        == "evidence-nuclei-preparation"
+    )
+    assert (
+        preparation["preview_evidence_id"]
+        == "evidence-nuclei-preview"
+    )
+    assert preparation["tool_name"] == "nuclei"
+    assert preparation["target_url"] == "https://example.com/"
+    assert preparation["rate_limit_per_second"] == "1"
+    assert preparation["concurrency"] == "1"
+    assert preparation["request_timeout_seconds"] == "7"
+    assert preparation["process_timeout_seconds"] == "120"
+    assert preparation["max_output_bytes"] == "1000000"
+    assert preparation["executed"] == "false"
+    assert preparation["network_activity"] == "false"
+    assert preparation["subprocess_started"] == "false"
+    assert preparation["runner_invoked"] == "false"
+    assert preparation["executable_resolved"] == "false"
+    assert preparation["reused_existing_evidence"] == "false"
+
+
+def test_nuclei_preparation_skips_newest_malformed_metadata() -> None:
+    import json
+    import sqlite3
+
+    from saarthi_ai.tui.app import ReadOnlySaarthiRepository
+
+    connection = sqlite3.connect(":memory:")
+    connection.row_factory = sqlite3.Row
+
+    connection.execute(
+        """
+        CREATE TABLE evidence (
+            evidence_id TEXT PRIMARY KEY,
+            execution_id TEXT NOT NULL,
+            evidence_type TEXT NOT NULL,
+            metadata_json TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        )
+        """
+    )
+
+    connection.executemany(
+        """
+        INSERT INTO evidence (
+            evidence_id,
+            execution_id,
+            evidence_type,
+            metadata_json,
+            created_at
+        )
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        [
+            (
+                "evidence-valid-preparation",
+                "execution-test",
+                "controlled_nuclei_preparation",
+                json.dumps(
+                    {
+                        "target_url": "https://example.com/",
+                        "executed": False,
+                    }
+                ),
+                "2026-08-05T10:00:00+00:00",
+            ),
+            (
+                "evidence-malformed-preparation",
+                "execution-test",
+                "controlled_nuclei_preparation",
+                "{not-json",
+                "2026-08-05T11:00:00+00:00",
+            ),
+        ],
+    )
+
+    repository = ReadOnlySaarthiRepository()
+    preparation = (
+        repository._load_controlled_nuclei_preparation(
+            connection,
+            {"evidence"},
+            "execution-test",
+        )
+    )
+
+    assert preparation is not None
+    assert (
+        preparation["evidence_id"]
+        == "evidence-valid-preparation"
+    )
+    assert preparation["target_url"] == "https://example.com/"
+
+
+def test_nuclei_preparation_missing_fields_use_safe_defaults() -> None:
+    import sqlite3
+
+    from saarthi_ai.tui.app import ReadOnlySaarthiRepository
+
+    connection = sqlite3.connect(":memory:")
+    connection.row_factory = sqlite3.Row
+
+    connection.execute(
+        """
+        CREATE TABLE evidence (
+            execution_id TEXT NOT NULL,
+            evidence_type TEXT NOT NULL,
+            metadata_json TEXT NOT NULL
+        )
+        """
+    )
+
+    connection.execute(
+        """
+        INSERT INTO evidence (
+            execution_id,
+            evidence_type,
+            metadata_json
+        )
+        VALUES (?, ?, ?)
+        """,
+        (
+            "execution-test",
+            "controlled_nuclei_preparation",
+            "{}",
+        ),
+    )
+
+    repository = ReadOnlySaarthiRepository()
+    preparation = (
+        repository._load_controlled_nuclei_preparation(
+            connection,
+            {"evidence"},
+            "execution-test",
+        )
+    )
+
+    assert preparation is not None
+    assert preparation["evidence_id"] == "—"
+    assert preparation["evidence_sha256"] == "—"
+    assert preparation["preview_evidence_id"] == "—"
+    assert preparation["target_url"] == "—"
+    assert preparation["arguments"] == "—"
+    assert preparation["executed"] == "false"
+    assert preparation["network_activity"] == "false"
+    assert preparation["subprocess_started"] == "false"
+    assert preparation["runner_invoked"] == "false"
+    assert preparation["executable_resolved"] == "false"
+
+
+def test_loads_matching_nuclei_preparation_reuse_event() -> None:
+    import json
+    import sqlite3
+
+    from saarthi_ai.tui.app import ReadOnlySaarthiRepository
+
+    connection = sqlite3.connect(":memory:")
+    connection.row_factory = sqlite3.Row
+
+    connection.execute(
+        """
+        CREATE TABLE audit_events (
+            execution_id TEXT NOT NULL,
+            details_json TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        )
+        """
+    )
+
+    connection.execute(
+        """
+        INSERT INTO audit_events (
+            execution_id,
+            details_json,
+            created_at
+        )
+        VALUES (?, ?, ?)
+        """,
+        (
+            "execution-test",
+            json.dumps(
+                {
+                    "phase_code": "6J.2",
+                    "tool": "nuclei",
+                    "evidence_id": (
+                        "evidence-nuclei-preparation"
+                    ),
+                    "idempotent_reuse": True,
+                }
+            ),
+            "2026-08-05T11:00:00+00:00",
+        ),
+    )
+
+    repository = ReadOnlySaarthiRepository()
+
+    assert repository._load_nuclei_preparation_reuse(
+        connection,
+        {"audit_events"},
+        "execution-test",
+        "evidence-nuclei-preparation",
+    ) == {
+        "reused_existing_evidence": "true",
+    }
+
+
+def test_scope_lines_render_controlled_nuclei_preparation() -> None:
+    from dataclasses import replace
+
+    from saarthi_ai.tui.app import (
+        build_scope_lines,
+        demo_snapshot,
+    )
+
+    snapshot = replace(
+        demo_snapshot(),
+        current_phase="6J — CONTROLLED NUCLEI PREPARATION",
+        execution_state="planned",
+        controlled_nuclei_preparation={
+            "evidence_id": "evidence-nuclei-preparation",
+            "evidence_sha256": "b" * 64,
+            "preview_evidence_id": "evidence-nuclei-preview",
+            "tool_name": "nuclei",
+            "target_url": "https://example.com/",
+            "arguments": (
+                "-u https://example.com/ -jsonl -silent "
+                "-rate-limit 1 -concurrency 1 -timeout 7"
+            ),
+            "rate_limit_per_second": "1",
+            "concurrency": "1",
+            "request_timeout_seconds": "7",
+            "process_timeout_seconds": "120",
+            "max_output_bytes": "1000000",
+            "executed": "false",
+            "network_activity": "false",
+            "subprocess_started": "false",
+            "runner_invoked": "false",
+            "executable_resolved": "false",
+            "reused_existing_evidence": "false",
+        },
+    )
+
+    rendered = "\n".join(build_scope_lines(snapshot))
+
+    assert "CONTROLLED NUCLEI PREPARATION" in rendered
+    assert "evidence-nuclei-preparation" in rendered
+    assert "evidence-nuclei-preview" in rendered
+    assert "nuclei · https://example.com/" in rendered
+    assert "1 req/s · 1" in rendered
+    assert "Request Timeout    : 7 seconds" in rendered
+    assert "Process Timeout    : 120 seconds" in rendered
+    assert "Output Cap / Stream: 1000000 bytes" in rendered
+    assert "Executed           : false" in rendered
+    assert "Network Activity   : false" in rendered
+    assert "Subprocess Started : false" in rendered
+    assert "Runner Invoked     : false" in rendered
+    assert "Executable Resolved: false" in rendered
+    assert "Evidence Reused    : false" in rendered
+    assert "runner was not invoked" in rendered
+    assert "no executable was resolved" in rendered
+    assert "Nuclei was not started" in rendered
+    assert "no network request was sent" in rendered
+
+
+def test_nuclei_preparation_has_priority_over_preview() -> None:
+    from dataclasses import replace
+
+    from saarthi_ai.tui.app import (
+        build_scope_lines,
+        demo_snapshot,
+    )
+
+    snapshot = replace(
+        demo_snapshot(),
+        controlled_nuclei_preparation={
+            "evidence_id": "evidence-nuclei-preparation",
+            "tool_name": "nuclei",
+            "target_url": "https://example.com/",
+        },
+        controlled_nuclei_preview={
+            "evidence_id": "evidence-nuclei-preview",
+            "tool_name": "nuclei",
+            "target_url": "https://example.com/",
+        },
+    )
+
+    rendered = "\n".join(build_scope_lines(snapshot))
+
+    assert "CONTROLLED NUCLEI PREPARATION" in rendered
+    assert "evidence-nuclei-preparation" in rendered
+    assert "CONTROLLED NUCLEI PREVIEW" not in rendered
+    assert "evidence-nuclei-preview" not in rendered
+
+
+def test_controlled_observation_has_priority_over_preparation() -> None:
+    from dataclasses import replace
+
+    from saarthi_ai.tui.app import (
+        build_scope_lines,
+        demo_snapshot,
+    )
+
+    snapshot = replace(
+        demo_snapshot(),
+        controlled_observation={
+            "evidence_id": "evidence-observation",
+            "target_url": "https://example.com/account",
+            "action": "response_differential",
+            "method": "HEAD",
+            "status_code": "200",
+            "body_bytes_captured": "0",
+            "body_truncated": "false",
+            "body_sha256": "—",
+            "plan_evidence_id": "evidence-plan",
+            "network_activity": "true",
+            "request_attempted": "true",
+            "reused_existing_evidence": "false",
+            "second_request_sent": "—",
+            "follow_redirects": "false",
+            "evidence_sha256": "a" * 64,
+        },
+        controlled_nuclei_preparation={
+            "evidence_id": "evidence-nuclei-preparation",
+            "tool_name": "nuclei",
+            "target_url": "https://example.com/",
+        },
+    )
+
+    rendered = "\n".join(build_scope_lines(snapshot))
+
+    assert "CONTROLLED OBSERVATION" in rendered
+    assert "evidence-observation" in rendered
+    assert "CONTROLLED NUCLEI PREPARATION" not in rendered
+    assert "evidence-nuclei-preparation" not in rendered
+
+
+def test_nuclei_preparation_rendering_escapes_and_redacts() -> None:
+    from dataclasses import replace
+
+    from saarthi_ai.tui.app import (
+        build_scope_lines,
+        demo_snapshot,
+    )
+
+    snapshot = replace(
+        demo_snapshot(),
+        controlled_nuclei_preparation={
+            "evidence_id": "[red]forged[/red]",
+            "evidence_sha256": "b" * 64,
+            "preview_evidence_id": "[blue]preview[/blue]",
+            "tool_name": "nuclei",
+            "target_url": (
+                "https://operator:password@example.test/"
+                "?token=super-secret"
+            ),
+            "arguments": "x" * 500,
+            "rate_limit_per_second": "1",
+            "concurrency": "1",
+            "request_timeout_seconds": "7",
+            "process_timeout_seconds": "120",
+            "max_output_bytes": "1000000",
+            "executed": "false",
+            "network_activity": "false",
+            "subprocess_started": "false",
+            "runner_invoked": "false",
+            "executable_resolved": "false",
+            "reused_existing_evidence": "false",
+        },
+    )
+
+    rendered = "\n".join(build_scope_lines(snapshot))
+
+    assert r"\[red]forged\[/red]" in rendered
+    assert r"\[blue]preview\[/blue]" in rendered
+    assert "operator" not in rendered
+    assert "password" not in rendered
+    assert "super-secret" not in rendered
+    assert "[REDACTED]" in rendered
+    assert "x" * 121 not in rendered
