@@ -60,6 +60,9 @@ class EvidenceType(StrEnum):
     CONTROLLED_NUCLEI_PREPARATION = (
         "controlled_nuclei_preparation"
     )
+    CONTROLLED_NUCLEI_EXECUTION = (
+        "controlled_nuclei_execution"
+    )
     TLS_RESULT = "tls_result"
     TOOL_OUTPUT = "tool_output"
     SCREENSHOT = "screenshot"
