@@ -5,7 +5,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from urllib.parse import urlsplit
 
-from saarthi_ai.execution.tool_runner import NUCLEI_PROFILE
+from saarthi_ai.execution.tool_runner import (
+    NUCLEI_PROFILE,
+    ToolProfile,
+)
 
 MAX_NUCLEI_RATE_LIMIT = 2
 MAX_NUCLEI_CONCURRENCY = 2
@@ -268,4 +271,93 @@ def build_nuclei_execution_plan(
         concurrency=preview.concurrency,
         process_timeout_seconds=MAX_NUCLEI_PROCESS_TIMEOUT_SECONDS,
         max_output_bytes=MAX_NUCLEI_OUTPUT_BYTES,
+    )
+
+
+@dataclass(frozen=True)
+class NucleiRunnerBinding:
+    """Exact approved arguments bound to a dedicated runner profile."""
+
+    profile: ToolProfile
+    arguments: tuple[str, ...]
+    target_url: str
+    executed: bool = False
+    network_activity: bool = False
+    subprocess_started: bool = False
+
+
+def build_nuclei_runner_binding(
+    plan: NucleiExecutionPlan,
+) -> NucleiRunnerBinding:
+    """Bind a validated Nuclei plan without starting the tool."""
+
+    if plan.tool_name != NUCLEI_PROFILE.name:
+        raise NucleiAdapterError(
+            "Nuclei execution plan tool identity is invalid."
+        )
+
+    if plan.executed is not False:
+        raise NucleiAdapterError(
+            "Nuclei runner binding requires a non-executed plan."
+        )
+
+    if plan.network_activity is not False:
+        raise NucleiAdapterError(
+            "Nuclei execution plan already indicates network activity."
+        )
+
+    if plan.subprocess_started is not False:
+        raise NucleiAdapterError(
+            "Nuclei execution plan already indicates a subprocess."
+        )
+
+    if (
+        plan.process_timeout_seconds
+        != MAX_NUCLEI_PROCESS_TIMEOUT_SECONDS
+    ):
+        raise NucleiAdapterError(
+            "Nuclei process timeout does not match the approved bound."
+        )
+
+    if plan.max_output_bytes != MAX_NUCLEI_OUTPUT_BYTES:
+        raise NucleiAdapterError(
+            "Nuclei output limit does not match the approved bound."
+        )
+
+    rebuilt = build_nuclei_invocation_preview(
+        NucleiDryRunRequest(
+            target_url=plan.target_url,
+            authorized=True,
+            active_testing=True,
+            approval_granted=True,
+            rate_limit_per_second=plan.rate_limit_per_second,
+            concurrency=plan.concurrency,
+            timeout_seconds=plan.request_timeout_seconds,
+            dry_run=True,
+        )
+    )
+
+    if plan.arguments != rebuilt.arguments:
+        raise NucleiAdapterError(
+            "Nuclei execution plan arguments do not match the "
+            "fixed approved invocation."
+        )
+
+    profile = ToolProfile(
+        name=NUCLEI_PROFILE.name,
+        executable_candidates=(
+            NUCLEI_PROFILE.executable_candidates
+        ),
+        timeout_seconds=plan.process_timeout_seconds,
+        max_output_bytes=plan.max_output_bytes,
+        max_arguments=len(plan.arguments),
+        max_argument_length=(
+            NUCLEI_PROFILE.max_argument_length
+        ),
+    )
+
+    return NucleiRunnerBinding(
+        profile=profile,
+        arguments=plan.arguments,
+        target_url=plan.target_url,
     )

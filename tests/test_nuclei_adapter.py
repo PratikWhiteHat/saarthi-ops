@@ -374,3 +374,177 @@ def test_nuclei_execution_plan_rejects_already_started_preview() -> None:
                 preview=modified_preview,
             )
         )
+
+
+def approved_runner_plan():
+    from saarthi_ai.execution.nuclei_adapter import (
+        build_nuclei_execution_plan,
+    )
+
+    return build_nuclei_execution_plan(
+        approved_execution_request()
+    )
+
+
+def test_builds_dedicated_bounded_nuclei_runner_binding() -> None:
+    from saarthi_ai.execution.nuclei_adapter import (
+        MAX_NUCLEI_OUTPUT_BYTES,
+        MAX_NUCLEI_PROCESS_TIMEOUT_SECONDS,
+        build_nuclei_runner_binding,
+    )
+    from saarthi_ai.execution.tool_runner import NUCLEI_PROFILE
+
+    plan = approved_runner_plan()
+    binding = build_nuclei_runner_binding(plan)
+
+    assert binding.profile.name == "nuclei"
+    assert (
+        binding.profile.executable_candidates
+        == NUCLEI_PROFILE.executable_candidates
+    )
+    assert (
+        binding.profile.timeout_seconds
+        == MAX_NUCLEI_PROCESS_TIMEOUT_SECONDS
+    )
+    assert (
+        binding.profile.max_output_bytes
+        == MAX_NUCLEI_OUTPUT_BYTES
+    )
+    assert binding.profile.max_arguments == len(
+        plan.arguments
+    )
+    assert (
+        binding.profile.max_argument_length
+        == NUCLEI_PROFILE.max_argument_length
+    )
+
+    assert binding.arguments == plan.arguments
+    assert binding.target_url == plan.target_url
+    assert binding.executed is False
+    assert binding.network_activity is False
+    assert binding.subprocess_started is False
+
+
+def test_nuclei_runner_binding_preserves_exact_arguments() -> None:
+    from saarthi_ai.execution.nuclei_adapter import (
+        build_nuclei_runner_binding,
+    )
+
+    plan = approved_runner_plan()
+    binding = build_nuclei_runner_binding(plan)
+
+    assert binding.arguments == (
+        "-u",
+        "https://example.test/",
+        "-jsonl",
+        "-silent",
+        "-no-color",
+        "-disable-update-check",
+        "-rate-limit",
+        "1",
+        "-concurrency",
+        "1",
+        "-timeout",
+        "7",
+        "-retries",
+        "0",
+        "-tags",
+        "exposure,misconfig,tech",
+        "-exclude-tags",
+        "bruteforce,dos,fuzz,headless,intrusive,token-spray",
+    )
+
+
+def test_nuclei_runner_binding_rejects_modified_arguments() -> None:
+    from dataclasses import replace
+
+    from saarthi_ai.execution.nuclei_adapter import (
+        build_nuclei_runner_binding,
+    )
+
+    plan = approved_runner_plan()
+    modified = replace(
+        plan,
+        arguments=(
+            *plan.arguments,
+            "-headless",
+        ),
+    )
+
+    with pytest.raises(
+        NucleiAdapterError,
+        match="fixed approved invocation",
+    ):
+        build_nuclei_runner_binding(modified)
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        (
+            "process_timeout_seconds",
+            121,
+            "process timeout",
+        ),
+        (
+            "max_output_bytes",
+            1_000_001,
+            "output limit",
+        ),
+        (
+            "executed",
+            True,
+            "non-executed plan",
+        ),
+        (
+            "network_activity",
+            True,
+            "network activity",
+        ),
+        (
+            "subprocess_started",
+            True,
+            "subprocess",
+        ),
+    ],
+)
+def test_nuclei_runner_binding_rejects_modified_bounds_or_state(
+    field: str,
+    value,
+    message: str,
+) -> None:
+    from dataclasses import replace
+
+    from saarthi_ai.execution.nuclei_adapter import (
+        build_nuclei_runner_binding,
+    )
+
+    plan = replace(
+        approved_runner_plan(),
+        **{field: value},
+    )
+
+    with pytest.raises(
+        NucleiAdapterError,
+        match=message,
+    ):
+        build_nuclei_runner_binding(plan)
+
+
+def test_nuclei_runner_binding_rejects_wrong_tool() -> None:
+    from dataclasses import replace
+
+    from saarthi_ai.execution.nuclei_adapter import (
+        build_nuclei_runner_binding,
+    )
+
+    plan = replace(
+        approved_runner_plan(),
+        tool_name="other-tool",
+    )
+
+    with pytest.raises(
+        NucleiAdapterError,
+        match="tool identity",
+    ):
+        build_nuclei_runner_binding(plan)
