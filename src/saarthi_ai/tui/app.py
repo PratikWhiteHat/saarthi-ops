@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 from collections.abc import Iterable
 from dataclasses import dataclass, field
@@ -8,6 +9,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from rich.markup import escape as escape_markup
 from textual.app import App, ComposeResult
 from textual.containers import Grid, Horizontal, Vertical
 from textual.reactive import reactive
@@ -963,6 +965,67 @@ class ReadOnlySaarthiRepository:
 
 
 
+SENSITIVE_DISPLAY_VALUE = re.compile(
+    r"""(?ix)
+    \b(
+        authorization
+        | cookie
+        | password
+        | secret
+        | token
+        | api[_-]?key
+        | apikey
+        | credential
+    )
+    \b
+    \s*[:=]\s*
+    ([^\s&,;]+)
+    """
+)
+
+URL_USERINFO = re.compile(
+    r"(?i)(https?://)[^/@\s]+@"
+)
+
+
+def safe_tui_display(
+    value: Any,
+    *,
+    max_length: int = 96,
+    default: str = "—",
+) -> str:
+    """Return bounded, redacted, markup-safe display text."""
+
+    if value is None:
+        text = default
+    elif isinstance(value, bool):
+        text = str(value).lower()
+    elif isinstance(value, (dict, list, tuple, set)):
+        text = "[unsupported value]"
+    else:
+        text = str(value)
+
+    text = " ".join(text.split())
+    text = URL_USERINFO.sub(
+        r"\1[REDACTED]@",
+        text,
+    )
+    text = SENSITIVE_DISPLAY_VALUE.sub(
+        lambda match: (
+            f"{match.group(1)}=[REDACTED]"
+        ),
+        text,
+    )
+
+    if max_length < 2:
+        raise ValueError("max_length must be at least 2.")
+
+    if len(text) > max_length:
+        text = f"{text[: max_length - 1]}…"
+
+    return escape_markup(text)
+
+
 def parse_execution_metadata(
     row: sqlite3.Row,
     metadata_column: str | None,
@@ -1559,60 +1622,70 @@ class SaarthiDashboard(App[None]):
         if snapshot.controlled_observation:
             observation = snapshot.controlled_observation
 
+            def observation_value(
+                key: str,
+                *,
+                max_length: int = 96,
+            ) -> str:
+                return safe_tui_display(
+                    observation.get(key),
+                    max_length=max_length,
+                )
+
             scope_lines.extend(
                 [
                     "",
                     "[bold cyan]CONTROLLED OBSERVATION[/bold cyan]",
                     (
                         "Observation ID     : "
-                        f"{observation['evidence_id']}"
+                        f"{observation_value('evidence_id', max_length=72)}"
                     ),
                     (
                         "Target / Action    : "
-                        f"{observation['target_url']} · "
-                        f"{observation['action']}"
+                        f"{observation_value('target_url', max_length=88)} · "
+                        f"{observation_value('action', max_length=40)}"
                     ),
                     (
                         "Method / Status    : "
-                        f"{observation['method']} · "
-                        f"HTTP {observation['status_code']}"
+                        f"{observation_value('method', max_length=12)} · "
+                        f"HTTP {observation_value('status_code', max_length=12)}"
                     ),
                     (
                         "Captured / Truncated: "
-                        f"{observation['body_bytes_captured']} bytes · "
-                        f"{observation['body_truncated']}"
+                        f"{observation_value('body_bytes_captured', max_length=20)} bytes · "
+                        f"{observation_value('body_truncated', max_length=12)}"
                     ),
                     (
                         "Body SHA-256       : "
-                        f"{observation['body_sha256']}"
+                        f"{observation_value('body_sha256', max_length=72)}"
                     ),
                     (
                         "Plan Evidence      : "
-                        f"{observation['plan_evidence_id']}"
+                        f"{observation_value('plan_evidence_id', max_length=72)}"
                     ),
                     (
                         "Network Activity   : "
-                        f"{observation['network_activity']}"
+                        f"{observation_value('network_activity', max_length=12)}"
                     ),
                     (
                         "Request Attempted  : "
-                        f"{observation['request_attempted']}"
+                        f"{observation_value('request_attempted', max_length=12)}"
                     ),
                     (
                         "Evidence Reused    : "
-                        f"{observation['reused_existing_evidence']}"
+                        f"{observation_value('reused_existing_evidence', max_length=12)}"
                     ),
                     (
                         "Second Request Sent: "
-                        f"{observation['second_request_sent']}"
+                        f"{observation_value('second_request_sent', max_length=12)}"
                     ),
                     (
                         "Redirects Followed : "
-                        f"{observation['follow_redirects']}"
+                        f"{observation_value('follow_redirects', max_length=12)}"
                     ),
                     (
                         "Evidence SHA-256   : "
-                        f"{observation['evidence_sha256']}"
+                        f"{observation_value('evidence_sha256', max_length=72)}"
                     ),
                 ]
             )

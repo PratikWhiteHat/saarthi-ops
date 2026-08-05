@@ -1058,3 +1058,91 @@ def test_controlled_observation_reuse_defaults_without_audit_data() -> None:
         "reused_existing_evidence": "false",
         "second_request_sent": "—",
     }
+
+
+def test_safe_tui_display_escapes_markup() -> None:
+    from saarthi_ai.tui.app import safe_tui_display
+
+    rendered = safe_tui_display(
+        "[red]forged alert[/red]"
+    )
+
+    assert rendered == (
+        r"\[red]forged alert\[/red]"
+    )
+
+
+def test_safe_tui_display_bounds_long_values() -> None:
+    from saarthi_ai.tui.app import safe_tui_display
+
+    rendered = safe_tui_display(
+        "x" * 200,
+        max_length=32,
+    )
+
+    assert len(rendered) == 32
+    assert rendered.endswith("…")
+
+
+def test_safe_tui_display_redacts_sensitive_assignment() -> None:
+    from saarthi_ai.tui.app import safe_tui_display
+
+    rendered = safe_tui_display(
+        "https://example.test/path?token=super-secret&view=1"
+    )
+
+    assert "super-secret" not in rendered
+    assert "token=[REDACTED]" in rendered
+    assert "view=1" in rendered
+
+
+def test_safe_tui_display_redacts_url_user_information() -> None:
+    from saarthi_ai.tui.app import safe_tui_display
+
+    rendered = safe_tui_display(
+        "https://operator:password@example.test/account"
+    )
+
+    assert "operator" not in rendered
+    assert "password" not in rendered
+    assert (
+        "https://[REDACTED]@example.test/account"
+        in rendered
+    )
+
+
+def test_safe_tui_display_flattens_embedded_lines() -> None:
+    from saarthi_ai.tui.app import safe_tui_display
+
+    rendered = safe_tui_display(
+        "first line\nsecond line\tthird"
+    )
+
+    assert rendered == "first line second line third"
+
+
+def test_safe_tui_display_rejects_complex_values() -> None:
+    from saarthi_ai.tui.app import safe_tui_display
+
+    rendered = safe_tui_display(
+        {
+            "token": "must-not-render",
+            "headers": {"Authorization": "secret"},
+        }
+    )
+
+    assert "must-not-render" not in rendered
+    assert "Authorization" not in rendered
+    assert rendered == r"\[unsupported value]"
+
+
+def test_safe_tui_display_rejects_invalid_bound() -> None:
+    import pytest
+
+    from saarthi_ai.tui.app import safe_tui_display
+
+    with pytest.raises(
+        ValueError,
+        match="max_length must be at least 2",
+    ):
+        safe_tui_display("value", max_length=1)
