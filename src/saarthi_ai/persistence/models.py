@@ -57,6 +57,9 @@ class EvidenceType(StrEnum):
         "controlled_validation_observation"
     )
     CONTROLLED_NUCLEI_PREVIEW = "controlled_nuclei_preview"
+    CONTROLLED_NUCLEI_PREPARATION = (
+        "controlled_nuclei_preparation"
+    )
     TLS_RESULT = "tls_result"
     TOOL_OUTPUT = "tool_output"
     SCREENSHOT = "screenshot"
