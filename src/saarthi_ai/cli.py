@@ -35,6 +35,9 @@ from saarthi_ai.controlled_validation.models import (
 )
 from saarthi_ai.execution.http_collector import HttpCollectionError
 from saarthi_ai.execution.http_models import HttpMetadataCollectionRequest
+from saarthi_ai.execution.nuclei_adapter import (
+    NucleiDryRunRequest,
+)
 from saarthi_ai.llm import (
     OllamaUnavailableError,
     SaarthiOllamaClient,
@@ -84,6 +87,10 @@ from saarthi_ai.persistence.models import (
     EvidenceType,
     ExecutionCreate,
     ExecutionState,
+)
+from saarthi_ai.persistence.nuclei_preview_workflow import (
+    NucleiPreviewWorkflowError,
+    create_tracked_nuclei_preview,
 )
 from saarthi_ai.persistence.orchestration_workflow import (
     OrchestrationWorkflowError,
@@ -1756,6 +1763,159 @@ def controlled_plan(
     console.print(
         "[dim]This command persisted a validation plan only. "
         "No request, payload, or subprocess was executed.[/dim]"
+    )
+
+
+@controlled_app.command("nuclei-preview")
+def controlled_nuclei_preview(
+    execution_id: Annotated[
+        str,
+        typer.Option(
+            "--execution",
+            help="Authorized assessment execution identifier.",
+        ),
+    ],
+    target_url: Annotated[
+        str,
+        typer.Option(
+            "--url",
+            help="In-scope credential-free HTTP or HTTPS target URL.",
+        ),
+    ],
+    rate_limit: Annotated[
+        int,
+        typer.Option(
+            "--rate-limit",
+            min=1,
+            max=2,
+            help="Previewed Nuclei request rate per second, capped at 2.",
+        ),
+    ] = 1,
+    concurrency: Annotated[
+        int,
+        typer.Option(
+            "--concurrency",
+            min=1,
+            max=2,
+            help="Previewed Nuclei concurrency, capped at 2.",
+        ),
+    ] = 1,
+    timeout_seconds: Annotated[
+        int,
+        typer.Option(
+            "--timeout",
+            min=1,
+            max=10,
+            help="Previewed per-request timeout in seconds, capped at 10.",
+        ),
+    ] = 10,
+    approved: Annotated[
+        bool,
+        typer.Option(
+            "--approved",
+            help=(
+                "Explicitly approve persistence of this non-executed "
+                "Nuclei preview."
+            ),
+        ),
+    ] = False,
+) -> None:
+    """Persist one controlled Nuclei invocation preview without execution."""
+
+    if not approved:
+        console.print(
+            "[bold yellow]Approval required.[/bold yellow] "
+            "Review the execution, target, rate, concurrency, and timeout, "
+            "then rerun with --approved."
+        )
+        console.print(
+            "[dim]No Nuclei process or network request was started.[/dim]"
+        )
+        raise typer.Exit(code=1)
+
+    request = NucleiDryRunRequest(
+        target_url=target_url,
+        authorized=True,
+        active_testing=True,
+        approval_granted=True,
+        rate_limit_per_second=rate_limit,
+        concurrency=concurrency,
+        timeout_seconds=timeout_seconds,
+        dry_run=True,
+    )
+
+    console.print(
+        "[bold]Preparing controlled Nuclei dry-run preview...[/bold]"
+    )
+    console.print(f"Execution: {execution_id}")
+    console.print(f"Target: {target_url}")
+    console.print(f"Rate limit: {rate_limit} request(s)/second")
+    console.print(f"Concurrency: {concurrency}")
+    console.print(f"Timeout: {timeout_seconds} second(s)")
+    console.print("Dry run: true")
+
+    try:
+        result = create_tracked_nuclei_preview(
+            get_database(),
+            execution_id,
+            request,
+            actor="cli-controlled-nuclei-preview",
+            evidence_root=(
+                Path.cwd()
+                / "evidence"
+                / "controlled-nuclei-previews"
+            ),
+        )
+    except (
+        ExecutionNotFoundError,
+        InvalidStateTransitionError,
+        NucleiPreviewWorkflowError,
+        ValueError,
+    ) as exc:
+        console.print(
+            "[bold red]Nuclei preview failed:[/bold red] "
+            f"{exc}"
+        )
+        console.print("Executed: false")
+        console.print("Network activity: false")
+        console.print("Subprocess started: false")
+        raise typer.Exit(code=1) from exc
+
+    preview = result.preview
+
+    console.print()
+    console.print(
+        "[bold green]Controlled Nuclei preview persisted.[/bold green]"
+    )
+    console.print(f"Execution state: {result.execution.state.value}")
+    console.print(f"Tool: {preview.tool_name}")
+    console.print(f"Target: {preview.target_url}")
+    console.print("Arguments:")
+    console.print("  " + " ".join(preview.arguments))
+    console.print(
+        f"Rate limit: {preview.rate_limit_per_second} request(s)/second"
+    )
+    console.print(f"Concurrency: {preview.concurrency}")
+    console.print(f"Timeout: {preview.timeout_seconds} second(s)")
+    console.print(
+        "Allowed tags: " + ", ".join(preview.allowed_tags)
+    )
+    console.print(
+        "Excluded tags: " + ", ".join(preview.excluded_tags)
+    )
+    console.print("Executed: false")
+    console.print("Network activity: false")
+    console.print("Subprocess started: false")
+    console.print(
+        "Existing evidence reused: "
+        f"{str(result.reused_existing_evidence).lower()}"
+    )
+    console.print(f"Evidence ID: {result.evidence.evidence_id}")
+    console.print(f"Evidence path: {result.evidence.path}")
+    console.print(f"Evidence SHA-256: {result.evidence.sha256}")
+    console.print(
+        "[dim]This command persisted a fixed invocation preview only. "
+        "Nuclei was not started and no network request was sent.[/dim]"
     )
 
 

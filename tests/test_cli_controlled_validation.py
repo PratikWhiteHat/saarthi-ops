@@ -660,3 +660,300 @@ def test_controlled_observe_reports_idempotent_evidence_reuse(
     assert "Existing persisted observation reused" in normalized_output
     assert "No second network request was sent" in normalized_output
     assert "no duplicate observation evidence" in normalized_output
+
+
+def test_controlled_nuclei_preview_requires_approval() -> None:
+    result = runner.invoke(
+        app,
+        [
+            "controlled",
+            "nuclei-preview",
+            "--execution",
+            "execution-test",
+            "--url",
+            "https://example.com/",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "Approval required" in result.stdout
+    assert "No Nuclei process" in result.stdout
+
+
+def test_controlled_nuclei_preview_persists_dry_run(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    import saarthi_ai.cli as cli_module
+
+    captured: dict[str, object] = {}
+
+    def fake_workflow(
+        database,
+        execution_id,
+        request,
+        *,
+        actor,
+        evidence_root,
+    ):
+        captured["database"] = database
+        captured["execution_id"] = execution_id
+        captured["request"] = request
+        captured["actor"] = actor
+        captured["evidence_root"] = evidence_root
+
+        return SimpleNamespace(
+            execution=SimpleNamespace(
+                state=SimpleNamespace(value="planned"),
+            ),
+            preview=SimpleNamespace(
+                tool_name="nuclei",
+                target_url=request.target_url,
+                arguments=(
+                    "-u",
+                    request.target_url,
+                    "-jsonl",
+                    "-silent",
+                    "-no-color",
+                    "-disable-update-check",
+                    "-rate-limit",
+                    str(request.rate_limit_per_second),
+                    "-concurrency",
+                    str(request.concurrency),
+                    "-timeout",
+                    str(request.timeout_seconds),
+                    "-retries",
+                    "0",
+                ),
+                rate_limit_per_second=(
+                    request.rate_limit_per_second
+                ),
+                concurrency=request.concurrency,
+                timeout_seconds=request.timeout_seconds,
+                allowed_tags=(
+                    "exposure",
+                    "misconfig",
+                    "tech",
+                ),
+                excluded_tags=(
+                    "bruteforce",
+                    "dos",
+                    "fuzz",
+                    "headless",
+                    "intrusive",
+                    "token-spray",
+                ),
+                executed=False,
+                subprocess_started=False,
+            ),
+            evidence=SimpleNamespace(
+                evidence_id="evidence-nuclei-preview",
+                path=str(evidence_root / "preview.json"),
+                sha256="a" * 64,
+            ),
+            reused_existing_evidence=False,
+        )
+
+    database = object()
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        cli_module,
+        "get_database",
+        lambda: database,
+    )
+    monkeypatch.setattr(
+        cli_module,
+        "create_tracked_nuclei_preview",
+        fake_workflow,
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "controlled",
+            "nuclei-preview",
+            "--execution",
+            "execution-test",
+            "--url",
+            "https://example.com/",
+            "--rate-limit",
+            "2",
+            "--concurrency",
+            "2",
+            "--timeout",
+            "7",
+            "--approved",
+        ],
+    )
+
+    assert result.exit_code == 0
+
+    request = captured["request"]
+
+    assert captured["database"] is database
+    assert captured["execution_id"] == "execution-test"
+    assert request.target_url == "https://example.com/"
+    assert request.authorized is True
+    assert request.active_testing is True
+    assert request.approval_granted is True
+    assert request.rate_limit_per_second == 2
+    assert request.concurrency == 2
+    assert request.timeout_seconds == 7
+    assert request.dry_run is True
+
+    assert captured["actor"] == (
+        "cli-controlled-nuclei-preview"
+    )
+    assert captured["evidence_root"] == (
+        tmp_path
+        / "evidence"
+        / "controlled-nuclei-previews"
+    )
+
+    normalized_output = " ".join(result.stdout.split())
+
+    assert "Controlled Nuclei preview persisted" in normalized_output
+    assert "Execution state: planned" in normalized_output
+    assert "Tool: nuclei" in normalized_output
+    assert "Executed: false" in normalized_output
+    assert "Network activity: false" in normalized_output
+    assert "Subprocess started: false" in normalized_output
+    assert "Existing evidence reused: false" in normalized_output
+    assert "evidence-nuclei-preview" in normalized_output
+    assert "Nuclei was not started" in normalized_output
+    assert "no network request was sent" in normalized_output
+
+
+def test_controlled_nuclei_preview_reports_reused_evidence(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    import saarthi_ai.cli as cli_module
+
+    def fake_workflow(
+        database,
+        execution_id,
+        request,
+        *,
+        actor,
+        evidence_root,
+    ):
+        return SimpleNamespace(
+            execution=SimpleNamespace(
+                state=SimpleNamespace(value="planned"),
+            ),
+            preview=SimpleNamespace(
+                tool_name="nuclei",
+                target_url=request.target_url,
+                arguments=("-u", request.target_url),
+                rate_limit_per_second=1,
+                concurrency=1,
+                timeout_seconds=10,
+                allowed_tags=("exposure",),
+                excluded_tags=("dos",),
+                executed=False,
+                subprocess_started=False,
+            ),
+            evidence=SimpleNamespace(
+                evidence_id="existing-nuclei-preview",
+                path=str(evidence_root / "existing.json"),
+                sha256="b" * 64,
+            ),
+            reused_existing_evidence=True,
+        )
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        cli_module,
+        "get_database",
+        lambda: object(),
+    )
+    monkeypatch.setattr(
+        cli_module,
+        "create_tracked_nuclei_preview",
+        fake_workflow,
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "controlled",
+            "nuclei-preview",
+            "--execution",
+            "execution-test",
+            "--url",
+            "https://example.com/",
+            "--approved",
+        ],
+    )
+
+    assert result.exit_code == 0
+
+    normalized_output = " ".join(result.stdout.split())
+
+    assert "Existing evidence reused: true" in normalized_output
+    assert "existing-nuclei-preview" in normalized_output
+
+
+def test_controlled_nuclei_preview_reports_workflow_failure(
+    monkeypatch,
+) -> None:
+    import saarthi_ai.cli as cli_module
+
+    def fake_workflow(*args, **kwargs):
+        raise cli_module.NucleiPreviewWorkflowError(
+            "simulated preview persistence failure"
+        )
+
+    monkeypatch.setattr(
+        cli_module,
+        "get_database",
+        lambda: object(),
+    )
+    monkeypatch.setattr(
+        cli_module,
+        "create_tracked_nuclei_preview",
+        fake_workflow,
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "controlled",
+            "nuclei-preview",
+            "--execution",
+            "execution-test",
+            "--url",
+            "https://example.com/",
+            "--approved",
+        ],
+    )
+
+    assert result.exit_code == 1
+
+    normalized_output = " ".join(result.stdout.split())
+
+    assert "simulated preview persistence failure" in normalized_output
+    assert "Executed: false" in normalized_output
+    assert "Network activity: false" in normalized_output
+    assert "Subprocess started: false" in normalized_output
+
+
+def test_controlled_nuclei_preview_enforces_cli_bounds() -> None:
+    result = runner.invoke(
+        app,
+        [
+            "controlled",
+            "nuclei-preview",
+            "--execution",
+            "execution-test",
+            "--url",
+            "https://example.com/",
+            "--rate-limit",
+            "3",
+            "--approved",
+        ],
+    )
+
+    assert result.exit_code != 0
