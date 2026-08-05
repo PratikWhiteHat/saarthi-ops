@@ -110,3 +110,30 @@ def test_rejects_limits_outside_adapter_boundary(
         build_nuclei_invocation_preview(
             approved_request(**{field: value})
         )
+
+
+def test_preview_timeout_matches_default_request_timeout() -> None:
+    request = approved_request()
+
+    preview = build_nuclei_invocation_preview(request)
+
+    assert request.timeout_seconds == 10
+    assert preview.timeout_seconds == request.timeout_seconds
+
+    timeout_index = preview.arguments.index("-timeout")
+
+    assert preview.arguments[timeout_index + 1] == str(
+        request.timeout_seconds
+    )
+
+
+def test_preview_timeout_matches_custom_request_timeout() -> None:
+    request = approved_request(timeout_seconds=7)
+
+    preview = build_nuclei_invocation_preview(request)
+
+    assert preview.timeout_seconds == 7
+
+    timeout_index = preview.arguments.index("-timeout")
+
+    assert preview.arguments[timeout_index + 1] == "7"

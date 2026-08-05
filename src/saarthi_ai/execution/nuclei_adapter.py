@@ -155,7 +155,7 @@ def build_nuclei_invocation_preview(
         tool_name=NUCLEI_PROFILE.name,
         target_url=target_url,
         arguments=arguments,
-        timeout_seconds=NUCLEI_PROFILE.timeout_seconds,
+        timeout_seconds=request.timeout_seconds,
         rate_limit_per_second=request.rate_limit_per_second,
         concurrency=request.concurrency,
         allowed_tags=ALLOWED_NUCLEI_TAGS,
