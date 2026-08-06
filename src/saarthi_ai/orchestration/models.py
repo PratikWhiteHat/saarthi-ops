@@ -35,6 +35,9 @@ class OrchestrationPhase(StrEnum):
     JAVASCRIPT = "3E"
     SECURITY_HEADERS = "4A-security-headers"
     CORS = "4A-cors"
+    NUCLEI_PREVIEW = "6C-nuclei-preview"
+    SQLMAP_PREVIEW = "6C-sqlmap-preview"
+    SAFE_VALIDATOR = "6C-safe-validator"
 
 
 class OrchestrationContext(BaseModel):
@@ -192,5 +195,18 @@ class AssessmentPipelineResult(BaseModel):
     @property
     def calculated_status(self) -> OrchestrationStatus:
         """Calculate the overall status from the phase outcomes."""
+
+        return calculate_orchestration_status(self.phase_results)
+
+
+class Phase6ChainResult(BaseModel):
+    """Results from the permission-gated Phase 6C safe chain."""
+
+    context: OrchestrationContext
+    phase_results: list[OrchestrationPhaseResult]
+
+    @property
+    def calculated_status(self) -> OrchestrationStatus:
+        """Calculate the aggregate status of the Phase 6C chain."""
 
         return calculate_orchestration_status(self.phase_results)

@@ -57,6 +57,7 @@ from saarthi_ai.llm import (
     OllamaUnavailableError,
     SaarthiOllamaClient,
 )
+from saarthi_ai.orchestration.models import OrchestrationStatus
 from saarthi_ai.persistence.attack_hypothesis_workflow import (
     AttackHypothesisWorkflowError,
     create_tracked_attack_hypotheses,
@@ -131,6 +132,9 @@ from saarthi_ai.persistence.orchestration_workflow import (
     OrchestrationWorkflowError,
     create_orchestration,
     run_assessment_pipeline,
+)
+from saarthi_ai.persistence.phase6_chain_workflow import (
+    run_phase6_safe_chain,
 )
 from saarthi_ai.persistence.projects import (
     ProjectAlreadyExistsError,
@@ -3559,8 +3563,38 @@ def workflow_run(
             help="Maximum approved request rate per second.",
         ),
     ] = 2,
+    intrusive: Annotated[
+        bool,
+        typer.Option(
+            "--intrusive",
+            help=(
+                "Record explicit intrusive-testing permission. Required "
+                "for a SQLmap preview; this does not execute SQLmap."
+            ),
+        ),
+    ] = False,
+    nuclei_preview_approved: Annotated[
+        bool,
+        typer.Option(
+            "--approve-nuclei-preview",
+            help=(
+                "Approve a redacted Nuclei preview after 4A. No Nuclei "
+                "process or scanner request is started."
+            ),
+        ),
+    ] = False,
+    sqlmap_preview_approved: Annotated[
+        bool,
+        typer.Option(
+            "--approve-sqlmap-preview",
+            help=(
+                "Approve a redacted SQLmap preview after 4A. Requires "
+                "--intrusive and a query parameter; SQLmap is not run."
+            ),
+        ),
+    ] = False,
 ) -> None:
-    """Run the authorized Phase 3A through Phase 4A assessment pipeline."""
+    """Run Phase 3A-4A, then the permission-gated safe Phase 6C chain."""
 
     if not authorized:
         console.print(
@@ -3591,7 +3625,7 @@ def workflow_run(
             assessment_name=assessment_name,
             target_url=target_url,
             active_testing_allowed=True,
-            intrusive_testing_allowed=False,
+            intrusive_testing_allowed=intrusive,
             rate_limit_per_second=rate_limit,
             actor="cli-workflow-orchestrator",
         )
@@ -3621,6 +3655,17 @@ def workflow_run(
             explicitly_approved=True,
             actor="cli-workflow-orchestrator",
         )
+        phase6_result = asyncio.run(
+            run_phase6_safe_chain(
+                database,
+                result.context,
+                evidence_root=evidence_root / "phase6",
+                explicitly_approved=True,
+                nuclei_preview_approved=nuclei_preview_approved,
+                sqlmap_preview_approved=sqlmap_preview_approved,
+                actor="cli-phase6-orchestrator",
+            )
+        )
 
     except (
         OrchestrationWorkflowError,
@@ -3631,13 +3676,14 @@ def workflow_run(
         CrawlCollectionError,
         JavaScriptCollectionError,
         DirectCheckWorkflowError,
+        ValueError,
     ) as exc:
         console.print(
             f"[bold red]Assessment workflow failed:[/bold red] {exc}"
         )
         raise typer.Exit(code=1) from exc
 
-    phase_results = (
+    phase_results = [
         result.dns,
         result.subdomains,
         result.http_intelligence,
@@ -3645,9 +3691,10 @@ def workflow_run(
         result.javascript,
         result.security_headers,
         result.cors,
-    )
+        *phase6_result.phase_results,
+    ]
 
-    table = Table(title="Assessment Workflow Results")
+    table = Table(title="Assessment and Phase 6C Workflow Results")
     table.add_column("Phase")
     table.add_column("Outcome")
     table.add_column("Required")
@@ -3658,7 +3705,12 @@ def workflow_run(
 
     for phase in phase_results:
         table.add_row(
-            phase.phase.value,
+            (
+                f"{phase.phase.value}:"
+                f"{phase.metrics.get('action')}"
+                if phase.metrics.get("action")
+                else phase.phase.value
+            ),
             phase.outcome.value,
             "yes" if phase.required else "no",
             phase.execution_id or "-",
@@ -3671,16 +3723,29 @@ def workflow_run(
     console.print(table)
     console.print()
 
-    if result.context.status.value == "partial":
+    overall_status = result.context.status
+    if (
+        phase6_result.calculated_status
+        in {OrchestrationStatus.PARTIAL, OrchestrationStatus.FAILED}
+    ):
+        overall_status = phase6_result.calculated_status
+
+    if overall_status is OrchestrationStatus.PARTIAL:
         console.print(
             "[bold yellow]Assessment workflow completed "
             "with optional phases skipped or incomplete.[/bold yellow]"
         )
+    elif overall_status is OrchestrationStatus.FAILED:
+        console.print(
+            "[bold red]Phase 6C workflow contains required "
+            "failures.[/bold red]"
+        )
     else:
         console.print(
-            "[bold green]Assessment workflow completed.[/bold green]"
+            "[bold green]Assessment and safe Phase 6C workflow "
+            "completed.[/bold green]"
         )
     console.print(
         f"Parent execution: {result.context.parent_execution_id}"
     )
-    console.print(f"Final state: {result.context.status.value}")
+    console.print(f"Final state: {overall_status.value}")

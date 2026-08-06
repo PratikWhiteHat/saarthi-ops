@@ -7,7 +7,10 @@ from types import SimpleNamespace
 from typer.testing import CliRunner
 
 from saarthi_ai.cli import app
-from saarthi_ai.orchestration.models import OrchestrationPhase
+from saarthi_ai.orchestration.models import (
+    OrchestrationPhase,
+    OrchestrationStatus,
+)
 from saarthi_ai.persistence.orchestration_workflow import (
     OrchestrationWorkflowError,
 )
@@ -129,12 +132,13 @@ def test_workflow_run_forwards_scope_and_prints_results(
             ),
             reason=None,
             error_summary=None,
+            metrics={},
         )
 
     workflow_result = SimpleNamespace(
         context=SimpleNamespace(
             parent_execution_id="execution-parent",
-            status=SimpleNamespace(value="completed"),
+            status=OrchestrationStatus.COMPLETED,
         ),
         dns=phase_result(OrchestrationPhase.DNS, "dns"),
         subdomains=phase_result(
@@ -178,6 +182,32 @@ def test_workflow_run_forwards_scope_and_prints_results(
         captured["run_actor"] = actor
         return workflow_result
 
+    async def fake_run_phase6_safe_chain(
+        database_argument,
+        context_argument,
+        *,
+        evidence_root,
+        explicitly_approved,
+        nuclei_preview_approved,
+        sqlmap_preview_approved,
+        actor,
+    ):
+        captured["phase6_database"] = database_argument
+        captured["phase6_context"] = context_argument
+        captured["phase6_evidence_root"] = evidence_root
+        captured["phase6_approved"] = explicitly_approved
+        captured["nuclei_preview_approved"] = (
+            nuclei_preview_approved
+        )
+        captured["sqlmap_preview_approved"] = (
+            sqlmap_preview_approved
+        )
+        captured["phase6_actor"] = actor
+        return SimpleNamespace(
+            phase_results=[],
+            calculated_status=OrchestrationStatus.COMPLETED,
+        )
+
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(
         cli_module,
@@ -194,6 +224,11 @@ def test_workflow_run_forwards_scope_and_prints_results(
         "run_assessment_pipeline",
         fake_run_assessment_pipeline,
     )
+    monkeypatch.setattr(
+        cli_module,
+        "run_phase6_safe_chain",
+        fake_run_phase6_safe_chain,
+    )
 
     result = runner.invoke(
         app,
@@ -209,6 +244,9 @@ def test_workflow_run_forwards_scope_and_prints_results(
             "--approved",
             "--rate-limit",
             "4",
+            "--intrusive",
+            "--approve-nuclei-preview",
+            "--approve-sqlmap-preview",
         ],
     )
 
@@ -220,7 +258,7 @@ def test_workflow_run_forwards_scope_and_prints_results(
     )
     assert captured["target_url"] == "https://example.com/"
     assert captured["active_testing_allowed"] is True
-    assert captured["intrusive_testing_allowed"] is False
+    assert captured["intrusive_testing_allowed"] is True
     assert captured["rate_limit_per_second"] == 4
     assert captured["create_actor"] == "cli-workflow-orchestrator"
 
@@ -234,11 +272,26 @@ def test_workflow_run_forwards_scope_and_prints_results(
         / "orchestrations"
         / "orchestration-test"
     )
+    assert captured["phase6_database"] is database
+    assert captured["phase6_context"] is workflow_result.context
+    assert captured["phase6_approved"] is True
+    assert captured["nuclei_preview_approved"] is True
+    assert captured["sqlmap_preview_approved"] is True
+    assert captured["phase6_evidence_root"] == (
+        tmp_path
+        / "evidence"
+        / "orchestrations"
+        / "orchestration-test"
+        / "phase6"
+    )
 
-    assert "Assessment workflow completed" in result.stdout
+    assert (
+        "Assessment and safe Phase 6C workflow completed"
+        in result.stdout
+    )
     assert "execution-parent" in result.stdout
     assert "completed" in result.stdout
-    assert "Assessment Workflow Results" in result.stdout
+    assert "Assessment and Phase 6C Workflow Results" in result.stdout
     assert "Final state: completed" in result.stdout
 
 
