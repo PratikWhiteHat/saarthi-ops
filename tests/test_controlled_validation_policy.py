@@ -41,6 +41,20 @@ def test_bounded_low_risk_request_is_allowed() -> None:
     assert result.allowed is True
 
 
+def test_clickjacking_header_validation_is_low_risk() -> None:
+    result = evaluate_controlled_validation(
+        make_request(
+            action=(
+                ControlledValidationAction
+                .CLICKJACKING_HEADER_VALIDATION
+            )
+        )
+    )
+
+    assert result.decision is ControlledValidationDecision.ALLOW
+    assert result.risk is ControlledValidationRisk.LOW
+
+
 def test_authorization_is_required() -> None:
     result = evaluate_controlled_validation(
         make_request(authorized=False)

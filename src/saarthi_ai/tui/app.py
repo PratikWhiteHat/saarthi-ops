@@ -855,6 +855,46 @@ class ReadOnlySaarthiRepository:
                     metadata.get("follow_redirects"),
                     "false",
                 ),
+                "validator_id": display(
+                    metadata.get("validator_id")
+                ),
+                "validator_classification": display(
+                    metadata.get("validator_classification")
+                ),
+                "validator_reason": display(
+                    metadata.get("validator_reason")
+                ),
+                "protection_sources": (
+                    ", ".join(
+                        item
+                        for item in metadata.get(
+                            "protection_sources",
+                            [],
+                        )
+                        if isinstance(item, str)
+                    )
+                    if isinstance(
+                        metadata.get("protection_sources"),
+                        list,
+                    )
+                    else "—"
+                ),
+                "header_only": display(
+                    metadata.get("header_only"),
+                    "false",
+                ),
+                "exploit_page_generated": display(
+                    metadata.get("exploit_page_generated"),
+                    "false",
+                ),
+                "browser_launched": display(
+                    metadata.get("browser_launched"),
+                    "false",
+                ),
+                "payload_generated": display(
+                    metadata.get("payload_generated"),
+                    "false",
+                ),
                 "reused_existing_evidence": "false",
                 "second_request_sent": "—",
             }
@@ -2580,6 +2620,7 @@ TOOLS = [
     ("katana", "Web Crawler", "ENABLED"),
     ("Saarthi 6A", "Attack Hypothesis Engine", "ENABLED"),
     ("Saarthi 6B", "Policy & Approval Gate", "APPROVAL"),
+    ("Saarthi 6C.2", "Clickjacking Header Validator", "APPROVAL"),
     ("nuclei", "Controlled Preview / Execution", "APPROVAL"),
     ("sqlmap", "SQL Injection Testing", "PHASE 4A"),
     ("ghauri", "Blind SQLi Cross-check", "PHASE 4B"),
@@ -2859,6 +2900,48 @@ def build_scope_lines(
                 ),
             ]
         )
+
+        if (
+            observation.get("validator_id")
+            == "6C.2-clickjacking-header-validation"
+        ):
+            scope_lines.extend(
+                [
+                    "",
+                    (
+                        "[bold cyan]6C.2 — CLICKJACKING HEADER "
+                        "VALIDATION[/bold cyan]"
+                    ),
+                    (
+                        "Classification     : "
+                        f"{observation_value('validator_classification', max_length=32)}"
+                    ),
+                    (
+                        "Reason             : "
+                        f"{observation_value('validator_reason', max_length=120)}"
+                    ),
+                    (
+                        "Protection Sources : "
+                        f"{observation_value('protection_sources', max_length=72)}"
+                    ),
+                    (
+                        "Header Only        : "
+                        f"{observation_value('header_only', max_length=12)}"
+                    ),
+                    (
+                        "Exploit Page       : "
+                        f"{observation_value('exploit_page_generated', max_length=12)}"
+                    ),
+                    (
+                        "Browser Launched   : "
+                        f"{observation_value('browser_launched', max_length=12)}"
+                    ),
+                    (
+                        "Payload Generated  : "
+                        f"{observation_value('payload_generated', max_length=12)}"
+                    ),
+                ]
+            )
 
         if snapshot.execution_state.lower() == "failed":
             scope_lines.append(

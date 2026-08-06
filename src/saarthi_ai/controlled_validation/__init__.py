@@ -1,5 +1,10 @@
 """Controlled-validation policy and execution contracts."""
 
+from saarthi_ai.controlled_validation.clickjacking import (
+    ClickjackingClassification,
+    ClickjackingValidationResult,
+    analyze_clickjacking_protection,
+)
 from saarthi_ai.controlled_validation.executor import (
     ALLOWED_METHODS,
     DEFAULT_MAX_RESPONSE_BYTES,
@@ -39,6 +44,8 @@ __all__ = [
     "MAX_RESPONSE_BYTES",
     "MAX_TIMEOUT_SECONDS",
     "ControlledValidationAction",
+    "ClickjackingClassification",
+    "ClickjackingValidationResult",
     "ControlledValidationDecision",
     "ControlledValidationExecutionDecision",
     "ControlledValidationExecutionPolicy",
@@ -50,4 +57,5 @@ __all__ = [
     "evaluate_controlled_validation",
     "evaluate_controlled_validation_execution",
     "execute_bounded_observation",
+    "analyze_clickjacking_protection",
 ]

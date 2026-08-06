@@ -685,7 +685,7 @@ def test_failed_controlled_observation_maps_to_phase_6c_review() -> None:
     )
 
 
-def test_controlled_observation_compact_phase_is_6f() -> None:
+def test_controlled_observation_compact_phase_is_6c() -> None:
     assert (
         infer_phase_short(
             "completed",
@@ -737,7 +737,7 @@ def test_loads_safe_controlled_observation_summary() -> None:
             json.dumps(
                 {
                     "target_url": "https://example.com/account",
-                    "action": "response_differential",
+                    "action": "clickjacking_header_validation",
                     "method": "HEAD",
                     "status_code": 200,
                     "final_url": "https://example.com/account",
@@ -748,6 +748,20 @@ def test_loads_safe_controlled_observation_summary() -> None:
                     "network_activity": True,
                     "request_attempted": True,
                     "follow_redirects": False,
+                    "validator_id": (
+                        "6C.2-clickjacking-header-validation"
+                    ),
+                    "validator_classification": "protected",
+                    "validator_reason": (
+                        "Restrictive frame policy observed."
+                    ),
+                    "protection_sources": [
+                        "csp_frame_ancestors"
+                    ],
+                    "header_only": True,
+                    "exploit_page_generated": False,
+                    "browser_launched": False,
+                    "payload_generated": False,
                 }
             ),
             "2026-08-04T10:00:00+00:00",
@@ -767,7 +781,7 @@ def test_loads_safe_controlled_observation_summary() -> None:
     assert observation is not None
     assert observation["evidence_id"] == "evidence-observation"
     assert observation["target_url"] == "https://example.com/account"
-    assert observation["action"] == "response_differential"
+    assert observation["action"] == "clickjacking_header_validation"
     assert observation["method"] == "HEAD"
     assert observation["status_code"] == "200"
     assert observation["body_bytes_captured"] == "0"
@@ -776,6 +790,16 @@ def test_loads_safe_controlled_observation_summary() -> None:
     assert observation["request_attempted"] == "true"
     assert observation["follow_redirects"] == "false"
     assert observation["plan_evidence_id"] == "evidence-plan"
+    assert (
+        observation["validator_id"]
+        == "6C.2-clickjacking-header-validation"
+    )
+    assert observation["validator_classification"] == "protected"
+    assert observation["protection_sources"] == "csp_frame_ancestors"
+    assert observation["header_only"] == "true"
+    assert observation["exploit_page_generated"] == "false"
+    assert observation["browser_launched"] == "false"
+    assert observation["payload_generated"] == "false"
 
 
 def test_controlled_observation_skips_newest_malformed_metadata() -> None:
@@ -2640,5 +2664,59 @@ def test_phase_6b_policy_gate_tool_row_requires_approval() -> None:
     assert (
         "Saarthi 6B",
         "Policy & Approval Gate",
+        "APPROVAL",
+    ) in TOOLS
+
+
+def test_scope_lines_render_clickjacking_validator_summary() -> None:
+    from dataclasses import replace
+
+    from saarthi_ai.tui.app import (
+        build_scope_lines,
+        demo_snapshot,
+    )
+
+    snapshot = replace(
+        demo_snapshot(),
+        attack_hypothesis_set=None,
+        controlled_validation_plan=None,
+        controlled_observation={
+            "evidence_id": "evidence-clickjacking",
+            "target_url": "https://example.com/",
+            "action": "clickjacking_header_validation",
+            "method": "HEAD",
+            "status_code": "200",
+            "validator_id": (
+                "6C.2-clickjacking-header-validation"
+            ),
+            "validator_classification": "protected",
+            "validator_reason": (
+                "Restrictive frame policy observed."
+            ),
+            "protection_sources": "csp_frame_ancestors",
+            "header_only": "true",
+            "exploit_page_generated": "false",
+            "browser_launched": "false",
+            "payload_generated": "false",
+        },
+    )
+
+    rendered = "\n".join(build_scope_lines(snapshot))
+
+    assert "6C.2 — CLICKJACKING HEADER VALIDATION" in rendered
+    assert "Classification     : protected" in rendered
+    assert "csp_frame_ancestors" in rendered
+    assert "Header Only        : true" in rendered
+    assert "Exploit Page       : false" in rendered
+    assert "Browser Launched   : false" in rendered
+    assert "Payload Generated  : false" in rendered
+
+
+def test_clickjacking_validator_tool_row_requires_approval() -> None:
+    from saarthi_ai.tui.app import TOOLS
+
+    assert (
+        "Saarthi 6C.2",
+        "Clickjacking Header Validator",
         "APPROVAL",
     ) in TOOLS

@@ -14,10 +14,18 @@ from uuid import uuid4
 
 import httpx
 
+from saarthi_ai.controlled_validation.clickjacking import (
+    ClickjackingClassification,
+    ClickjackingValidationResult,
+    analyze_clickjacking_protection,
+)
 from saarthi_ai.controlled_validation.executor import (
     ControlledValidationExecutionDecision,
     ControlledValidationExecutionRequest,
     evaluate_controlled_validation_execution,
+)
+from saarthi_ai.controlled_validation.models import (
+    ControlledValidationAction,
 )
 from saarthi_ai.controlled_validation.observation import (
     ControlledValidationObservationResult,
@@ -56,6 +64,7 @@ class TrackedControlledValidationObservation:
     execution: ExecutionRecord
     observation: ControlledValidationObservationResult
     evidence: EvidenceRecord
+    validator_analysis: ClickjackingValidationResult | None = None
     reused_existing_evidence: bool = False
 
 
@@ -194,6 +203,62 @@ def _observation_from_evidence(
     )
 
 
+def _clickjacking_analysis_from_evidence(
+    evidence: EvidenceRecord,
+) -> ClickjackingValidationResult | None:
+    """Rebuild the persisted header-only validator summary."""
+
+    metadata = evidence.metadata
+    if (
+        metadata.get("validator_id")
+        != "6C.2-clickjacking-header-validation"
+    ):
+        return None
+
+    try:
+        classification = ClickjackingClassification(
+            str(metadata["validator_classification"])
+        )
+    except (KeyError, ValueError):
+        return None
+
+    protection_sources = metadata.get("protection_sources")
+    csp_sources = metadata.get("csp_frame_ancestors")
+
+    return ClickjackingValidationResult(
+        validator_id="6C.2-clickjacking-header-validation",
+        classification=classification,
+        reason=str(metadata.get("validator_reason") or ""),
+        protection_sources=tuple(
+            item
+            for item in protection_sources
+            if isinstance(item, str)
+        )
+        if isinstance(protection_sources, list)
+        else (),
+        csp_frame_ancestors=tuple(
+            item
+            for item in csp_sources
+            if isinstance(item, str)
+        )
+        if isinstance(csp_sources, list)
+        else (),
+        x_frame_options=(
+            str(metadata["x_frame_options"])
+            if metadata.get("x_frame_options") is not None
+            else None
+        ),
+        response_status_code=int(
+            metadata.get("status_code") or 0
+        ),
+        content_type=(
+            str(metadata["content_type"])
+            if metadata.get("content_type") is not None
+            else None
+        ),
+    )
+
+
 def _audit_failure_safely(
     database: SaarthiDatabase,
     execution_id: str,
@@ -249,10 +314,11 @@ def _serialize_observation(
     observation: ControlledValidationObservationResult,
     *,
     plan_evidence: EvidenceRecord,
+    validator_analysis: ClickjackingValidationResult | None = None,
 ) -> dict[str, object]:
     validation = request.validation
 
-    return {
+    payload: dict[str, object] = {
         "schema_version": "1.0",
         "phase": "6C",
         "evidence_type": (
@@ -299,6 +365,30 @@ def _serialize_observation(
             "body_sha256": observation.body_sha256,
         },
     }
+
+    if validator_analysis is not None:
+        payload["validator_analysis"] = {
+            "validator_id": validator_analysis.validator_id,
+            "classification": (
+                validator_analysis.classification.value
+            ),
+            "reason": validator_analysis.reason,
+            "protection_sources": list(
+                validator_analysis.protection_sources
+            ),
+            "csp_frame_ancestors": list(
+                validator_analysis.csp_frame_ancestors
+            ),
+            "x_frame_options": validator_analysis.x_frame_options,
+            "header_only": validator_analysis.header_only,
+            "exploit_page_generated": (
+                validator_analysis.exploit_page_generated
+            ),
+            "browser_launched": validator_analysis.browser_launched,
+            "payload_generated": validator_analysis.payload_generated,
+        }
+
+    return payload
 
 
 def _write_evidence_atomically(
@@ -426,6 +516,9 @@ async def run_tracked_controlled_validation_observation(
             request,
             existing_evidence,
         )
+        validator_analysis = _clickjacking_analysis_from_evidence(
+            existing_evidence
+        )
 
         database.add_audit_event(
             validation.execution_id,
@@ -450,6 +543,7 @@ async def run_tracked_controlled_validation_observation(
             execution=execution,
             observation=observation,
             evidence=existing_evidence,
+            validator_analysis=validator_analysis,
             reused_existing_evidence=True,
         )
 
@@ -462,6 +556,7 @@ async def run_tracked_controlled_validation_observation(
     evidence_path: str | None = None
     evidence_registered = False
     observation: ControlledValidationObservationResult | None = None
+    validator_analysis: ClickjackingValidationResult | None = None
 
     execution = database.transition_execution(
         validation.execution_id,
@@ -501,6 +596,16 @@ async def run_tracked_controlled_validation_observation(
                 or "Controlled-validation observation did not succeed."
             )
 
+        if (
+            validation.action
+            is ControlledValidationAction.CLICKJACKING_HEADER_VALIDATION
+        ):
+            validator_analysis = analyze_clickjacking_protection(
+                status_code=observation.status_code,
+                content_type=observation.content_type,
+                headers=observation.response_headers,
+            )
+
         database.add_audit_event(
             validation.execution_id,
             event_type=AuditEventType.TOOL_OUTPUT,
@@ -523,6 +628,16 @@ async def run_tracked_controlled_validation_observation(
                 ),
                 "body_truncated": observation.body_truncated,
                 "body_sha256": observation.body_sha256,
+                "validator_id": (
+                    validator_analysis.validator_id
+                    if validator_analysis is not None
+                    else None
+                ),
+                "validator_classification": (
+                    validator_analysis.classification.value
+                    if validator_analysis is not None
+                    else None
+                ),
             },
         )
 
@@ -530,6 +645,7 @@ async def run_tracked_controlled_validation_observation(
             request,
             observation,
             plan_evidence=plan_evidence,
+            validator_analysis=validator_analysis,
         )
         payload["phase"] = "6C"
 
@@ -578,6 +694,56 @@ async def run_tracked_controlled_validation_observation(
                     ),
                     "request_attempted": True,
                     "network_activity": True,
+                    "validator_id": (
+                        validator_analysis.validator_id
+                        if validator_analysis is not None
+                        else None
+                    ),
+                    "validator_classification": (
+                        validator_analysis.classification.value
+                        if validator_analysis is not None
+                        else None
+                    ),
+                    "validator_reason": (
+                        validator_analysis.reason
+                        if validator_analysis is not None
+                        else None
+                    ),
+                    "protection_sources": (
+                        list(validator_analysis.protection_sources)
+                        if validator_analysis is not None
+                        else []
+                    ),
+                    "csp_frame_ancestors": (
+                        list(validator_analysis.csp_frame_ancestors)
+                        if validator_analysis is not None
+                        else []
+                    ),
+                    "x_frame_options": (
+                        validator_analysis.x_frame_options
+                        if validator_analysis is not None
+                        else None
+                    ),
+                    "header_only": (
+                        validator_analysis.header_only
+                        if validator_analysis is not None
+                        else None
+                    ),
+                    "exploit_page_generated": (
+                        validator_analysis.exploit_page_generated
+                        if validator_analysis is not None
+                        else False
+                    ),
+                    "browser_launched": (
+                        validator_analysis.browser_launched
+                        if validator_analysis is not None
+                        else False
+                    ),
+                    "payload_generated": (
+                        validator_analysis.payload_generated
+                        if validator_analysis is not None
+                        else False
+                    ),
                 },
             ),
             actor=actor,
@@ -625,6 +791,7 @@ async def run_tracked_controlled_validation_observation(
             execution=execution,
             observation=observation,
             evidence=evidence,
+            validator_analysis=validator_analysis,
         )
 
     except (

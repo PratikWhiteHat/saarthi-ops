@@ -33,6 +33,9 @@ class ControlledValidationAction(StrEnum):
 
     RESPONSE_DIFFERENTIAL = "response_differential"
     INPUT_HANDLING_OBSERVATION = "input_handling_observation"
+    CLICKJACKING_HEADER_VALIDATION = (
+        "clickjacking_header_validation"
+    )
     AUTHORIZATION_BOUNDARY = "authorization_boundary"
     STATE_CHANGE_VALIDATION = "state_change_validation"
     FILE_PROCESSING_VALIDATION = "file_processing_validation"

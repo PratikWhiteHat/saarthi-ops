@@ -88,6 +88,23 @@ def test_input_handling_observation_is_allowed() -> None:
     assert result.decision is ControlledValidationExecutionDecision.ALLOW
 
 
+def test_clickjacking_header_validation_is_executable() -> None:
+    result = evaluate_controlled_validation_execution(
+        ControlledValidationExecutionRequest(
+            validation=make_validation(
+                action=(
+                    ControlledValidationAction
+                    .CLICKJACKING_HEADER_VALIDATION
+                )
+            ),
+            method="HEAD",
+        )
+    )
+
+    assert result.decision is ControlledValidationExecutionDecision.ALLOW
+    assert result.request_budget == 2
+
+
 def test_request_budget_is_limited_to_five() -> None:
     result = evaluate_controlled_validation_execution(
         ControlledValidationExecutionRequest(

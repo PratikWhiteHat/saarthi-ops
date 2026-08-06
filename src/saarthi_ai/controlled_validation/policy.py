@@ -24,6 +24,9 @@ ACTION_RISK: dict[
     ControlledValidationAction.INPUT_HANDLING_OBSERVATION: (
         ControlledValidationRisk.LOW
     ),
+    ControlledValidationAction.CLICKJACKING_HEADER_VALIDATION: (
+        ControlledValidationRisk.LOW
+    ),
     ControlledValidationAction.AUTHORIZATION_BOUNDARY: (
         ControlledValidationRisk.MODERATE
     ),

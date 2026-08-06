@@ -2651,7 +2651,8 @@ def controlled_observe(
             "--action",
             help=(
                 "Low-risk executable action: response_differential "
-                "or input_handling_observation."
+                "input_handling_observation, or "
+                "clickjacking_header_validation."
             ),
         ),
     ] = ControlledValidationAction.RESPONSE_DIFFERENTIAL,
@@ -2713,11 +2714,12 @@ def controlled_observe(
     if action not in {
         ControlledValidationAction.RESPONSE_DIFFERENTIAL,
         ControlledValidationAction.INPUT_HANDLING_OBSERVATION,
+        ControlledValidationAction.CLICKJACKING_HEADER_VALIDATION,
     }:
         console.print(
             "[bold red]Unsupported executable action.[/bold red] "
-            "Only response_differential and "
-            "input_handling_observation are allowed."
+            "Only registered low-risk response, input-handling, and "
+            "clickjacking header observations are allowed."
         )
         raise typer.Exit(code=1)
 
@@ -2832,6 +2834,47 @@ def controlled_observe(
             "Existing evidence reused: "
             f"{str(result.reused_existing_evidence).lower()}"
         )
+
+        if (
+            analysis := getattr(
+                result,
+                "validator_analysis",
+                None,
+            )
+        ) is not None:
+            console.print()
+            console.print(
+                "[bold cyan]6C.2 Clickjacking Header Validation"
+                "[/bold cyan]"
+            )
+            console.print(
+                f"Classification: {analysis.classification.value}"
+            )
+            console.print(f"Reason: {analysis.reason}")
+            console.print(
+                "Protection sources: "
+                + (
+                    ", ".join(analysis.protection_sources)
+                    if analysis.protection_sources
+                    else "none"
+                )
+            )
+            console.print(
+                "CSP frame-ancestors: "
+                + (
+                    " ".join(analysis.csp_frame_ancestors)
+                    if analysis.csp_frame_ancestors
+                    else "not observed"
+                )
+            )
+            console.print(
+                "X-Frame-Options: "
+                f"{analysis.x_frame_options or 'not observed'}"
+            )
+            console.print("Header-only analysis: true")
+            console.print("Exploit page generated: false")
+            console.print("Browser launched: false")
+            console.print("Payload generated: false")
 
         if result.reused_existing_evidence:
             console.print(

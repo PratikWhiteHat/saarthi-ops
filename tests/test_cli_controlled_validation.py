@@ -1539,3 +1539,98 @@ def test_controlled_nuclei_execute_enforces_cli_bounds() -> None:
     )
 
     assert result.exit_code != 0
+
+
+def test_controlled_observe_renders_clickjacking_analysis(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    import saarthi_ai.cli as cli_module
+
+    captured: dict[str, object] = {}
+
+    async def fake_workflow(
+        database,
+        request,
+        *,
+        transport=None,
+        actor,
+        evidence_root,
+    ):
+        captured["request"] = request
+        return SimpleNamespace(
+            execution=SimpleNamespace(
+                state=SimpleNamespace(value="completed"),
+            ),
+            observation=SimpleNamespace(
+                policy=SimpleNamespace(
+                    decision=SimpleNamespace(value="allow"),
+                ),
+                method=request.method,
+                request_attempted=True,
+                response_received=True,
+                status_code=200,
+                final_url=request.validation.target_url,
+                body_bytes_captured=0,
+                body_truncated=False,
+                body_sha256="b" * 64,
+            ),
+            validator_analysis=SimpleNamespace(
+                classification=SimpleNamespace(value="protected"),
+                reason="Restrictive frame policy observed.",
+                protection_sources=("csp_frame_ancestors",),
+                csp_frame_ancestors=("'none'",),
+                x_frame_options=None,
+            ),
+            evidence=SimpleNamespace(
+                evidence_id="evidence-clickjacking",
+                path=str(evidence_root / "clickjacking.json"),
+                sha256="a" * 64,
+            ),
+            reused_existing_evidence=False,
+        )
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        cli_module,
+        "get_database",
+        lambda: object(),
+    )
+    monkeypatch.setattr(
+        cli_module,
+        "run_tracked_controlled_validation_observation",
+        fake_workflow,
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "controlled",
+            "observe",
+            "--execution",
+            "execution-test",
+            "--url",
+            "https://example.com/",
+            "--action",
+            "clickjacking_header_validation",
+            "--method",
+            "HEAD",
+            "--approved",
+        ],
+    )
+
+    assert result.exit_code == 0
+    request = captured["request"]
+    assert (
+        request.validation.action
+        is ControlledValidationAction.CLICKJACKING_HEADER_VALIDATION
+    )
+    normalized = " ".join(result.stdout.split())
+    assert "6C.2 Clickjacking Header Validation" in normalized
+    assert "Classification: protected" in normalized
+    assert "csp_frame_ancestors" in normalized
+    assert "CSP frame-ancestors: 'none'" in normalized
+    assert "Header-only analysis: true" in normalized
+    assert "Exploit page generated: false" in normalized
+    assert "Browser launched: false" in normalized
+    assert "Payload generated: false" in normalized

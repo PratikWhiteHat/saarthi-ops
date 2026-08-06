@@ -57,11 +57,15 @@ def create_execution(database: SaarthiDatabase) -> str:
 
 def make_request(
     execution_id: str,
+    *,
+    action: ControlledValidationAction = (
+        ControlledValidationAction.RESPONSE_DIFFERENTIAL
+    ),
 ) -> ControlledValidationExecutionRequest:
     validation = ControlledValidationRequest(
         execution_id=execution_id,
         target_url="https://example.com/account",
-        action=ControlledValidationAction.RESPONSE_DIFFERENTIAL,
+        action=action,
         authorized=True,
         active_testing=True,
         intrusive_testing=False,
@@ -76,6 +80,137 @@ def make_request(
         max_response_bytes=1_024,
         follow_redirects=False,
     )
+
+
+@pytest.mark.asyncio
+async def test_clickjacking_validator_persists_header_only_analysis(
+    database: SaarthiDatabase,
+    tmp_path: Path,
+) -> None:
+    execution_id = create_execution(database)
+    request = make_request(
+        execution_id,
+        action=(
+            ControlledValidationAction
+            .CLICKJACKING_HEADER_VALIDATION
+        ),
+    )
+    create_tracked_controlled_validation_plan(
+        database,
+        request.validation,
+        evidence_root=tmp_path / "plans",
+    )
+    request_count = 0
+
+    def handler(request_object: httpx.Request) -> httpx.Response:
+        nonlocal request_count
+        request_count += 1
+        return httpx.Response(
+            200,
+            headers={
+                "Content-Type": "text/html",
+                "Content-Security-Policy": (
+                    "default-src 'self'; frame-ancestors 'none'"
+                ),
+            },
+            content=b"<html>not persisted</html>",
+            request=request_object,
+        )
+
+    result = await run_tracked_controlled_validation_observation(
+        database,
+        request,
+        transport=httpx.MockTransport(handler),
+        evidence_root=tmp_path / "observations",
+    )
+
+    assert request_count == 1
+    assert result.validator_analysis is not None
+    assert (
+        result.validator_analysis.classification.value
+        == "protected"
+    )
+    assert result.validator_analysis.header_only is True
+    assert result.validator_analysis.exploit_page_generated is False
+    assert result.validator_analysis.browser_launched is False
+    assert result.validator_analysis.payload_generated is False
+
+    payload = json.loads(Path(result.evidence.path).read_text())
+    analysis = payload["validator_analysis"]
+    assert (
+        analysis["validator_id"]
+        == "6C.2-clickjacking-header-validation"
+    )
+    assert analysis["classification"] == "protected"
+    assert analysis["header_only"] is True
+    assert analysis["exploit_page_generated"] is False
+    assert analysis["browser_launched"] is False
+    assert analysis["payload_generated"] is False
+    assert "body" not in payload["response"]
+
+    metadata = result.evidence.metadata
+    assert (
+        metadata["validator_id"]
+        == "6C.2-clickjacking-header-validation"
+    )
+    assert metadata["validator_classification"] == "protected"
+    assert metadata["header_only"] is True
+    assert metadata["exploit_page_generated"] is False
+    assert metadata["browser_launched"] is False
+    assert metadata["payload_generated"] is False
+
+
+@pytest.mark.asyncio
+async def test_clickjacking_reuse_sends_no_second_request(
+    database: SaarthiDatabase,
+    tmp_path: Path,
+) -> None:
+    execution_id = create_execution(database)
+    request = make_request(
+        execution_id,
+        action=(
+            ControlledValidationAction
+            .CLICKJACKING_HEADER_VALIDATION
+        ),
+    )
+    create_tracked_controlled_validation_plan(
+        database,
+        request.validation,
+        evidence_root=tmp_path / "plans",
+    )
+    request_count = 0
+
+    def handler(request_object: httpx.Request) -> httpx.Response:
+        nonlocal request_count
+        request_count += 1
+        return httpx.Response(
+            200,
+            headers={"Content-Type": "text/html"},
+            request=request_object,
+        )
+
+    transport = httpx.MockTransport(handler)
+    first = await run_tracked_controlled_validation_observation(
+        database,
+        request,
+        transport=transport,
+        evidence_root=tmp_path / "observations",
+    )
+    second = await run_tracked_controlled_validation_observation(
+        database,
+        request,
+        transport=transport,
+        evidence_root=tmp_path / "observations",
+    )
+
+    assert request_count == 1
+    assert first.validator_analysis is not None
+    assert second.validator_analysis is not None
+    assert (
+        second.validator_analysis.classification.value
+        == "potentially_exposed"
+    )
+    assert second.reused_existing_evidence is True
 
 
 @pytest.mark.asyncio
