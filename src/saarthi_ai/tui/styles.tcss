@@ -62,7 +62,7 @@ Footer {
     grid-size: 3;
     grid-columns: 0.95fr 1.17fr 1.05fr;
     grid-gutter: 1;
-    height: 22;
+    height: 24;
     margin-bottom: 1;
 }
 
@@ -91,7 +91,7 @@ ProgressBar {
 }
 
 #orchestration-summary {
-    height: 7;
+    height: 9;
     border: solid #327d86;
     padding: 0 1;
     margin-top: 1;

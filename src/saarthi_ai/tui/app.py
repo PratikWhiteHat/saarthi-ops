@@ -55,6 +55,7 @@ class DashboardSnapshot:
     controlled_nuclei_execution: dict[str, str] | None = None
     controlled_nuclei_preparation: dict[str, str] | None = None
     controlled_nuclei_preview: dict[str, str] | None = None
+    phase6_chain_status: dict[str, str] = field(default_factory=dict)
 
 
 class ReadOnlySaarthiRepository:
@@ -168,9 +169,28 @@ class ReadOnlySaarthiRepository:
             )
         )
 
+        latest_metadata = parse_execution_metadata(
+            latest,
+            metadata_column,
+        )
+        orchestration_id = latest_metadata.get("orchestration_id")
+        related_rows = [
+            row
+            for row in rows
+            if (
+                isinstance(orchestration_id, str)
+                and orchestration_id
+                and parse_execution_metadata(
+                    row,
+                    metadata_column,
+                ).get("orchestration_id")
+                == orchestration_id
+            )
+        ] or [latest, *display_rows]
+
         orchestration_execution_ids = [
             str(row[id_column])
-            for row in [latest, *display_rows]
+            for row in related_rows
             if id_column is not None and row[id_column] is not None
         ]
 
@@ -192,15 +212,16 @@ class ReadOnlySaarthiRepository:
                 tables,
                 row_execution_id,
             )
+            row_metadata = parse_execution_metadata(
+                row,
+                metadata_column,
+            )
 
             recent_executions.append(
                 {
                     "execution_id": row_execution_id,
                     "phase": str(
-                        parse_execution_metadata(
-                            row,
-                            metadata_column,
-                        ).get("phase_code")
+                        phase_execution_label(row_metadata)
                         or infer_phase_short(
                             value(row, state_column, "unknown"),
                             row_evidence_types,
@@ -274,19 +295,30 @@ class ReadOnlySaarthiRepository:
             None,
         )
 
-        controlled_observation = (
-            self._load_controlled_validation_observation(
-                connection,
-                tables,
-                execution_id,
-            )
+        controlled_observation = next(
+            (
+                summary
+                for related_execution_id in orchestration_execution_ids
+                if (
+                    summary
+                    := self._load_controlled_validation_observation(
+                        connection,
+                        tables,
+                        related_execution_id,
+                    )
+                )
+            ),
+            None,
         )
 
         if controlled_observation is not None:
             reuse = self._load_controlled_observation_reuse(
                 connection,
                 tables,
-                execution_id,
+                controlled_observation.get(
+                    "execution_id",
+                    execution_id,
+                ),
                 controlled_observation["evidence_id"],
             )
             controlled_observation.update(reuse)
@@ -318,17 +350,30 @@ class ReadOnlySaarthiRepository:
                 preparation_reuse
             )
 
-        controlled_nuclei_preview = self._load_controlled_nuclei_preview(
-            connection,
-            tables,
-            execution_id,
+        controlled_nuclei_preview = next(
+            (
+                summary
+                for related_execution_id in orchestration_execution_ids
+                if (
+                    summary
+                    := self._load_controlled_nuclei_preview(
+                        connection,
+                        tables,
+                        related_execution_id,
+                    )
+                )
+            ),
+            None,
         )
 
         if controlled_nuclei_preview is not None:
             preview_reuse = self._load_nuclei_preview_reuse(
                 connection,
                 tables,
-                execution_id,
+                controlled_nuclei_preview.get(
+                    "execution_id",
+                    execution_id,
+                ),
                 controlled_nuclei_preview["evidence_id"],
             )
             controlled_nuclei_preview.update(preview_reuse)
@@ -369,6 +414,11 @@ class ReadOnlySaarthiRepository:
                 controlled_nuclei_preparation
             ),
             controlled_nuclei_preview=controlled_nuclei_preview,
+            phase6_chain_status=build_phase6_chain_status(
+                related_rows,
+                metadata_column,
+                state_column,
+            ),
         )
 
     def _evidence_types(
@@ -532,6 +582,7 @@ class ReadOnlySaarthiRepository:
             )
 
             return {
+                "execution_id": execution_id,
                 "evidence_id": (
                     display(row[evidence_id_column])
                     if evidence_id_column
@@ -1020,6 +1071,7 @@ class ReadOnlySaarthiRepository:
                 continue
 
             return {
+                "execution_id": execution_id,
                 "evidence_id": (
                     display(row[evidence_id_column])
                     if evidence_id_column
@@ -2001,6 +2053,7 @@ class ReadOnlySaarthiRepository:
                 argument_summary = "—"
 
             return {
+                "execution_id": execution_id,
                 "evidence_id": (
                     display(row[evidence_id_column])
                     if evidence_id_column
@@ -2627,6 +2680,109 @@ def parse_execution_metadata(
     return payload if isinstance(payload, dict) else {}
 
 
+PHASE6_SAFE_ACTIONS = (
+    "injection_surface_validation",
+    "browser_attack_surface_validation",
+    "server_parser_surface_validation",
+    "http_parameter_surface_validation",
+    "clickjacking_header_validation",
+    "session_cookie_attribute_validation",
+    "csrf_protection_surface_validation",
+    "api_data_exposure_surface_validation",
+    "file_upload_surface_validation",
+)
+
+
+def phase_execution_label(metadata: dict[str, Any]) -> str:
+    """Return a compact, specific label for an orchestration child."""
+
+    phase_code = str(metadata.get("phase_code") or "")
+    phase_name = str(metadata.get("phase_name") or "")
+
+    if phase_code == "6C-nuclei-preview":
+        return "6C Nuclei"
+    if phase_code == "6C-sqlmap-preview":
+        return "6C SQLmap"
+    if phase_code == "6C-safe-validator":
+        action_labels = {
+            "injection_surface_validation": "Injection",
+            "browser_attack_surface_validation": "Browser",
+            "server_parser_surface_validation": "Server",
+            "http_parameter_surface_validation": "Parameters",
+            "clickjacking_header_validation": "Clickjack",
+            "session_cookie_attribute_validation": "Cookies",
+            "csrf_protection_surface_validation": "CSRF",
+            "api_data_exposure_surface_validation": "API",
+            "file_upload_surface_validation": "Upload",
+        }
+        return f"6C {action_labels.get(phase_name, 'Validator')}"
+
+    return phase_code
+
+
+def build_phase6_chain_status(
+    rows: Iterable[sqlite3.Row],
+    metadata_column: str | None,
+    state_column: str | None,
+) -> dict[str, str]:
+    """Summarize Phase 6C children for dynamic TUI labels."""
+
+    child_states: dict[str, str] = {}
+    completed_actions: set[str] = set()
+
+    for row in rows:
+        metadata = parse_execution_metadata(row, metadata_column)
+        phase_code = str(metadata.get("phase_code") or "")
+        phase_name = str(metadata.get("phase_name") or "")
+        state = (
+            str(row[state_column]).lower()
+            if state_column and row[state_column] is not None
+            else "unknown"
+        )
+
+        if phase_code == "6C-safe-validator" and phase_name:
+            child_states[phase_name] = state
+            if state == "completed":
+                completed_actions.add(phase_name)
+        elif phase_code == "6C-nuclei-preview":
+            child_states["nuclei"] = state
+        elif phase_code == "6C-sqlmap-preview":
+            child_states["sqlmap"] = state
+
+    def preview_status(tool: str) -> str:
+        state = child_states.get(tool)
+        if state in {"planned", "completed"}:
+            return "PREVIEW READY"
+        if state == "failed":
+            return "FAILED"
+        return "APPROVAL REQUIRED"
+
+    def validator_status(action: str) -> str:
+        state = child_states.get(action)
+        if state == "completed":
+            return "DONE"
+        if state == "failed":
+            return "FAILED"
+        if state in {"created", "validated", "planned", "running"}:
+            return "IN PROGRESS"
+        return "APPROVAL"
+
+    status = {
+        "validator_completed": str(len(completed_actions)),
+        "validator_total": str(len(PHASE6_SAFE_ACTIONS)),
+        "nuclei": preview_status("nuclei"),
+        "sqlmap": preview_status("sqlmap"),
+        "completed_actions": ",".join(sorted(completed_actions)),
+    }
+    status.update(
+        {
+            action: validator_status(action)
+            for action in PHASE6_SAFE_ACTIONS
+        }
+    )
+    return status
+
+
 def select_dashboard_execution_rows(
     rows: list[sqlite3.Row],
     metadata_column: str | None,
@@ -2666,7 +2822,7 @@ def select_dashboard_execution_rows(
         latest,
     )
 
-    completed_phases = frozenset(
+    completed_phase_codes = {
         str(metadata["phase_code"])
         for row in orchestration_rows
         if (
@@ -2678,7 +2834,39 @@ def select_dashboard_execution_rows(
             and metadata.get("phase_code")
             and str(row["state"]).lower() == "completed"
         )
-    )
+        and str(metadata["phase_code"]) != "6C-safe-validator"
+    }
+    completed_safe_actions = {
+        str(metadata.get("phase_name"))
+        for row in orchestration_rows
+        if (
+            (metadata := parse_execution_metadata(
+                row,
+                metadata_column,
+            )).get("phase_code")
+            == "6C-safe-validator"
+            and str(row["state"]).lower() == "completed"
+        )
+    }
+    foundation_codes = {
+        "3A",
+        "3B",
+        "3C",
+        "3D",
+        "3E",
+        "4A-security-headers",
+        "4A-cors",
+    }
+    if (
+        str(parent["state"]).lower() == "completed"
+        and foundation_codes.issubset(completed_phase_codes)
+    ):
+        completed_phase_codes.update({"5A", "5B", "5C", "5D"})
+    if set(PHASE6_SAFE_ACTIONS).issubset(completed_safe_actions):
+        completed_phase_codes.add("6B")
+        completed_phase_codes.add("6C-safe-validator")
+
+    completed_phases = frozenset(completed_phase_codes)
 
     child_rows = [
         row
@@ -2982,6 +3170,8 @@ def normalize_phase_code(phase_code: str) -> str:
 
     if normalized.startswith("4A-"):
         return "4A"
+    if normalized.startswith("6C-"):
+        return "6C"
 
     return normalized
 
@@ -3016,6 +3206,9 @@ def phase_rows(
             if code in normalized_completed:
                 marker = "✓"
                 status = "DONE"
+            elif index < latest_completed_index:
+                marker = "!"
+                status = "SKIPPED"
             elif index == latest_completed_index + 1:
                 marker = "→"
                 status = "NEXT"
@@ -3099,6 +3292,68 @@ TOOLS = [
 ]
 
 
+def tool_rows(
+    snapshot: DashboardSnapshot,
+) -> list[tuple[str, str, str]]:
+    """Apply live Phase 6C permission and completion labels."""
+
+    status = snapshot.phase6_chain_status
+    if not status:
+        return TOOLS
+
+    rows: list[tuple[str, str, str]] = []
+    purpose_actions = {
+        "Injection Surface Validator": (
+            "injection_surface_validation"
+        ),
+        "Browser Attack Surface Validator": (
+            "browser_attack_surface_validation"
+        ),
+        "Server/Parser Surface Validator": (
+            "server_parser_surface_validation"
+        ),
+        "Clickjacking Header Validator": (
+            "clickjacking_header_validation"
+        ),
+        "CSRF Protection Surface Validator": (
+            "csrf_protection_surface_validation"
+        ),
+        "HTTP Parameter Surface Validator": (
+            "http_parameter_surface_validation"
+        ),
+        "Session Cookie Attribute Validator": (
+            "session_cookie_attribute_validation"
+        ),
+        "File Upload Surface Validator": (
+            "file_upload_surface_validation"
+        ),
+        "API Data-Exposure Surface Validator": (
+            "api_data_exposure_surface_validation"
+        ),
+    }
+
+    for tool, purpose, default_status in TOOLS:
+        dynamic_status = default_status
+        if tool == "nuclei":
+            dynamic_status = status.get("nuclei", default_status)
+        elif tool == "sqlmap":
+            dynamic_status = status.get("sqlmap", default_status)
+        elif (
+            tool == "Saarthi 6B"
+            and status.get("validator_completed")
+            == status.get("validator_total")
+        ):
+            dynamic_status = "DONE"
+        elif purpose in purpose_actions:
+            dynamic_status = status.get(
+                purpose_actions[purpose],
+                default_status,
+            )
+        rows.append((tool, purpose, dynamic_status))
+
+    return rows
+
+
 def build_orchestration_summary_lines(
     snapshot: DashboardSnapshot,
 ) -> list[str]:
@@ -3118,6 +3373,14 @@ def build_orchestration_summary_lines(
         if snapshot.orchestration_status != "unknown"
         else snapshot.execution_state.upper()
     )
+    phase6 = snapshot.phase6_chain_status
+    validator_completed = phase6.get("validator_completed", "0")
+    validator_total = phase6.get(
+        "validator_total",
+        str(len(PHASE6_SAFE_ACTIONS)),
+    )
+    nuclei_status = phase6.get("nuclei", "APPROVAL REQUIRED")
+    sqlmap_status = phase6.get("sqlmap", "APPROVAL REQUIRED")
 
     return [
         "[bold cyan]ORCHESTRATION SUMMARY[/bold cyan]",
@@ -3127,6 +3390,14 @@ def build_orchestration_summary_lines(
         (
             "Validator Coverage   : "
             f"{implemented} ready · {partial} partial · {total} total"
+        ),
+        (
+            "Phase 6C Safe Chain  : "
+            f"{validator_completed}/{validator_total} complete"
+        ),
+        (
+            "Nuclei / SQLmap      : "
+            f"{nuclei_status} / {sqlmap_status}"
         ),
     ]
 
@@ -4316,7 +4587,7 @@ class SaarthiDashboard(App[None]):
         tools_table = self.query_one("#tools-table", DataTable)
         tools_table.add_column("Tool", width=14)
         tools_table.add_column("Purpose", width=31)
-        tools_table.add_column("Status", width=12)
+        tools_table.add_column("Status", width=18)
         tools_table.cursor_type = "row"
         tools_table.zebra_stripes = True
 
@@ -4373,7 +4644,7 @@ class SaarthiDashboard(App[None]):
 
         tools_table = self.query_one("#tools-table", DataTable)
         tools_table.clear()
-        for row in TOOLS:
+        for row in tool_rows(snapshot):
             tools_table.add_row(*row)
 
         executions = self.query_one("#executions-table", DataTable)

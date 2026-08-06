@@ -19,6 +19,7 @@ from saarthi_ai.persistence.phase6_chain_workflow import (
     SAFE_VALIDATOR_ACTIONS,
     run_phase6_safe_chain,
 )
+from saarthi_ai.tui.app import ReadOnlySaarthiRepository
 
 
 @pytest.fixture
@@ -120,6 +121,27 @@ async def test_approved_previews_are_persisted_but_not_executed(
     assert nuclei.metrics["network_activity"] is False
     assert sqlmap.metrics["network_activity"] is False
     assert sqlmap.metrics["parameter"] == "id"
+
+    snapshot = ReadOnlySaarthiRepository(
+        database.database_path
+    ).load()
+    assert snapshot.phase6_chain_status["validator_completed"] == "9"
+    assert snapshot.phase6_chain_status["nuclei"] == "PREVIEW READY"
+    assert snapshot.phase6_chain_status["sqlmap"] == "PREVIEW READY"
+    assert (
+        snapshot.phase6_chain_status[
+            "browser_attack_surface_validation"
+        ]
+        == "DONE"
+    )
+    assert (
+        snapshot.phase6_chain_status[
+            "server_parser_surface_validation"
+        ]
+        == "DONE"
+    )
+    assert "6C-safe-validator" in snapshot.completed_phases
+    assert any("[6C" in line for line in snapshot.recent_activity)
 
 
 @pytest.mark.asyncio

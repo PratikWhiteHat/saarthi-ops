@@ -401,6 +401,10 @@ def test_orchestration_summary_shows_validator_coverage() -> None:
     assert "Completed Phases" in rendered
     assert "Validator Coverage" in rendered
     assert "81 total" in rendered
+    assert "Phase 6C Safe Chain" in rendered
+    assert "0/9 complete" in rendered
+    assert "Nuclei / SQLmap" in rendered
+    assert "APPROVAL REQUIRED" in rendered
 
 
 def test_activity_text_styles_without_interpreting_markup() -> None:
@@ -421,7 +425,202 @@ def test_normalize_phase_code_collapses_phase_4a_children() -> None:
 
     assert normalize_phase_code("4A-security-headers") == "4A"
     assert normalize_phase_code("4A-cors") == "4A"
+    assert normalize_phase_code("6C-safe-validator") == "6C"
+    assert normalize_phase_code("6C-nuclei-preview") == "6C"
+    assert normalize_phase_code("6C-sqlmap-preview") == "6C"
     assert normalize_phase_code("3E") == "3E"
+
+
+def test_phase6_chain_status_tracks_permissions_and_validators() -> None:
+    import json
+    import sqlite3
+
+    from saarthi_ai.tui.app import (
+        PHASE6_SAFE_ACTIONS,
+        build_phase6_chain_status,
+        phase_execution_label,
+    )
+
+    connection = sqlite3.connect(":memory:")
+    connection.row_factory = sqlite3.Row
+    connection.execute(
+        """
+        CREATE TABLE executions (
+            execution_id TEXT,
+            state TEXT,
+            metadata_json TEXT
+        )
+        """
+    )
+
+    records = [
+        (
+            "execution-nuclei",
+            "planned",
+            {
+                "phase_code": "6C-nuclei-preview",
+                "phase_name": "Nuclei Non-Executed Preview",
+            },
+        ),
+        (
+            "execution-browser",
+            "completed",
+            {
+                "phase_code": "6C-safe-validator",
+                "phase_name": "browser_attack_surface_validation",
+            },
+        ),
+        (
+            "execution-server",
+            "completed",
+            {
+                "phase_code": "6C-safe-validator",
+                "phase_name": "server_parser_surface_validation",
+            },
+        ),
+    ]
+    for execution_id, state, metadata in records:
+        connection.execute(
+            "INSERT INTO executions VALUES (?, ?, ?)",
+            (execution_id, state, json.dumps(metadata)),
+        )
+
+    rows = connection.execute("SELECT * FROM executions").fetchall()
+    status = build_phase6_chain_status(
+        rows,
+        "metadata_json",
+        "state",
+    )
+
+    assert status["validator_completed"] == "2"
+    assert status["validator_total"] == str(
+        len(PHASE6_SAFE_ACTIONS)
+    )
+    assert status["nuclei"] == "PREVIEW READY"
+    assert status["sqlmap"] == "APPROVAL REQUIRED"
+    assert status["browser_attack_surface_validation"] == "DONE"
+    assert status["server_parser_surface_validation"] == "DONE"
+    assert status["injection_surface_validation"] == "APPROVAL"
+    assert phase_execution_label(
+        json.loads(rows[1]["metadata_json"])
+    ) == "6C Browser"
+
+
+def test_phase6_is_complete_only_after_every_safe_validator() -> None:
+    import json
+    import sqlite3
+
+    from saarthi_ai.tui.app import (
+        PHASE6_SAFE_ACTIONS,
+        select_dashboard_execution_rows,
+    )
+
+    connection = sqlite3.connect(":memory:")
+    connection.row_factory = sqlite3.Row
+    connection.execute(
+        """
+        CREATE TABLE executions (
+            execution_id TEXT,
+            state TEXT,
+            metadata_json TEXT
+        )
+        """
+    )
+    orchestration_id = "orchestration-phase6"
+    connection.execute(
+        "INSERT INTO executions VALUES (?, ?, ?)",
+        (
+            "execution-parent",
+            "completed",
+            json.dumps(
+                {
+                    "execution_role": "orchestration_parent",
+                    "orchestration_id": orchestration_id,
+                }
+            ),
+        ),
+    )
+    for index, action in enumerate(PHASE6_SAFE_ACTIONS):
+        connection.execute(
+            "INSERT INTO executions VALUES (?, ?, ?)",
+            (
+                f"execution-{index}",
+                "completed",
+                json.dumps(
+                    {
+                        "execution_role": "orchestration_child",
+                        "orchestration_id": orchestration_id,
+                        "phase_code": "6C-safe-validator",
+                        "phase_name": action,
+                    }
+                ),
+            ),
+        )
+
+    rows = connection.execute("SELECT * FROM executions").fetchall()
+    _parent, _children, completed = select_dashboard_execution_rows(
+        list(rows),
+        "metadata_json",
+    )
+    assert "6B" in completed
+    assert "6C-safe-validator" in completed
+
+    connection.execute(
+        "UPDATE executions SET state = 'failed' "
+        "WHERE execution_id = 'execution-0'"
+    )
+    rows = connection.execute("SELECT * FROM executions").fetchall()
+    _parent, _children, completed = select_dashboard_execution_rows(
+        list(rows),
+        "metadata_json",
+    )
+    assert "6B" not in completed
+    assert "6C-safe-validator" not in completed
+
+
+def test_tui_uses_dynamic_phase6_tool_labels() -> None:
+    from dataclasses import replace
+
+    from saarthi_ai.tui.app import demo_snapshot, tool_rows
+
+    snapshot = replace(
+        demo_snapshot(),
+        phase6_chain_status={
+            "validator_completed": "9",
+            "validator_total": "9",
+            "nuclei": "PREVIEW READY",
+            "sqlmap": "APPROVAL REQUIRED",
+            "browser_attack_surface_validation": "DONE",
+            "server_parser_surface_validation": "DONE",
+        },
+    )
+    rows = tool_rows(snapshot)
+
+    assert (
+        "nuclei",
+        "Controlled Preview / Execution",
+        "PREVIEW READY",
+    ) in rows
+    assert (
+        "sqlmap",
+        "SQLi GET/POST Validation",
+        "APPROVAL REQUIRED",
+    ) in rows
+    assert (
+        "Saarthi 6B",
+        "Policy & Approval Gate",
+        "DONE",
+    ) in rows
+    assert (
+        "Saarthi 6C.2",
+        "Browser Attack Surface Validator",
+        "DONE",
+    ) in rows
+    assert (
+        "Saarthi 6C.3",
+        "Server/Parser Surface Validator",
+        "DONE",
+    ) in rows
 
 
 def test_phase_rows_uses_completed_orchestration_phases() -> None:
