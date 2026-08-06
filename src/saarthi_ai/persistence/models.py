@@ -67,6 +67,8 @@ class EvidenceType(StrEnum):
     CONTROLLED_SQLMAP_PREVIEW = "controlled_sqlmap_preview"
     SQLMAP_HANDOFF_MANIFEST = "sqlmap_handoff_manifest"
     SQLMAP_EXTERNAL_RESULT = "sqlmap_external_result"
+    UPLOAD_VALIDATION_PLAN = "upload_validation_plan"
+    UPLOAD_EXTERNAL_RESULT = "upload_external_result"
     TLS_RESULT = "tls_result"
     TOOL_OUTPUT = "tool_output"
     SCREENSHOT = "screenshot"

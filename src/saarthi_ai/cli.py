@@ -157,6 +157,12 @@ from saarthi_ai.persistence.sqlmap_preview_workflow import (
 from saarthi_ai.persistence.subdomain_workflow import (
     run_tracked_subdomain_collection,
 )
+from saarthi_ai.persistence.upload_validation_workflow import (
+    UploadValidationKind,
+    UploadValidationWorkflowError,
+    create_upload_validation_plan,
+    import_upload_validation_result,
+)
 from saarthi_ai.recon.crawl_collector import CrawlCollectionError
 from saarthi_ai.recon.dns_collector import DnsCollectionError
 from saarthi_ai.recon.http_intelligence_collector import (
@@ -3063,6 +3069,109 @@ def controlled_validators(
             f"authentication={authentication}; "
             f"action={validator.implementation_action or '—'}"
         )
+
+
+@controlled_app.command("upload-plan")
+def controlled_upload_plan(
+    execution_id: Annotated[
+        str,
+        typer.Option("--execution", help="Created upload-validation execution."),
+    ],
+    target_url: Annotated[
+        str,
+        typer.Option("--url", help="Approved in-scope upload endpoint."),
+    ],
+    kind: Annotated[
+        UploadValidationKind,
+        typer.Option(
+            "--kind",
+            help="Manual validation kind: extension bypass or MIME consistency.",
+        ),
+    ],
+    approved: Annotated[
+        bool,
+        typer.Option("--approved", help="Record explicit operator approval."),
+    ] = False,
+) -> None:
+    """Create a non-executing manual file-upload validation plan."""
+
+    console.print("[bold]6C.6 manual upload validation plan[/bold]")
+    console.print(f"01 execution: {execution_id}")
+    console.print(f"02 validation kind: {kind.value}")
+    console.print("03 file created by Saarthi: false")
+    console.print("04 file uploaded by Saarthi: false")
+    console.print("05 network activity: false")
+    try:
+        result = create_upload_validation_plan(
+            get_database(),
+            execution_id,
+            target_url=target_url,
+            kind=kind,
+            explicitly_approved=approved,
+            actor="cli-upload-manual-validation-planner",
+            evidence_root=Path.cwd() / "evidence" / "upload-validation-plans",
+        )
+    except (
+        ExecutionNotFoundError,
+        InvalidStateTransitionError,
+        UploadValidationWorkflowError,
+        ValueError,
+    ) as exc:
+        console.print(
+            "[bold red]Upload validation planning failed:[/bold red] "
+            f"{exc}"
+        )
+        raise typer.Exit(code=1) from exc
+    console.print(f"06 plan ID: {result.plan_id}")
+    console.print(f"07 plan evidence ID: {result.evidence.evidence_id}")
+    console.print(f"08 plan SHA-256: {result.evidence.sha256}")
+    console.print(f"09 state: {result.execution.state.value}")
+
+
+@controlled_app.command("upload-result-import")
+def controlled_upload_result_import(
+    execution_id: Annotated[
+        str,
+        typer.Option("--execution", help="Planned upload-validation execution."),
+    ],
+    result_path: Annotated[
+        Path,
+        typer.Option("--result", help="Structured external result JSON file."),
+    ],
+) -> None:
+    """Import and analyze one manual upload-validation result."""
+
+    console.print("[bold]6C.6 upload external-result import[/bold]")
+    console.print(f"01 execution: {execution_id}")
+    console.print(f"02 result: {result_path}")
+    console.print("03 submitted file content accepted: false")
+    console.print("04 network activity: false")
+    try:
+        result = import_upload_validation_result(
+            get_database(),
+            execution_id,
+            result_path,
+            actor="cli-upload-external-result-importer",
+            evidence_root=Path.cwd() / "evidence" / "upload-external-results",
+        )
+    except (
+        ExecutionNotFoundError,
+        InvalidStateTransitionError,
+        UploadValidationWorkflowError,
+        ValueError,
+    ) as exc:
+        console.print(
+            "[bold red]Upload result import failed:[/bold red] "
+            f"{exc}"
+        )
+        raise typer.Exit(code=1) from exc
+    console.print(f"05 outcome: {result.outcome.value}")
+    console.print(f"06 cleanup status: {result.cleanup_status.value}")
+    console.print(
+        f"07 result evidence ID: {result.result_evidence.evidence_id}"
+    )
+    console.print(f"08 result SHA-256: {result.result_evidence.sha256}")
+    console.print(f"09 state: {result.execution.state.value}")
 
 
 @controlled_app.command("observe")
