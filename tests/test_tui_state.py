@@ -2901,3 +2901,62 @@ def test_csrf_surface_validator_tool_row_requires_approval() -> None:
         "CSRF Protection Surface Validator",
         "APPROVAL",
     ) in TOOLS
+
+
+def test_scope_lines_render_api_exposure_summary() -> None:
+    from dataclasses import replace
+
+    from saarthi_ai.tui.app import (
+        build_scope_lines,
+        demo_snapshot,
+    )
+
+    snapshot = replace(
+        demo_snapshot(),
+        attack_hypothesis_set=None,
+        controlled_validation_plan=None,
+        controlled_observation={
+            "evidence_id": "evidence-api-exposure",
+            "target_url": "https://example.com/api/profile",
+            "action": "api_data_exposure_surface_validation",
+            "method": "GET",
+            "status_code": "200",
+            "validator_id": (
+                "6C.7-api-data-exposure-surface-validation"
+            ),
+            "validator_classification": "review_recommended",
+            "validator_reason": "Aggregate field signals observed.",
+            "nodes_inspected": "5",
+            "sensitive_category_counts": (
+                "credential_material=1, personal_contact=1"
+            ),
+            "json_keys_discarded": "true",
+            "json_values_discarded": "true",
+            "raw_json_stored": "false",
+            "request_body_sent": "false",
+            "authentication_used": "false",
+            "payload_generated": "false",
+        },
+    )
+
+    rendered = "\n".join(build_scope_lines(snapshot))
+
+    assert "6C.7 — API DATA-EXPOSURE SURFACE VALIDATION" in rendered
+    assert "review_recommended" in rendered
+    assert "JSON Nodes         : 5" in rendered
+    assert "credential_material=1" in rendered
+    assert "Keys Discarded     : true" in rendered
+    assert "Values Discarded   : true" in rendered
+    assert "Raw JSON Stored    : false" in rendered
+    assert "Request Body Sent  : false" in rendered
+    assert "Authentication Used: false" in rendered
+
+
+def test_api_exposure_validator_tool_row_requires_approval() -> None:
+    from saarthi_ai.tui.app import TOOLS
+
+    assert (
+        "Saarthi 6C.7",
+        "API Data-Exposure Surface Validator",
+        "APPROVAL",
+    ) in TOOLS

@@ -14,6 +14,10 @@ from uuid import uuid4
 
 import httpx
 
+from saarthi_ai.controlled_validation.api_exposure import (
+    ApiExposureClassification,
+    ApiExposureValidationResult,
+)
 from saarthi_ai.controlled_validation.clickjacking import (
     ClickjackingClassification,
     ClickjackingValidationResult,
@@ -71,6 +75,7 @@ ValidatorAnalysis = (
     | ParameterSurfaceValidationResult
     | SessionCookieValidationResult
     | CsrfSurfaceValidationResult
+    | ApiExposureValidationResult
 )
 
 
@@ -459,6 +464,43 @@ def _validator_analysis_from_evidence(
             ),
         )
 
+    if validator_id == "6C.7-api-data-exposure-surface-validation":
+        try:
+            classification = ApiExposureClassification(
+                str(metadata["validator_classification"])
+            )
+        except (KeyError, ValueError):
+            return None
+
+        raw_counts = metadata.get("sensitive_category_counts")
+        counts = (
+            tuple(
+                (str(key), int(value))
+                for key, value in raw_counts.items()
+                if isinstance(value, int)
+                and not isinstance(value, bool)
+                and value >= 0
+            )
+            if isinstance(raw_counts, dict)
+            else ()
+        )
+        return ApiExposureValidationResult(
+            validator_id=validator_id,
+            classification=classification,
+            reason=str(metadata.get("validator_reason") or ""),
+            nodes_inspected=int(
+                metadata.get("nodes_inspected") or 0
+            ),
+            maximum_depth_observed=int(
+                metadata.get("maximum_depth_observed") or 0
+            ),
+            sensitive_category_counts=tuple(sorted(counts)),
+            analysis_truncated=bool(
+                metadata.get("analysis_truncated")
+            ),
+            parse_error=bool(metadata.get("parse_error")),
+        )
+
     return None
 
 
@@ -698,7 +740,10 @@ def _serialize_observation(
                     ),
                 }
             )
-        else:
+        elif isinstance(
+            validator_analysis,
+            CsrfSurfaceValidationResult,
+        ):
             serialized_analysis.update(
                 {
                     "form_count": validator_analysis.form_count,
@@ -739,6 +784,39 @@ def _serialize_observation(
                     ),
                     "request_body_sent": (
                         validator_analysis.request_body_sent
+                    ),
+                }
+            )
+        else:
+            serialized_analysis.update(
+                {
+                    "nodes_inspected": (
+                        validator_analysis.nodes_inspected
+                    ),
+                    "maximum_depth_observed": (
+                        validator_analysis.maximum_depth_observed
+                    ),
+                    "sensitive_category_counts": dict(
+                        validator_analysis.sensitive_category_counts
+                    ),
+                    "analysis_truncated": (
+                        validator_analysis.analysis_truncated
+                    ),
+                    "parse_error": validator_analysis.parse_error,
+                    "json_keys_discarded": (
+                        validator_analysis.json_keys_discarded
+                    ),
+                    "json_values_discarded": (
+                        validator_analysis.json_values_discarded
+                    ),
+                    "raw_json_stored": (
+                        validator_analysis.raw_json_stored
+                    ),
+                    "request_body_sent": (
+                        validator_analysis.request_body_sent
+                    ),
+                    "authentication_used": (
+                        validator_analysis.authentication_used
                     ),
                 }
             )
@@ -854,7 +932,7 @@ def _validator_metadata(
                 ),
             }
         )
-    else:
+    elif isinstance(analysis, CsrfSurfaceValidationResult):
         metadata.update(
             {
                 "form_count": analysis.form_count,
@@ -883,6 +961,29 @@ def _validator_metadata(
                 "form_submitted": analysis.form_submitted,
                 "browser_launched": analysis.browser_launched,
                 "request_body_sent": analysis.request_body_sent,
+            }
+        )
+    else:
+        metadata.update(
+            {
+                "nodes_inspected": analysis.nodes_inspected,
+                "maximum_depth_observed": (
+                    analysis.maximum_depth_observed
+                ),
+                "sensitive_category_counts": dict(
+                    analysis.sensitive_category_counts
+                ),
+                "analysis_truncated": analysis.analysis_truncated,
+                "parse_error": analysis.parse_error,
+                "json_keys_discarded": (
+                    analysis.json_keys_discarded
+                ),
+                "json_values_discarded": (
+                    analysis.json_values_discarded
+                ),
+                "raw_json_stored": analysis.raw_json_stored,
+                "request_body_sent": analysis.request_body_sent,
+                "authentication_used": analysis.authentication_used,
             }
         )
 
@@ -1132,6 +1233,16 @@ async def run_tracked_controlled_validation_observation(
             if validator_analysis is None:
                 raise ControlledValidationObservationWorkflowError(
                     "CSRF surface analysis was not produced safely."
+                )
+        elif (
+            validation.action
+            is ControlledValidationAction
+            .API_DATA_EXPOSURE_SURFACE_VALIDATION
+        ):
+            validator_analysis = observation.api_exposure_analysis
+            if validator_analysis is None:
+                raise ControlledValidationObservationWorkflowError(
+                    "API exposure analysis was not produced safely."
                 )
 
         database.add_audit_event(

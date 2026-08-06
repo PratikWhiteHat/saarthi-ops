@@ -1861,9 +1861,11 @@ def test_controlled_observe_rejects_head_for_session_cookie() -> None:
     )
 
     assert result.exit_code == 1
+    normalized = " ".join(result.stdout.split())
     assert (
-        "Session-cookie and CSRF surface validation require GET"
-        in result.stdout
+        "Session-cookie, CSRF, and API exposure-surface validation "
+        "require GET"
+        in normalized
     )
 
 
@@ -1971,4 +1973,112 @@ def test_controlled_observe_renders_csrf_surface_analysis(
     assert "Form submitted: false" in normalized
     assert "Browser launched: false" in normalized
     assert "Request body sent: false" in normalized
+    assert "Payload generated: false" in normalized
+
+
+def test_controlled_observe_renders_api_exposure_analysis(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    import saarthi_ai.cli as cli_module
+
+    captured: dict[str, object] = {}
+
+    async def fake_workflow(
+        database,
+        request,
+        *,
+        transport=None,
+        actor,
+        evidence_root,
+    ):
+        captured["request"] = request
+        return SimpleNamespace(
+            execution=SimpleNamespace(
+                state=SimpleNamespace(value="completed"),
+            ),
+            observation=SimpleNamespace(
+                policy=SimpleNamespace(
+                    decision=SimpleNamespace(value="allow"),
+                ),
+                method=request.method,
+                request_attempted=True,
+                response_received=True,
+                status_code=200,
+                final_url=request.validation.target_url,
+                body_bytes_captured=64,
+                body_truncated=False,
+                body_sha256="b" * 64,
+            ),
+            validator_analysis=SimpleNamespace(
+                validator_id=(
+                    "6C.7-api-data-exposure-surface-validation"
+                ),
+                classification=SimpleNamespace(
+                    value="review_recommended"
+                ),
+                reason="Sensitive field-name categories observed.",
+                nodes_inspected=5,
+                sensitive_category_counts=(
+                    ("credential_material", 1),
+                    ("personal_contact", 1),
+                ),
+            ),
+            evidence=SimpleNamespace(
+                evidence_id="evidence-api-exposure",
+                path=str(evidence_root / "api-exposure.json"),
+                sha256="a" * 64,
+            ),
+            reused_existing_evidence=False,
+        )
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        cli_module,
+        "get_database",
+        lambda: object(),
+    )
+    monkeypatch.setattr(
+        cli_module,
+        "run_tracked_controlled_validation_observation",
+        fake_workflow,
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "controlled",
+            "observe",
+            "--execution",
+            "execution-test",
+            "--url",
+            "https://example.com/api/profile",
+            "--action",
+            "api_data_exposure_surface_validation",
+            "--method",
+            "GET",
+            "--approved",
+        ],
+    )
+
+    assert result.exit_code == 0
+    request = captured["request"]
+    assert (
+        request.validation.action
+        is (
+            ControlledValidationAction
+            .API_DATA_EXPOSURE_SURFACE_VALIDATION
+        )
+    )
+    normalized = " ".join(result.stdout.split())
+    assert "6C.7 API Data-Exposure Surface Validation" in normalized
+    assert "Classification: review_recommended" in normalized
+    assert "JSON nodes inspected: 5" in normalized
+    assert "credential_material=1" in normalized
+    assert "personal_contact=1" in normalized
+    assert "JSON keys discarded: true" in normalized
+    assert "JSON values discarded: true" in normalized
+    assert "Raw JSON stored: false" in normalized
+    assert "Request body sent: false" in normalized
+    assert "Authentication used: false" in normalized
     assert "Payload generated: false" in normalized

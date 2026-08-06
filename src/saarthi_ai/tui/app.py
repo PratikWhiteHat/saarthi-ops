@@ -694,6 +694,45 @@ class ReadOnlySaarthiRepository:
                     metadata.get("request_body_sent"),
                     "false",
                 ),
+                "nodes_inspected": display(
+                    metadata.get("nodes_inspected"),
+                    "0",
+                ),
+                "sensitive_category_counts": (
+                    ", ".join(
+                        f"{key}={value}"
+                        for key, value in sorted(
+                            metadata.get(
+                                "sensitive_category_counts",
+                                {},
+                            ).items()
+                        )
+                        if isinstance(key, str)
+                        and isinstance(value, int)
+                        and not isinstance(value, bool)
+                    )
+                    if isinstance(
+                        metadata.get("sensitive_category_counts"),
+                        dict,
+                    )
+                    else "—"
+                ),
+                "json_keys_discarded": display(
+                    metadata.get("json_keys_discarded"),
+                    "false",
+                ),
+                "json_values_discarded": display(
+                    metadata.get("json_values_discarded"),
+                    "false",
+                ),
+                "raw_json_stored": display(
+                    metadata.get("raw_json_stored"),
+                    "false",
+                ),
+                "authentication_used": display(
+                    metadata.get("authentication_used"),
+                    "false",
+                ),
                 "subprocess_started": display(
                     metadata.get("subprocess_started"),
                     "false",
@@ -2738,6 +2777,7 @@ TOOLS = [
     ("Saarthi 6C.2", "CSRF Protection Surface Validator", "APPROVAL"),
     ("Saarthi 6C.3", "HTTP Parameter Surface Validator", "APPROVAL"),
     ("Saarthi 6C.4", "Session Cookie Attribute Validator", "APPROVAL"),
+    ("Saarthi 6C.7", "API Data-Exposure Surface Validator", "APPROVAL"),
     ("nuclei", "Controlled Preview / Execution", "APPROVAL"),
     ("sqlmap", "SQL Injection Testing", "PHASE 4A"),
     ("ghauri", "Blind SQLi Cross-check", "PHASE 4B"),
@@ -3209,6 +3249,59 @@ def build_scope_lines(
                     (
                         "Request Body Sent  : "
                         f"{observation_value('request_body_sent', max_length=12)}"
+                    ),
+                    (
+                        "Payload Generated  : "
+                        f"{observation_value('payload_generated', max_length=12)}"
+                    ),
+                ]
+            )
+        elif (
+            observation.get("validator_id")
+            == "6C.7-api-data-exposure-surface-validation"
+        ):
+            scope_lines.extend(
+                [
+                    "",
+                    (
+                        "[bold cyan]6C.7 — API DATA-EXPOSURE SURFACE "
+                        "VALIDATION[/bold cyan]"
+                    ),
+                    (
+                        "Classification     : "
+                        f"{observation_value('validator_classification', max_length=40)}"
+                    ),
+                    (
+                        "Reason             : "
+                        f"{observation_value('validator_reason', max_length=120)}"
+                    ),
+                    (
+                        "JSON Nodes         : "
+                        f"{observation_value('nodes_inspected', max_length=16)}"
+                    ),
+                    (
+                        "Sensitive Categories: "
+                        f"{observation_value('sensitive_category_counts', max_length=120)}"
+                    ),
+                    (
+                        "Keys Discarded     : "
+                        f"{observation_value('json_keys_discarded', max_length=12)}"
+                    ),
+                    (
+                        "Values Discarded   : "
+                        f"{observation_value('json_values_discarded', max_length=12)}"
+                    ),
+                    (
+                        "Raw JSON Stored    : "
+                        f"{observation_value('raw_json_stored', max_length=12)}"
+                    ),
+                    (
+                        "Request Body Sent  : "
+                        f"{observation_value('request_body_sent', max_length=12)}"
+                    ),
+                    (
+                        "Authentication Used: "
+                        f"{observation_value('authentication_used', max_length=12)}"
                     ),
                     (
                         "Payload Generated  : "

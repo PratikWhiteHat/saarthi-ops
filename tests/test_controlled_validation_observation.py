@@ -353,3 +353,48 @@ async def test_csrf_analysis_never_submits_form_or_retains_token() -> None:
     assert result.csrf_surface_analysis.form_submitted is False
     assert result.csrf_surface_analysis.request_body_sent is False
     assert secret not in repr(result.csrf_surface_analysis)
+
+
+@pytest.mark.asyncio
+async def test_api_exposure_analysis_retains_only_aggregate_counts() -> None:
+    secret = "never-retain-api-secret"
+    captured: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.append(request)
+        return httpx.Response(
+            200,
+            headers={"Content-Type": "application/json"},
+            json={
+                "api_key": secret,
+                "profile": {"email": "private@example.com"},
+            },
+            request=request,
+        )
+
+    result = await execute_bounded_observation(
+        make_request(
+            action=(
+                ControlledValidationAction
+                .API_DATA_EXPOSURE_SURFACE_VALIDATION
+            )
+        ),
+        transport=httpx.MockTransport(handler),
+    )
+
+    assert len(captured) == 1
+    assert captured[0].method == "GET"
+    assert captured[0].content == b""
+    assert "authorization" not in captured[0].headers
+    assert "cookie" not in captured[0].headers
+    assert result.api_exposure_analysis is not None
+    assert dict(
+        result.api_exposure_analysis.sensitive_category_counts
+    ) == {
+        "credential_material": 1,
+        "personal_contact": 1,
+    }
+    rendered = repr(result.api_exposure_analysis)
+    assert secret not in rendered
+    assert "api_key" not in rendered
+    assert "private@example.com" not in rendered

@@ -1,5 +1,10 @@
 """Controlled-validation policy and execution contracts."""
 
+from saarthi_ai.controlled_validation.api_exposure import (
+    ApiExposureClassification,
+    ApiExposureValidationResult,
+    analyze_api_exposure_surface,
+)
 from saarthi_ai.controlled_validation.clickjacking import (
     ClickjackingClassification,
     ClickjackingValidationResult,
@@ -52,6 +57,8 @@ from saarthi_ai.controlled_validation.session_cookie import (
 
 __all__ = [
     "ALLOWED_METHODS",
+    "ApiExposureClassification",
+    "ApiExposureValidationResult",
     "DEFAULT_MAX_RESPONSE_BYTES",
     "DEFAULT_TIMEOUT_SECONDS",
     "DEFAULT_USER_AGENT",
@@ -81,6 +88,7 @@ __all__ = [
     "evaluate_controlled_validation_execution",
     "execute_bounded_observation",
     "analyze_clickjacking_protection",
+    "analyze_api_exposure_surface",
     "analyze_csrf_surface",
     "analyze_parameter_surface",
     "analyze_session_cookie_attributes",

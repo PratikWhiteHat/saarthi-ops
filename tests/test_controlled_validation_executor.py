@@ -189,6 +189,41 @@ def test_csrf_surface_validation_requires_get() -> None:
     )
 
 
+def test_api_exposure_surface_validation_requires_get() -> None:
+    get_result = evaluate_controlled_validation_execution(
+        ControlledValidationExecutionRequest(
+            validation=make_validation(
+                action=(
+                    ControlledValidationAction
+                    .API_DATA_EXPOSURE_SURFACE_VALIDATION
+                )
+            ),
+            method="GET",
+        )
+    )
+    head_result = evaluate_controlled_validation_execution(
+        ControlledValidationExecutionRequest(
+            validation=make_validation(
+                action=(
+                    ControlledValidationAction
+                    .API_DATA_EXPOSURE_SURFACE_VALIDATION
+                )
+            ),
+            method="HEAD",
+        )
+    )
+
+    assert (
+        get_result.decision
+        is ControlledValidationExecutionDecision.ALLOW
+    )
+    assert (
+        head_result.decision
+        is ControlledValidationExecutionDecision.DENY
+    )
+    assert "require exactly one GET" in head_result.reason
+
+
 def test_request_budget_is_limited_to_five() -> None:
     result = evaluate_controlled_validation_execution(
         ControlledValidationExecutionRequest(

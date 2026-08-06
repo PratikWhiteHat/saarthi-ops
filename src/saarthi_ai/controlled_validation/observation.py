@@ -7,6 +7,10 @@ from hashlib import sha256
 
 import httpx
 
+from saarthi_ai.controlled_validation.api_exposure import (
+    ApiExposureValidationResult,
+    analyze_api_exposure_surface,
+)
 from saarthi_ai.controlled_validation.csrf_surface import (
     CsrfSurfaceValidationResult,
     analyze_csrf_surface,
@@ -53,6 +57,7 @@ class ControlledValidationObservationResult:
         SessionCookieValidationResult | None
     ) = None
     csrf_surface_analysis: CsrfSurfaceValidationResult | None = None
+    api_exposure_analysis: ApiExposureValidationResult | None = None
     error_type: str | None = None
     error: str | None = None
 
@@ -209,6 +214,22 @@ async def execute_bounded_observation(
                             request.validation.action
                             is ControlledValidationAction
                             .CSRF_PROTECTION_SURFACE_VALIDATION
+                        )
+                        else None
+                    ),
+                    api_exposure_analysis=(
+                        analyze_api_exposure_surface(
+                            status_code=response.status_code,
+                            content_type=response.headers.get(
+                                "content-type"
+                            ),
+                            body=body,
+                            body_truncated=truncated,
+                        )
+                        if (
+                            request.validation.action
+                            is ControlledValidationAction
+                            .API_DATA_EXPOSURE_SURFACE_VALIDATION
                         )
                         else None
                     ),

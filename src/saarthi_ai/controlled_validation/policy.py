@@ -36,6 +36,9 @@ ACTION_RISK: dict[
     ControlledValidationAction.CSRF_PROTECTION_SURFACE_VALIDATION: (
         ControlledValidationRisk.LOW
     ),
+    ControlledValidationAction.API_DATA_EXPOSURE_SURFACE_VALIDATION: (
+        ControlledValidationRisk.LOW
+    ),
     ControlledValidationAction.AUTHORIZATION_BOUNDARY: (
         ControlledValidationRisk.MODERATE
     ),

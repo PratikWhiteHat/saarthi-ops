@@ -2655,7 +2655,8 @@ def controlled_observe(
                 "clickjacking_header_validation, or "
                 "http_parameter_surface_validation, or "
                 "session_cookie_attribute_validation, or "
-                "csrf_protection_surface_validation."
+                "csrf_protection_surface_validation, or "
+                "api_data_exposure_surface_validation."
             ),
         ),
     ] = ControlledValidationAction.RESPONSE_DIFFERENTIAL,
@@ -2721,12 +2722,14 @@ def controlled_observe(
         ControlledValidationAction.HTTP_PARAMETER_SURFACE_VALIDATION,
         ControlledValidationAction.SESSION_COOKIE_ATTRIBUTE_VALIDATION,
         ControlledValidationAction.CSRF_PROTECTION_SURFACE_VALIDATION,
+        ControlledValidationAction.API_DATA_EXPOSURE_SURFACE_VALIDATION,
     }:
         console.print(
             "[bold red]Unsupported executable action.[/bold red] "
             "Only registered low-risk response, input-handling, and "
             "clickjacking, parameter-surface, or session-cookie "
-            "and CSRF-surface observations are allowed."
+            "CSRF-surface, and API exposure-surface observations "
+            "are allowed."
         )
         raise typer.Exit(code=1)
 
@@ -2735,12 +2738,17 @@ def controlled_observe(
         in {
             ControlledValidationAction.SESSION_COOKIE_ATTRIBUTE_VALIDATION,
             ControlledValidationAction.CSRF_PROTECTION_SURFACE_VALIDATION,
+            (
+                ControlledValidationAction
+                .API_DATA_EXPOSURE_SURFACE_VALIDATION
+            ),
         }
         and normalized_method != "GET"
     ):
         console.print(
             "[bold red]Invalid method.[/bold red] "
-            "Session-cookie and CSRF surface validation require GET."
+            "Session-cookie, CSRF, and API exposure-surface validation "
+            "require GET."
         )
         raise typer.Exit(code=1)
 
@@ -2865,6 +2873,41 @@ def controlled_observe(
         ) is not None:
             console.print()
             if (
+                getattr(analysis, "validator_id", None)
+                == "6C.7-api-data-exposure-surface-validation"
+            ):
+                console.print(
+                    "[bold cyan]6C.7 API Data-Exposure Surface "
+                    "Validation[/bold cyan]"
+                )
+                console.print(
+                    "Classification: "
+                    f"{analysis.classification.value}"
+                )
+                console.print(f"Reason: {analysis.reason}")
+                console.print(
+                    f"JSON nodes inspected: {analysis.nodes_inspected}"
+                )
+                console.print(
+                    "Sensitive categories: "
+                    + (
+                        ", ".join(
+                            f"{name}={count}"
+                            for name, count in (
+                                analysis.sensitive_category_counts
+                            )
+                        )
+                        if analysis.sensitive_category_counts
+                        else "none"
+                    )
+                )
+                console.print("JSON keys discarded: true")
+                console.print("JSON values discarded: true")
+                console.print("Raw JSON stored: false")
+                console.print("Request body sent: false")
+                console.print("Authentication used: false")
+                console.print("Payload generated: false")
+            elif (
                 getattr(analysis, "validator_id", None)
                 == "6C.2-csrf-protection-surface-validation"
             ):

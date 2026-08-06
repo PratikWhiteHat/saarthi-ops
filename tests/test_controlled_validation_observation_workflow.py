@@ -471,6 +471,144 @@ async def test_csrf_surface_reuse_sends_no_second_request(
 
 
 @pytest.mark.asyncio
+async def test_api_exposure_persists_only_aggregate_signals(
+    database: SaarthiDatabase,
+    tmp_path: Path,
+) -> None:
+    execution_id = create_execution(database)
+    request = make_request(
+        execution_id,
+        action=(
+            ControlledValidationAction
+            .API_DATA_EXPOSURE_SURFACE_VALIDATION
+        ),
+    )
+    create_tracked_controlled_validation_plan(
+        database,
+        request.validation,
+        evidence_root=tmp_path / "plans",
+    )
+    secret = "api-secret-never-persist"
+    captured: list[httpx.Request] = []
+
+    def handler(request_object: httpx.Request) -> httpx.Response:
+        captured.append(request_object)
+        return httpx.Response(
+            200,
+            headers={"Content-Type": "application/json"},
+            json={
+                "access_token": secret,
+                "customer": {
+                    "email_address": "private@example.com",
+                },
+            },
+            request=request_object,
+        )
+
+    result = await run_tracked_controlled_validation_observation(
+        database,
+        request,
+        transport=httpx.MockTransport(handler),
+        evidence_root=tmp_path / "observations",
+    )
+
+    assert len(captured) == 1
+    assert captured[0].method == "GET"
+    assert captured[0].content == b""
+    assert "authorization" not in captured[0].headers
+    assert "cookie" not in captured[0].headers
+    assert result.validator_analysis is not None
+    assert (
+        result.validator_analysis.validator_id
+        == "6C.7-api-data-exposure-surface-validation"
+    )
+    assert dict(
+        result.validator_analysis.sensitive_category_counts
+    ) == {
+        "credential_material": 1,
+        "personal_contact": 1,
+    }
+
+    evidence_text = Path(result.evidence.path).read_text()
+    metadata_text = json.dumps(result.evidence.metadata)
+    for discarded in (
+        secret,
+        "private@example.com",
+        "access_token",
+        "email_address",
+    ):
+        assert discarded not in evidence_text
+        assert discarded not in metadata_text
+
+    payload = json.loads(evidence_text)
+    analysis = payload["validator_analysis"]
+    assert analysis["sensitive_category_counts"] == {
+        "credential_material": 1,
+        "personal_contact": 1,
+    }
+    assert analysis["json_keys_discarded"] is True
+    assert analysis["json_values_discarded"] is True
+    assert analysis["raw_json_stored"] is False
+    assert analysis["request_body_sent"] is False
+    assert analysis["authentication_used"] is False
+    assert "body" not in payload["response"]
+
+
+@pytest.mark.asyncio
+async def test_api_exposure_reuse_sends_no_second_request(
+    database: SaarthiDatabase,
+    tmp_path: Path,
+) -> None:
+    execution_id = create_execution(database)
+    request = make_request(
+        execution_id,
+        action=(
+            ControlledValidationAction
+            .API_DATA_EXPOSURE_SURFACE_VALIDATION
+        ),
+    )
+    create_tracked_controlled_validation_plan(
+        database,
+        request.validation,
+        evidence_root=tmp_path / "plans",
+    )
+    request_count = 0
+
+    def handler(request_object: httpx.Request) -> httpx.Response:
+        nonlocal request_count
+        request_count += 1
+        return httpx.Response(
+            200,
+            headers={"Content-Type": "application/json"},
+            json={"status": "ok"},
+            request=request_object,
+        )
+
+    transport = httpx.MockTransport(handler)
+    first = await run_tracked_controlled_validation_observation(
+        database,
+        request,
+        transport=transport,
+        evidence_root=tmp_path / "observations",
+    )
+    second = await run_tracked_controlled_validation_observation(
+        database,
+        request,
+        transport=transport,
+        evidence_root=tmp_path / "observations",
+    )
+
+    assert request_count == 1
+    assert first.validator_analysis is not None
+    assert second.validator_analysis is not None
+    assert (
+        second.validator_analysis.classification.value
+        == "no_sensitive_field_signals"
+    )
+    assert second.reused_existing_evidence is True
+
+
+@pytest.mark.asyncio
 async def test_clickjacking_validator_persists_header_only_analysis(
     database: SaarthiDatabase,
     tmp_path: Path,
