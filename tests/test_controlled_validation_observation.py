@@ -128,6 +128,38 @@ async def test_response_body_is_limited_while_streaming() -> None:
 
 
 @pytest.mark.asyncio
+async def test_injection_surface_analysis_uses_one_unmodified_get() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            200,
+            headers={"Content-Type": "text/html"},
+            content=b"<form><input name='template'></form>",
+            request=request,
+        )
+
+    result = await execute_bounded_observation(
+        make_request(
+            action=(
+                ControlledValidationAction
+                .INJECTION_SURFACE_VALIDATION
+            )
+        ),
+        transport=httpx.MockTransport(handler),
+    )
+
+    assert len(requests) == 1
+    assert requests[0].method == "GET"
+    assert requests[0].url.query == b"q=saarthi"
+    assert requests[0].content == b""
+    assert result.injection_surface_analysis is not None
+    assert result.injection_surface_analysis.payload_generated is False
+    assert result.injection_surface_analysis.parameters_mutated is False
+
+
+@pytest.mark.asyncio
 async def test_sensitive_response_headers_are_redacted() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(

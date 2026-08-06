@@ -2022,8 +2022,8 @@ def test_controlled_observe_rejects_head_for_session_cookie() -> None:
     assert result.exit_code == 1
     normalized = " ".join(result.stdout.split())
     assert (
-        "Session-cookie, CSRF, API exposure-surface, and file-upload "
-        "surface validation require GET"
+        "Session-cookie, CSRF, API exposure, file-upload, and "
+        "injection-surface validation require GET"
         in normalized
     )
 

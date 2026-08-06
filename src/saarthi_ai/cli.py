@@ -2895,7 +2895,8 @@ def controlled_observe(
                 "session_cookie_attribute_validation, or "
                 "csrf_protection_surface_validation, or "
                 "api_data_exposure_surface_validation, or "
-                "file_upload_surface_validation."
+                "file_upload_surface_validation, or "
+                "injection_surface_validation."
             ),
         ),
     ] = ControlledValidationAction.RESPONSE_DIFFERENTIAL,
@@ -2963,13 +2964,14 @@ def controlled_observe(
         ControlledValidationAction.CSRF_PROTECTION_SURFACE_VALIDATION,
         ControlledValidationAction.API_DATA_EXPOSURE_SURFACE_VALIDATION,
         ControlledValidationAction.FILE_UPLOAD_SURFACE_VALIDATION,
+        ControlledValidationAction.INJECTION_SURFACE_VALIDATION,
     }:
         console.print(
             "[bold red]Unsupported executable action.[/bold red] "
             "Only registered low-risk response, input-handling, and "
             "clickjacking, parameter-surface, or session-cookie "
-            "CSRF-surface, API exposure-surface, and file-upload "
-            "surface observations are allowed."
+            "CSRF-surface, API exposure-surface, file-upload, and "
+            "injection-surface observations are allowed."
         )
         raise typer.Exit(code=1)
 
@@ -2983,13 +2985,14 @@ def controlled_observe(
                 .API_DATA_EXPOSURE_SURFACE_VALIDATION
             ),
             ControlledValidationAction.FILE_UPLOAD_SURFACE_VALIDATION,
+            ControlledValidationAction.INJECTION_SURFACE_VALIDATION,
         }
         and normalized_method != "GET"
     ):
         console.print(
             "[bold red]Invalid method.[/bold red] "
-            "Session-cookie, CSRF, API exposure-surface, and file-upload "
-            "surface validation require GET."
+            "Session-cookie, CSRF, API exposure, file-upload, and "
+            "injection-surface validation require GET."
         )
         raise typer.Exit(code=1)
 
@@ -3149,6 +3152,47 @@ def controlled_observe(
                 console.print("Form submitted: false")
                 console.print("Request body sent: false")
                 console.print("Payload generated: false")
+            elif (
+                getattr(analysis, "validator_id", None)
+                == "6C.1-injection-surface-analysis"
+            ):
+                console.print(
+                    "[bold cyan]6C.1 Injection Surface "
+                    "Validation[/bold cyan]"
+                )
+                console.print(
+                    "Classification: "
+                    f"{analysis.classification.value}"
+                )
+                console.print(f"Reason: {analysis.reason}")
+                console.print(
+                    "Official injection types covered: "
+                    f"{len(analysis.injection_types_covered)}"
+                )
+                console.print(
+                    "Observed surfaces: "
+                    + (
+                        ", ".join(
+                            f"{item.injection_type}={item.signal_count}"
+                            for item in analysis.observed_surfaces
+                        )
+                        if analysis.observed_surfaces
+                        else "none"
+                    )
+                )
+                console.print(
+                    "Query parameters / form inputs: "
+                    f"{analysis.query_parameter_count} / "
+                    f"{analysis.form_input_count}"
+                )
+                console.print("Parameter names discarded: true")
+                console.print("Parameter values discarded: true")
+                console.print("Response body discarded: true")
+                console.print("Target unchanged: true")
+                console.print("Parameters mutated: false")
+                console.print("Request body sent: false")
+                console.print("Payload generated: false")
+                console.print("Exploit executed: false")
             elif (
                 getattr(analysis, "validator_id", None)
                 == "6C.7-api-data-exposure-surface-validation"

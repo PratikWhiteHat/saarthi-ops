@@ -27,6 +27,13 @@ from saarthi_ai.controlled_validation.executor import (
     ControlledValidationExecutionRequest,
     evaluate_controlled_validation_execution,
 )
+from saarthi_ai.controlled_validation.injection_surface import (
+    INJECTION_TYPES,
+    InjectionSurfaceClassification,
+    InjectionSurfaceSignal,
+    InjectionSurfaceValidationResult,
+    analyze_injection_surface,
+)
 from saarthi_ai.controlled_validation.models import (
     ControlledValidationAction,
     ControlledValidationDecision,
@@ -80,6 +87,10 @@ __all__ = [
     "MAX_CONTROLLED_REQUESTS",
     "MAX_RESPONSE_BYTES",
     "MAX_TIMEOUT_SECONDS",
+    "INJECTION_TYPES",
+    "InjectionSurfaceClassification",
+    "InjectionSurfaceSignal",
+    "InjectionSurfaceValidationResult",
     "ParameterSurfaceClassification",
     "ParameterSurfaceValidationResult",
     "PHASE_6_VALIDATOR_REGISTRY",
@@ -111,6 +122,7 @@ __all__ = [
     "analyze_clickjacking_protection",
     "analyze_api_exposure_surface",
     "analyze_csrf_surface",
+    "analyze_injection_surface",
     "analyze_parameter_surface",
     "analyze_session_cookie_attributes",
     "analyze_upload_surface",

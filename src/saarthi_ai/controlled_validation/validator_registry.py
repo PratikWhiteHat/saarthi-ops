@@ -196,8 +196,8 @@ _IMPLEMENTATION_OVERRIDES: dict[
     ("6C.1", "SQL Injection"): (
         ValidatorStatus.PARTIAL,
         ValidationLevel.L1_SAFE_DETECTION,
-        "sqlmap_preview",
-        "GET/POST detection-only previews are available; execution is pending.",
+        "injection_surface_validation",
+        "Passive surface analysis and GET/POST sqlmap previews are available.",
     ),
     ("6C.2", "Clickjacking Validation"): (
         ValidatorStatus.IMPLEMENTED,
@@ -236,6 +236,22 @@ _IMPLEMENTATION_OVERRIDES: dict[
         "Only aggregate sensitive field-name categories are retained.",
     ),
 }
+
+for _injection_name in _MODULES["6C.1"][1]:
+    if _injection_name == "OS Command Injection":
+        continue
+    _IMPLEMENTATION_OVERRIDES.setdefault(
+        ("6C.1", _injection_name),
+        (
+            ValidatorStatus.PARTIAL,
+            ValidationLevel.L1_SAFE_DETECTION,
+            "injection_surface_validation",
+            (
+                "Non-mutating input-surface analysis is available; "
+                "exploit confirmation is not automated."
+            ),
+        ),
+    )
 
 _AUTHENTICATED_MODULES = frozenset({"6C.4", "6C.5"})
 _AUTHENTICATED_API_VALIDATORS = frozenset(

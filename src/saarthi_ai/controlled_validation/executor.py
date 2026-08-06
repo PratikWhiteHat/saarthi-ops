@@ -32,6 +32,7 @@ EXECUTABLE_ACTIONS = frozenset(
         ControlledValidationAction.CSRF_PROTECTION_SURFACE_VALIDATION,
         ControlledValidationAction.API_DATA_EXPOSURE_SURFACE_VALIDATION,
         ControlledValidationAction.FILE_UPLOAD_SURFACE_VALIDATION,
+        ControlledValidationAction.INJECTION_SURFACE_VALIDATION,
     }
 )
 
@@ -147,14 +148,15 @@ def evaluate_controlled_validation_execution(
                 .API_DATA_EXPOSURE_SURFACE_VALIDATION
             ),
             ControlledValidationAction.FILE_UPLOAD_SURFACE_VALIDATION,
+            ControlledValidationAction.INJECTION_SURFACE_VALIDATION,
         }
         and method != "GET"
     ):
         return _result(
             request,
             ControlledValidationExecutionDecision.DENY,
-            "Session-cookie, CSRF, API exposure-surface, and file-upload "
-            "surface validation require exactly one GET.",
+            "Session-cookie, CSRF, API exposure, file-upload, and "
+            "injection-surface validation require exactly one GET.",
         )
 
     if (

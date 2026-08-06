@@ -32,6 +32,11 @@ from saarthi_ai.controlled_validation.executor import (
     ControlledValidationExecutionRequest,
     evaluate_controlled_validation_execution,
 )
+from saarthi_ai.controlled_validation.injection_surface import (
+    InjectionSurfaceClassification,
+    InjectionSurfaceSignal,
+    InjectionSurfaceValidationResult,
+)
 from saarthi_ai.controlled_validation.models import (
     ControlledValidationAction,
 )
@@ -81,6 +86,7 @@ ValidatorAnalysis = (
     | CsrfSurfaceValidationResult
     | ApiExposureValidationResult
     | UploadSurfaceValidationResult
+    | InjectionSurfaceValidationResult
 )
 
 
@@ -334,6 +340,75 @@ def _validator_analysis_from_evidence(
             semicolon_delimiter_observed=bool(
                 metadata.get("semicolon_delimiter_observed")
             ),
+            analysis_truncated=bool(
+                metadata.get("analysis_truncated")
+            ),
+        )
+
+    if validator_id == "6C.1-injection-surface-analysis":
+        try:
+            classification = InjectionSurfaceClassification(
+                str(metadata["validator_classification"])
+            )
+        except (KeyError, ValueError):
+            return None
+
+        raw_types = metadata.get("injection_types_covered")
+        raw_surfaces = metadata.get("observed_surfaces")
+        observed_surfaces: list[InjectionSurfaceSignal] = []
+        if isinstance(raw_surfaces, list):
+            for item in raw_surfaces:
+                if not isinstance(item, dict):
+                    continue
+                injection_type = item.get("injection_type")
+                signal_count = item.get("signal_count")
+                item_sources = item.get("sources")
+                if (
+                    not isinstance(injection_type, str)
+                    or not isinstance(signal_count, int)
+                    or isinstance(signal_count, bool)
+                    or signal_count < 1
+                ):
+                    continue
+                observed_surfaces.append(
+                    InjectionSurfaceSignal(
+                        injection_type=injection_type,
+                        signal_count=signal_count,
+                        sources=tuple(
+                            source
+                            for source in item_sources
+                            if isinstance(source, str)
+                        )
+                        if isinstance(item_sources, list)
+                        else (),
+                    )
+                )
+
+        return InjectionSurfaceValidationResult(
+            validator_id=validator_id,
+            classification=classification,
+            reason=str(metadata.get("validator_reason") or ""),
+            injection_types_covered=tuple(
+                item
+                for item in raw_types
+                if isinstance(item, str)
+            )
+            if isinstance(raw_types, list)
+            else (),
+            observed_surfaces=tuple(observed_surfaces),
+            query_parameter_count=int(
+                metadata.get("query_parameter_count") or 0
+            ),
+            form_input_count=int(
+                metadata.get("form_input_count") or 0
+            ),
+            json_input_observed=bool(
+                metadata.get("json_input_observed")
+            ),
+            xml_input_observed=bool(
+                metadata.get("xml_input_observed")
+            ),
+            body_truncated=bool(metadata.get("body_truncated")),
             analysis_truncated=bool(
                 metadata.get("analysis_truncated")
             ),
@@ -745,6 +820,52 @@ def _serialize_observation(
             )
         elif isinstance(
             validator_analysis,
+            InjectionSurfaceValidationResult,
+        ):
+            serialized_analysis.update(
+                {
+                    "injection_types_covered": list(
+                        validator_analysis.injection_types_covered
+                    ),
+                    "observed_surfaces": [
+                        {
+                            "injection_type": item.injection_type,
+                            "signal_count": item.signal_count,
+                            "sources": list(item.sources),
+                        }
+                        for item in (
+                            validator_analysis.observed_surfaces
+                        )
+                    ],
+                    "query_parameter_count": (
+                        validator_analysis.query_parameter_count
+                    ),
+                    "form_input_count": (
+                        validator_analysis.form_input_count
+                    ),
+                    "json_input_observed": (
+                        validator_analysis.json_input_observed
+                    ),
+                    "xml_input_observed": (
+                        validator_analysis.xml_input_observed
+                    ),
+                    "body_truncated": (
+                        validator_analysis.body_truncated
+                    ),
+                    "analysis_truncated": (
+                        validator_analysis.analysis_truncated
+                    ),
+                    "parameter_names_discarded": True,
+                    "parameter_values_discarded": True,
+                    "response_body_discarded": True,
+                    "target_unchanged": True,
+                    "parameters_mutated": False,
+                    "request_body_sent": False,
+                    "exploit_executed": False,
+                }
+            )
+        elif isinstance(
+            validator_analysis,
             SessionCookieValidationResult,
         ):
             serialized_analysis.update(
@@ -1007,6 +1128,41 @@ def _validator_metadata(
                 "target_unchanged": analysis.target_unchanged,
                 "parameters_mutated": analysis.parameters_mutated,
                 "parser_attack_sent": analysis.parser_attack_sent,
+            }
+        )
+    elif isinstance(analysis, InjectionSurfaceValidationResult):
+        metadata.update(
+            {
+                "injection_types_covered": list(
+                    analysis.injection_types_covered
+                ),
+                "observed_surfaces": [
+                    {
+                        "injection_type": item.injection_type,
+                        "signal_count": item.signal_count,
+                        "sources": list(item.sources),
+                    }
+                    for item in analysis.observed_surfaces
+                ],
+                "query_parameter_count": (
+                    analysis.query_parameter_count
+                ),
+                "form_input_count": analysis.form_input_count,
+                "json_input_observed": (
+                    analysis.json_input_observed
+                ),
+                "xml_input_observed": (
+                    analysis.xml_input_observed
+                ),
+                "body_truncated": analysis.body_truncated,
+                "analysis_truncated": analysis.analysis_truncated,
+                "parameter_names_discarded": True,
+                "parameter_values_discarded": True,
+                "response_body_discarded": True,
+                "target_unchanged": True,
+                "parameters_mutated": False,
+                "request_body_sent": False,
+                "exploit_executed": False,
             }
         )
     elif isinstance(analysis, SessionCookieValidationResult):
@@ -1411,6 +1567,16 @@ async def run_tracked_controlled_validation_observation(
             if validator_analysis is None:
                 raise ControlledValidationObservationWorkflowError(
                     "File-upload surface analysis was not produced safely."
+                )
+        elif (
+            validation.action
+            is ControlledValidationAction
+            .INJECTION_SURFACE_VALIDATION
+        ):
+            validator_analysis = observation.injection_surface_analysis
+            if validator_analysis is None:
+                raise ControlledValidationObservationWorkflowError(
+                    "Injection-surface analysis was not produced safely."
                 )
 
         database.add_audit_event(

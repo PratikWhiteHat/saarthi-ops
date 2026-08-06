@@ -51,6 +51,9 @@ class ControlledValidationAction(StrEnum):
     FILE_UPLOAD_SURFACE_VALIDATION = (
         "file_upload_surface_validation"
     )
+    INJECTION_SURFACE_VALIDATION = (
+        "injection_surface_validation"
+    )
     AUTHORIZATION_BOUNDARY = "authorization_boundary"
     STATE_CHANGE_VALIDATION = "state_change_validation"
     FILE_PROCESSING_VALIDATION = "file_processing_validation"

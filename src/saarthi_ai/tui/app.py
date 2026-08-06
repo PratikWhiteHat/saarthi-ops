@@ -1070,6 +1070,63 @@ class ReadOnlySaarthiRepository:
                 "validator_reason": display(
                     metadata.get("validator_reason")
                 ),
+                "injection_types_covered": (
+                    str(
+                        len(metadata.get("injection_types_covered", []))
+                    )
+                    if isinstance(
+                        metadata.get("injection_types_covered"),
+                        list,
+                    )
+                    else "0"
+                ),
+                "observed_surfaces": (
+                    ", ".join(
+                        (
+                            f"{item.get('injection_type')}="
+                            f"{item.get('signal_count')}"
+                        )
+                        for item in metadata.get(
+                            "observed_surfaces",
+                            [],
+                        )
+                        if isinstance(item, dict)
+                        and item.get("injection_type")
+                    )
+                    if isinstance(
+                        metadata.get("observed_surfaces"),
+                        list,
+                    )
+                    else "—"
+                ),
+                "query_parameter_count": display(
+                    metadata.get("query_parameter_count"),
+                    "0",
+                ),
+                "form_input_count": display(
+                    metadata.get("form_input_count"),
+                    "0",
+                ),
+                "parameter_names_discarded": display(
+                    metadata.get("parameter_names_discarded"),
+                    "false",
+                ),
+                "parameter_values_discarded": display(
+                    metadata.get("parameter_values_discarded"),
+                    "false",
+                ),
+                "response_body_discarded": display(
+                    metadata.get("response_body_discarded"),
+                    "false",
+                ),
+                "parameters_mutated": display(
+                    metadata.get("parameters_mutated"),
+                    "false",
+                ),
+                "exploit_executed": display(
+                    metadata.get("exploit_executed"),
+                    "false",
+                ),
                 "protection_sources": (
                     ", ".join(
                         item
@@ -2878,6 +2935,7 @@ TOOLS = [
     ("OAST Manager", "Out-of-band Correlation", "PHASE 6"),
     ("Saarthi 6A", "Attack Hypothesis Engine", "ENABLED"),
     ("Saarthi 6B", "Policy & Approval Gate", "APPROVAL"),
+    ("Saarthi 6C.1", "Injection Surface Validator", "APPROVAL"),
     ("Saarthi 6C.2", "Clickjacking Header Validator", "APPROVAL"),
     ("Saarthi 6C.2", "CSRF Protection Surface Validator", "APPROVAL"),
     ("Saarthi 6C.3", "HTTP Parameter Surface Validator", "APPROVAL"),
@@ -3261,6 +3319,58 @@ def build_scope_lines(
                     (
                         "Payload Generated  : "
                         f"{observation_value('payload_generated', max_length=12)}"
+                    ),
+                ]
+            )
+        elif (
+            observation.get("validator_id")
+            == "6C.1-injection-surface-analysis"
+        ):
+            scope_lines.extend(
+                [
+                    "",
+                    (
+                        "[bold cyan]6C.1 — INJECTION SURFACE "
+                        "VALIDATION[/bold cyan]"
+                    ),
+                    (
+                        "Classification     : "
+                        f"{observation_value('validator_classification', max_length=40)}"
+                    ),
+                    (
+                        "Reason             : "
+                        f"{observation_value('validator_reason', max_length=120)}"
+                    ),
+                    (
+                        "Injection Coverage : "
+                        f"{observation_value('injection_types_covered', max_length=12)} types"
+                    ),
+                    (
+                        "Observed Surfaces  : "
+                        f"{observation_value('observed_surfaces', max_length=120)}"
+                    ),
+                    (
+                        "Query / Form Inputs: "
+                        f"{observation_value('query_parameter_count', max_length=12)} / "
+                        f"{observation_value('form_input_count', max_length=12)}"
+                    ),
+                    (
+                        "Names / Values Gone: "
+                        f"{observation_value('parameter_names_discarded', max_length=12)} / "
+                        f"{observation_value('parameter_values_discarded', max_length=12)}"
+                    ),
+                    (
+                        "Body Discarded     : "
+                        f"{observation_value('response_body_discarded', max_length=12)}"
+                    ),
+                    (
+                        "Parameters Mutated : "
+                        f"{observation_value('parameters_mutated', max_length=12)}"
+                    ),
+                    (
+                        "Payload / Exploit  : "
+                        f"{observation_value('payload_generated', max_length=12)} / "
+                        f"{observation_value('exploit_executed', max_length=12)}"
                     ),
                 ]
             )

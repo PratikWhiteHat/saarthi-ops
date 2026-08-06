@@ -79,6 +79,25 @@ def test_high_impact_execution_validators_are_manual_only() -> None:
     assert ("6C.6", "Uploaded Script Execution") in manual
 
 
+def test_all_non_command_injection_types_have_safe_surface_analysis() -> None:
+    injection_items = list_phase6_validators("6C.1")
+
+    assert len(injection_items) == 13
+    assert sum(
+        item.status is ValidatorStatus.PARTIAL
+        for item in injection_items
+    ) == 12
+    assert sum(
+        item.status is ValidatorStatus.MANUAL_ONLY
+        for item in injection_items
+    ) == 1
+    assert all(
+        item.implementation_action == "injection_surface_validation"
+        for item in injection_items
+        if item.status is ValidatorStatus.PARTIAL
+    )
+
+
 def test_module_summaries_are_deterministic() -> None:
     summaries = summarize_phase6_validator_modules()
 

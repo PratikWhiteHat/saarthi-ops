@@ -21,6 +21,10 @@ from saarthi_ai.controlled_validation.executor import (
     ControlledValidationExecutionRequest,
     evaluate_controlled_validation_execution,
 )
+from saarthi_ai.controlled_validation.injection_surface import (
+    InjectionSurfaceValidationResult,
+    analyze_injection_surface,
+)
 from saarthi_ai.controlled_validation.models import (
     ControlledValidationAction,
 )
@@ -63,6 +67,9 @@ class ControlledValidationObservationResult:
     csrf_surface_analysis: CsrfSurfaceValidationResult | None = None
     api_exposure_analysis: ApiExposureValidationResult | None = None
     upload_surface_analysis: UploadSurfaceValidationResult | None = None
+    injection_surface_analysis: (
+        InjectionSurfaceValidationResult | None
+    ) = None
     error_type: str | None = None
     error: str | None = None
 
@@ -252,6 +259,23 @@ async def execute_bounded_observation(
                             request.validation.action
                             is ControlledValidationAction
                             .FILE_UPLOAD_SURFACE_VALIDATION
+                        )
+                        else None
+                    ),
+                    injection_surface_analysis=(
+                        analyze_injection_surface(
+                            target_url=request.validation.target_url,
+                            status_code=response.status_code,
+                            content_type=response.headers.get(
+                                "content-type"
+                            ),
+                            body=body,
+                            body_truncated=truncated,
+                        )
+                        if (
+                            request.validation.action
+                            is ControlledValidationAction
+                            .INJECTION_SURFACE_VALIDATION
                         )
                         else None
                     ),

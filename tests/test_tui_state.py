@@ -3008,6 +3008,56 @@ def test_api_exposure_validator_tool_row_requires_approval() -> None:
     ) in TOOLS
 
 
+def test_scope_lines_render_injection_surface_summary() -> None:
+    from dataclasses import replace
+
+    from saarthi_ai.tui.app import (
+        build_scope_lines,
+        demo_snapshot,
+    )
+
+    snapshot = replace(
+        demo_snapshot(),
+        attack_hypothesis_set=None,
+        controlled_validation_plan=None,
+        controlled_observation={
+            "evidence_id": "evidence-injection-surface",
+            "target_url": "https://example.com/search?id=1",
+            "action": "injection_surface_validation",
+            "method": "GET",
+            "status_code": "200",
+            "validator_id": "6C.1-injection-surface-analysis",
+            "validator_classification": (
+                "injection_surface_observed"
+            ),
+            "validator_reason": "Input surfaces require review.",
+            "injection_types_covered": "13",
+            "observed_surfaces": (
+                "SQL Injection=1, Host Header Injection=1"
+            ),
+            "query_parameter_count": "2",
+            "form_input_count": "1",
+            "parameter_names_discarded": "true",
+            "parameter_values_discarded": "true",
+            "response_body_discarded": "true",
+            "parameters_mutated": "false",
+            "payload_generated": "false",
+            "exploit_executed": "false",
+        },
+    )
+
+    rendered = "\n".join(build_scope_lines(snapshot))
+
+    assert "6C.1 — INJECTION SURFACE VALIDATION" in rendered
+    assert "Injection Coverage : 13 types" in rendered
+    assert "SQL Injection=1" in rendered
+    assert "Query / Form Inputs: 2 / 1" in rendered
+    assert "Names / Values Gone: true / true" in rendered
+    assert "Body Discarded     : true" in rendered
+    assert "Parameters Mutated : false" in rendered
+    assert "Payload / Exploit  : false / false" in rendered
+
+
 def test_scope_lines_render_upload_surface_summary() -> None:
     from dataclasses import replace
 
@@ -3071,6 +3121,16 @@ def test_upload_surface_validator_tool_row_requires_approval() -> None:
     assert (
         "Saarthi 6C.6",
         "File Upload Surface Validator",
+        "APPROVAL",
+    ) in TOOLS
+
+
+def test_injection_surface_validator_tool_row_requires_approval() -> None:
+    from saarthi_ai.tui.app import TOOLS
+
+    assert (
+        "Saarthi 6C.1",
+        "Injection Surface Validator",
         "APPROVAL",
     ) in TOOLS
 

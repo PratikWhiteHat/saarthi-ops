@@ -42,6 +42,9 @@ ACTION_RISK: dict[
     ControlledValidationAction.FILE_UPLOAD_SURFACE_VALIDATION: (
         ControlledValidationRisk.LOW
     ),
+    ControlledValidationAction.INJECTION_SURFACE_VALIDATION: (
+        ControlledValidationRisk.LOW
+    ),
     ControlledValidationAction.AUTHORIZATION_BOUNDARY: (
         ControlledValidationRisk.MODERATE
     ),
