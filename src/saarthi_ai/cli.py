@@ -146,6 +146,7 @@ from saarthi_ai.persistence.projects import (
 from saarthi_ai.persistence.sqlmap_handoff_workflow import (
     SqlmapHandoffWorkflowError,
     analyze_imported_sqlmap_result,
+    finalize_sqlmap_external_result,
     import_sqlmap_external_result,
 )
 from saarthi_ai.persistence.sqlmap_preview_workflow import (
@@ -2930,6 +2931,70 @@ def controlled_sqlmap_analyze(
     console.print(
         "09 existing findings reused: "
         f"{str(result.reused_existing_findings).lower()}"
+    )
+
+
+@controlled_app.command("sqlmap-finalize")
+def controlled_sqlmap_finalize(
+    execution_id: Annotated[
+        str,
+        typer.Option(
+            "--execution",
+            help="SQLmap handoff execution awaiting an external result.",
+        ),
+    ],
+    result_path: Annotated[
+        Path,
+        typer.Option(
+            "--result",
+            help="SQLmap result file or output directory to finalize.",
+        ),
+    ],
+) -> None:
+    """Import and analyze an existing SQLmap result in one local step."""
+
+    console.print("[bold]6C.1 SQLmap local result finalizer[/bold]")
+    console.print(f"01 execution: {execution_id}")
+    console.print(f"02 supplied path: {result_path}")
+    console.print("03 SQLmap process launched by Saarthi: false")
+    console.print("04 network activity: false")
+
+    try:
+        result = finalize_sqlmap_external_result(
+            get_database(),
+            execution_id,
+            result_path,
+            actor="cli-sqlmap-external-result-finalizer",
+            evidence_root=(
+                Path.cwd()
+                / "evidence"
+                / "sqlmap-external-results"
+            ),
+        )
+    except (
+        ExecutionNotFoundError,
+        InvalidStateTransitionError,
+        SqlmapHandoffWorkflowError,
+        ValueError,
+    ) as exc:
+        console.print(
+            "[bold red]SQLmap result finalization failed:[/bold red] "
+            f"{exc}"
+        )
+        raise typer.Exit(code=1) from exc
+
+    console.print(f"05 selected result: {result.selected_result_path}")
+    console.print("06 manifest association: verified")
+    console.print("07 evidence hashing: completed")
+    console.print(
+        f"08 result evidence ID: "
+        f"{result.imported.result_evidence.evidence_id}"
+    )
+    console.print(
+        f"09 findings registered: {result.analyzed.finding_count}"
+    )
+    console.print(
+        f"10 final state: {result.imported.execution.state.value}"
     )
 
 

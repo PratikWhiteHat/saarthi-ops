@@ -75,6 +75,15 @@ class AnalyzedSqlmapResult:
     reused_existing_findings: bool = False
 
 
+@dataclass(frozen=True)
+class FinalizedSqlmapResult:
+    """One-step local import and sanitized offline analysis result."""
+
+    imported: ImportedSqlmapResult
+    analyzed: AnalyzedSqlmapResult
+    selected_result_path: str
+
+
 def _canonical_json(payload: dict[str, Any]) -> bytes:
     return (
         json.dumps(
@@ -291,6 +300,60 @@ def create_sqlmap_handoff(
     )
 
 
+def _result_suffix(path: Path) -> str:
+    suffix = path.suffix.lower()
+    if suffix:
+        return suffix
+    if path.name.lower() == "log":
+        return ".log"
+    return ""
+
+
+def select_sqlmap_result_file(result_path: Path) -> Path:
+    """Resolve a supported result file from a file or SQLmap output directory."""
+
+    candidate = result_path.expanduser()
+    if candidate.is_symlink():
+        raise SqlmapHandoffWorkflowError(
+            "SQLmap external result path must not be a symbolic link."
+        )
+    try:
+        resolved = candidate.resolve(strict=True)
+    except OSError as exc:
+        raise SqlmapHandoffWorkflowError(
+            "SQLmap external result path does not exist."
+        ) from exc
+    if resolved.is_file():
+        return resolved
+    if not resolved.is_dir():
+        raise SqlmapHandoffWorkflowError(
+            "SQLmap external result must be a file or directory."
+        )
+
+    raw_log = resolved / "log"
+    if raw_log.is_file() and not raw_log.is_symlink():
+        return raw_log
+
+    supported = sorted(
+        path
+        for path in resolved.rglob("*")
+        if (
+            path.is_file()
+            and not path.is_symlink()
+            and _result_suffix(path) in SUPPORTED_RESULT_SUFFIXES
+        )
+    )
+    if not supported:
+        raise SqlmapHandoffWorkflowError(
+            "SQLmap result directory contains no supported result file."
+        )
+    if len(supported) > 1:
+        raise SqlmapHandoffWorkflowError(
+            "SQLmap result directory is ambiguous; supply one result file."
+        )
+    return supported[0]
+
+
 def _validate_result_path(result_path: Path) -> tuple[Path, int, str]:
     candidate = result_path.expanduser()
     if candidate.is_symlink():
@@ -307,7 +370,7 @@ def _validate_result_path(result_path: Path) -> tuple[Path, int, str]:
         raise SqlmapHandoffWorkflowError(
             "SQLmap external result must be a regular file."
         )
-    if resolved.suffix.lower() not in SUPPORTED_RESULT_SUFFIXES:
+    if _result_suffix(resolved) not in SUPPORTED_RESULT_SUFFIXES:
         raise SqlmapHandoffWorkflowError(
             "SQLmap external result has an unsupported file type."
         )
@@ -472,7 +535,7 @@ def _load_sanitized_log_findings(
     *,
     manifest: dict[str, Any],
 ) -> tuple[dict[str, str], ...]:
-    if result_path.suffix.lower() not in {".log", ".txt"}:
+    if _result_suffix(result_path) not in {".log", ".txt"}:
         return ()
     try:
         lines = result_path.read_text(
@@ -663,7 +726,7 @@ def import_sqlmap_external_result(
     destination = (
         destination_root
         / execution_id
-        / f"external-result-{uuid4()}{resolved.suffix.lower()}"
+        / f"external-result-{uuid4()}{_result_suffix(resolved)}"
     )
     destination.parent.mkdir(parents=True, exist_ok=True)
 
@@ -898,4 +961,34 @@ def analyze_imported_sqlmap_result(
         manifest_evidence=manifest_evidence,
         result_evidence=result_evidence,
         finding_count=finding_count,
+    )
+
+
+def finalize_sqlmap_external_result(
+    database: SaarthiDatabase,
+    execution_id: str,
+    result_path: Path,
+    *,
+    actor: str = "sqlmap-external-result-finalizer",
+    evidence_root: Path | None = None,
+) -> FinalizedSqlmapResult:
+    """Select, import, hash, and analyze one local SQLmap result."""
+
+    selected = select_sqlmap_result_file(result_path)
+    imported = import_sqlmap_external_result(
+        database,
+        execution_id,
+        selected,
+        actor=actor,
+        evidence_root=evidence_root,
+    )
+    analyzed = analyze_imported_sqlmap_result(
+        database,
+        execution_id,
+        actor=actor,
+    )
+    return FinalizedSqlmapResult(
+        imported=imported,
+        analyzed=analyzed,
+        selected_result_path=str(selected),
     )

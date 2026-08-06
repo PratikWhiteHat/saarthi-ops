@@ -22,7 +22,9 @@ from saarthi_ai.persistence.sqlmap_handoff_workflow import (
     SqlmapHandoffWorkflowError,
     analyze_imported_sqlmap_result,
     create_sqlmap_handoff,
+    finalize_sqlmap_external_result,
     import_sqlmap_external_result,
+    select_sqlmap_result_file,
 )
 from saarthi_ai.persistence.sqlmap_preview_workflow import (
     create_tracked_sqlmap_preview,
@@ -294,6 +296,58 @@ def test_sanitizes_raw_log_findings_and_is_idempotent(
         "confirmed_by_saarthi": False,
         "payload_stored_in_finding": False,
     }
+
+
+def test_finalizes_standard_sqlmap_output_directory(
+    database: SaarthiDatabase,
+    tmp_path: Path,
+) -> None:
+    preview = create_preview(database, tmp_path)
+    create_sqlmap_handoff(
+        database,
+        preview,
+        evidence_root=tmp_path / "handoff",
+    )
+    output = tmp_path / "sqlmap-output" / "example.com"
+    output.mkdir(parents=True)
+    (output / "session.sqlite").write_bytes(b"not imported")
+    raw_log = output / "log"
+    raw_log.write_text(
+        "\n".join(
+            (
+                "Parameter: id (GET)",
+                "    Type: boolean-based blind",
+                "    Payload: ignored",
+                "back-end DBMS: MySQL",
+                "",
+            )
+        )
+    )
+
+    result = finalize_sqlmap_external_result(
+        database,
+        preview.execution.execution_id,
+        output,
+        evidence_root=tmp_path / "imports",
+    )
+
+    assert result.selected_result_path == str(raw_log)
+    assert result.imported.execution.state is ExecutionState.COMPLETED
+    assert result.imported.result_evidence.path.endswith(".log")
+    assert result.analyzed.finding_count == 1
+
+
+def test_rejects_ambiguous_result_directory(tmp_path: Path) -> None:
+    output = tmp_path / "sqlmap-output"
+    output.mkdir()
+    (output / "first.log").write_text("first\n")
+    (output / "second.json").write_text("{}\n")
+
+    with pytest.raises(
+        SqlmapHandoffWorkflowError,
+        match="ambiguous",
+    ):
+        select_sqlmap_result_file(output)
 
 
 def test_rejects_tampered_handoff_manifest(
