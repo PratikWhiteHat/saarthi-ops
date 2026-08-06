@@ -2896,7 +2896,8 @@ def controlled_observe(
                 "csrf_protection_surface_validation, or "
                 "api_data_exposure_surface_validation, or "
                 "file_upload_surface_validation, or "
-                "injection_surface_validation."
+                "injection_surface_validation, or "
+                "browser_attack_surface_validation."
             ),
         ),
     ] = ControlledValidationAction.RESPONSE_DIFFERENTIAL,
@@ -2965,13 +2966,15 @@ def controlled_observe(
         ControlledValidationAction.API_DATA_EXPOSURE_SURFACE_VALIDATION,
         ControlledValidationAction.FILE_UPLOAD_SURFACE_VALIDATION,
         ControlledValidationAction.INJECTION_SURFACE_VALIDATION,
+        ControlledValidationAction.BROWSER_ATTACK_SURFACE_VALIDATION,
     }:
         console.print(
             "[bold red]Unsupported executable action.[/bold red] "
             "Only registered low-risk response, input-handling, and "
             "clickjacking, parameter-surface, or session-cookie "
             "CSRF-surface, API exposure-surface, file-upload, and "
-            "injection-surface observations are allowed."
+            "injection-surface, and browser-surface observations are "
+            "allowed."
         )
         raise typer.Exit(code=1)
 
@@ -2986,13 +2989,18 @@ def controlled_observe(
             ),
             ControlledValidationAction.FILE_UPLOAD_SURFACE_VALIDATION,
             ControlledValidationAction.INJECTION_SURFACE_VALIDATION,
+            (
+                ControlledValidationAction
+                .BROWSER_ATTACK_SURFACE_VALIDATION
+            ),
         }
         and normalized_method != "GET"
     ):
         console.print(
             "[bold red]Invalid method.[/bold red] "
             "Session-cookie, CSRF, API exposure, file-upload, and "
-            "injection-surface validation require GET."
+            "injection-surface, and browser-surface validation require "
+            "GET."
         )
         raise typer.Exit(code=1)
 
@@ -3191,6 +3199,62 @@ def controlled_observe(
                 console.print("Target unchanged: true")
                 console.print("Parameters mutated: false")
                 console.print("Request body sent: false")
+                console.print("Payload generated: false")
+                console.print("Exploit executed: false")
+            elif (
+                getattr(analysis, "validator_id", None)
+                == "6C.2-browser-attack-surface-analysis"
+            ):
+                console.print(
+                    "[bold cyan]6C.2 Browser Attack Surface "
+                    "Validation[/bold cyan]"
+                )
+                console.print(
+                    "Classification: "
+                    f"{analysis.classification.value}"
+                )
+                console.print(f"Reason: {analysis.reason}")
+                console.print(
+                    "Official browser attack types covered: "
+                    f"{len(analysis.attack_types_covered)}"
+                )
+                console.print(
+                    "Observed surfaces: "
+                    + (
+                        ", ".join(
+                            f"{item.attack_type}={item.signal_count}"
+                            for item in analysis.observed_surfaces
+                        )
+                        if analysis.observed_surfaces
+                        else "none"
+                    )
+                )
+                console.print(
+                    "Forms / controls / scripts: "
+                    f"{analysis.form_count} / "
+                    f"{analysis.form_control_count} / "
+                    f"{analysis.script_block_count}"
+                )
+                console.print(
+                    "postMessage handler / origin check: "
+                    f"{str(analysis.postmessage_handler_observed).lower()} "
+                    f"/ "
+                    f"{str(analysis.postmessage_origin_check_observed).lower()}"
+                )
+                console.print(
+                    "WebSocket / auth signal: "
+                    f"{str(analysis.websocket_usage_observed).lower()} / "
+                    f"{str(analysis.websocket_auth_signal_observed).lower()}"
+                )
+                console.print(
+                    "CORS wildcard / credentials: "
+                    f"{str(analysis.cors_wildcard_origin).lower()} / "
+                    f"{str(analysis.cors_credentials_allowed).lower()}"
+                )
+                console.print("Source text discarded: true")
+                console.print("Attribute values discarded: true")
+                console.print("Browser launched: false")
+                console.print("Script executed: false")
                 console.print("Payload generated: false")
                 console.print("Exploit executed: false")
             elif (

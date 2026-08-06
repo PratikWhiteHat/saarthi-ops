@@ -18,6 +18,11 @@ from saarthi_ai.controlled_validation.api_exposure import (
     ApiExposureClassification,
     ApiExposureValidationResult,
 )
+from saarthi_ai.controlled_validation.browser_surface import (
+    BrowserSurfaceClassification,
+    BrowserSurfaceSignal,
+    BrowserSurfaceValidationResult,
+)
 from saarthi_ai.controlled_validation.clickjacking import (
     ClickjackingClassification,
     ClickjackingValidationResult,
@@ -87,6 +92,7 @@ ValidatorAnalysis = (
     | ApiExposureValidationResult
     | UploadSurfaceValidationResult
     | InjectionSurfaceValidationResult
+    | BrowserSurfaceValidationResult
 )
 
 
@@ -407,6 +413,103 @@ def _validator_analysis_from_evidence(
             ),
             xml_input_observed=bool(
                 metadata.get("xml_input_observed")
+            ),
+            body_truncated=bool(metadata.get("body_truncated")),
+            analysis_truncated=bool(
+                metadata.get("analysis_truncated")
+            ),
+        )
+
+    if validator_id == "6C.2-browser-attack-surface-analysis":
+        try:
+            classification = BrowserSurfaceClassification(
+                str(metadata["validator_classification"])
+            )
+        except (KeyError, ValueError):
+            return None
+
+        raw_types = metadata.get("attack_types_covered")
+        raw_surfaces = metadata.get("browser_observed_surfaces")
+        observed_surfaces: list[BrowserSurfaceSignal] = []
+        if isinstance(raw_surfaces, list):
+            for item in raw_surfaces:
+                if not isinstance(item, dict):
+                    continue
+                attack_type = item.get("attack_type")
+                signal_count = item.get("signal_count")
+                item_sources = item.get("sources")
+                if (
+                    not isinstance(attack_type, str)
+                    or not isinstance(signal_count, int)
+                    or isinstance(signal_count, bool)
+                    or signal_count < 1
+                ):
+                    continue
+                observed_surfaces.append(
+                    BrowserSurfaceSignal(
+                        attack_type=attack_type,
+                        signal_count=signal_count,
+                        sources=tuple(
+                            source
+                            for source in item_sources
+                            if isinstance(source, str)
+                        )
+                        if isinstance(item_sources, list)
+                        else (),
+                    )
+                )
+
+        return BrowserSurfaceValidationResult(
+            validator_id=validator_id,
+            classification=classification,
+            reason=str(metadata.get("validator_reason") or ""),
+            attack_types_covered=tuple(
+                item
+                for item in raw_types
+                if isinstance(item, str)
+            )
+            if isinstance(raw_types, list)
+            else (),
+            observed_surfaces=tuple(observed_surfaces),
+            form_count=int(metadata.get("browser_form_count") or 0),
+            form_control_count=int(
+                metadata.get("form_control_count") or 0
+            ),
+            script_block_count=int(
+                metadata.get("script_block_count") or 0
+            ),
+            inline_handler_count=int(
+                metadata.get("inline_handler_count") or 0
+            ),
+            named_element_count=int(
+                metadata.get("named_element_count") or 0
+            ),
+            style_surface_count=int(
+                metadata.get("style_surface_count") or 0
+            ),
+            redirect_parameter_count=int(
+                metadata.get("redirect_parameter_count") or 0
+            ),
+            cors_allow_origin_present=bool(
+                metadata.get("cors_allow_origin_present")
+            ),
+            cors_wildcard_origin=bool(
+                metadata.get("cors_wildcard_origin")
+            ),
+            cors_credentials_allowed=bool(
+                metadata.get("cors_credentials_allowed")
+            ),
+            postmessage_handler_observed=bool(
+                metadata.get("postmessage_handler_observed")
+            ),
+            postmessage_origin_check_observed=bool(
+                metadata.get("postmessage_origin_check_observed")
+            ),
+            websocket_usage_observed=bool(
+                metadata.get("websocket_usage_observed")
+            ),
+            websocket_auth_signal_observed=bool(
+                metadata.get("websocket_auth_signal_observed")
             ),
             body_truncated=bool(metadata.get("body_truncated")),
             analysis_truncated=bool(
@@ -866,6 +969,87 @@ def _serialize_observation(
             )
         elif isinstance(
             validator_analysis,
+            BrowserSurfaceValidationResult,
+        ):
+            serialized_analysis.update(
+                {
+                    "attack_types_covered": list(
+                        validator_analysis.attack_types_covered
+                    ),
+                    "browser_observed_surfaces": [
+                        {
+                            "attack_type": item.attack_type,
+                            "signal_count": item.signal_count,
+                            "sources": list(item.sources),
+                        }
+                        for item in (
+                            validator_analysis.observed_surfaces
+                        )
+                    ],
+                    "browser_form_count": (
+                        validator_analysis.form_count
+                    ),
+                    "form_control_count": (
+                        validator_analysis.form_control_count
+                    ),
+                    "script_block_count": (
+                        validator_analysis.script_block_count
+                    ),
+                    "inline_handler_count": (
+                        validator_analysis.inline_handler_count
+                    ),
+                    "named_element_count": (
+                        validator_analysis.named_element_count
+                    ),
+                    "style_surface_count": (
+                        validator_analysis.style_surface_count
+                    ),
+                    "redirect_parameter_count": (
+                        validator_analysis.redirect_parameter_count
+                    ),
+                    "cors_allow_origin_present": (
+                        validator_analysis.cors_allow_origin_present
+                    ),
+                    "cors_wildcard_origin": (
+                        validator_analysis.cors_wildcard_origin
+                    ),
+                    "cors_credentials_allowed": (
+                        validator_analysis.cors_credentials_allowed
+                    ),
+                    "postmessage_handler_observed": (
+                        validator_analysis
+                        .postmessage_handler_observed
+                    ),
+                    "postmessage_origin_check_observed": (
+                        validator_analysis
+                        .postmessage_origin_check_observed
+                    ),
+                    "websocket_usage_observed": (
+                        validator_analysis.websocket_usage_observed
+                    ),
+                    "websocket_auth_signal_observed": (
+                        validator_analysis
+                        .websocket_auth_signal_observed
+                    ),
+                    "body_truncated": (
+                        validator_analysis.body_truncated
+                    ),
+                    "analysis_truncated": (
+                        validator_analysis.analysis_truncated
+                    ),
+                    "source_text_discarded": True,
+                    "attribute_values_discarded": True,
+                    "parameter_names_discarded": True,
+                    "parameter_values_discarded": True,
+                    "browser_launched": False,
+                    "script_executed": False,
+                    "parameters_mutated": False,
+                    "request_body_sent": False,
+                    "exploit_executed": False,
+                }
+            )
+        elif isinstance(
+            validator_analysis,
             SessionCookieValidationResult,
         ):
             serialized_analysis.update(
@@ -1160,6 +1344,63 @@ def _validator_metadata(
                 "parameter_values_discarded": True,
                 "response_body_discarded": True,
                 "target_unchanged": True,
+                "parameters_mutated": False,
+                "request_body_sent": False,
+                "exploit_executed": False,
+            }
+        )
+    elif isinstance(analysis, BrowserSurfaceValidationResult):
+        metadata.update(
+            {
+                "attack_types_covered": list(
+                    analysis.attack_types_covered
+                ),
+                "browser_observed_surfaces": [
+                    {
+                        "attack_type": item.attack_type,
+                        "signal_count": item.signal_count,
+                        "sources": list(item.sources),
+                    }
+                    for item in analysis.observed_surfaces
+                ],
+                "browser_form_count": analysis.form_count,
+                "form_control_count": analysis.form_control_count,
+                "script_block_count": analysis.script_block_count,
+                "inline_handler_count": (
+                    analysis.inline_handler_count
+                ),
+                "named_element_count": analysis.named_element_count,
+                "style_surface_count": analysis.style_surface_count,
+                "redirect_parameter_count": (
+                    analysis.redirect_parameter_count
+                ),
+                "cors_allow_origin_present": (
+                    analysis.cors_allow_origin_present
+                ),
+                "cors_wildcard_origin": analysis.cors_wildcard_origin,
+                "cors_credentials_allowed": (
+                    analysis.cors_credentials_allowed
+                ),
+                "postmessage_handler_observed": (
+                    analysis.postmessage_handler_observed
+                ),
+                "postmessage_origin_check_observed": (
+                    analysis.postmessage_origin_check_observed
+                ),
+                "websocket_usage_observed": (
+                    analysis.websocket_usage_observed
+                ),
+                "websocket_auth_signal_observed": (
+                    analysis.websocket_auth_signal_observed
+                ),
+                "body_truncated": analysis.body_truncated,
+                "analysis_truncated": analysis.analysis_truncated,
+                "source_text_discarded": True,
+                "attribute_values_discarded": True,
+                "parameter_names_discarded": True,
+                "parameter_values_discarded": True,
+                "browser_launched": False,
+                "script_executed": False,
                 "parameters_mutated": False,
                 "request_body_sent": False,
                 "exploit_executed": False,
@@ -1577,6 +1818,16 @@ async def run_tracked_controlled_validation_observation(
             if validator_analysis is None:
                 raise ControlledValidationObservationWorkflowError(
                     "Injection-surface analysis was not produced safely."
+                )
+        elif (
+            validation.action
+            is ControlledValidationAction
+            .BROWSER_ATTACK_SURFACE_VALIDATION
+        ):
+            validator_analysis = observation.browser_surface_analysis
+            if validator_analysis is None:
+                raise ControlledValidationObservationWorkflowError(
+                    "Browser-surface analysis was not produced safely."
                 )
 
         database.add_audit_event(

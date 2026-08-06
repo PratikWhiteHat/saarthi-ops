@@ -11,6 +11,10 @@ from saarthi_ai.controlled_validation.api_exposure import (
     ApiExposureValidationResult,
     analyze_api_exposure_surface,
 )
+from saarthi_ai.controlled_validation.browser_surface import (
+    BrowserSurfaceValidationResult,
+    analyze_browser_surface,
+)
 from saarthi_ai.controlled_validation.csrf_surface import (
     CsrfSurfaceValidationResult,
     analyze_csrf_surface,
@@ -70,6 +74,7 @@ class ControlledValidationObservationResult:
     injection_surface_analysis: (
         InjectionSurfaceValidationResult | None
     ) = None
+    browser_surface_analysis: BrowserSurfaceValidationResult | None = None
     error_type: str | None = None
     error: str | None = None
 
@@ -276,6 +281,24 @@ async def execute_bounded_observation(
                             request.validation.action
                             is ControlledValidationAction
                             .INJECTION_SURFACE_VALIDATION
+                        )
+                        else None
+                    ),
+                    browser_surface_analysis=(
+                        analyze_browser_surface(
+                            target_url=request.validation.target_url,
+                            status_code=response.status_code,
+                            content_type=response.headers.get(
+                                "content-type"
+                            ),
+                            headers=sanitize_headers(response.headers),
+                            body=body,
+                            body_truncated=truncated,
+                        )
+                        if (
+                            request.validation.action
+                            is ControlledValidationAction
+                            .BROWSER_ATTACK_SURFACE_VALIDATION
                         )
                         else None
                     ),

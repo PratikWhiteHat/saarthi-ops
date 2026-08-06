@@ -1127,6 +1127,87 @@ class ReadOnlySaarthiRepository:
                     metadata.get("exploit_executed"),
                     "false",
                 ),
+                "browser_attack_types_covered": (
+                    str(
+                        len(metadata.get("attack_types_covered", []))
+                    )
+                    if isinstance(
+                        metadata.get("attack_types_covered"),
+                        list,
+                    )
+                    else "0"
+                ),
+                "browser_observed_surfaces": (
+                    ", ".join(
+                        (
+                            f"{item.get('attack_type')}="
+                            f"{item.get('signal_count')}"
+                        )
+                        for item in metadata.get(
+                            "browser_observed_surfaces",
+                            [],
+                        )
+                        if isinstance(item, dict)
+                        and item.get("attack_type")
+                    )
+                    if isinstance(
+                        metadata.get("browser_observed_surfaces"),
+                        list,
+                    )
+                    else "—"
+                ),
+                "browser_form_count": display(
+                    metadata.get("browser_form_count"),
+                    "0",
+                ),
+                "form_control_count": display(
+                    metadata.get("form_control_count"),
+                    "0",
+                ),
+                "script_block_count": display(
+                    metadata.get("script_block_count"),
+                    "0",
+                ),
+                "cors_wildcard_origin": display(
+                    metadata.get("cors_wildcard_origin"),
+                    "false",
+                ),
+                "cors_credentials_allowed": display(
+                    metadata.get("cors_credentials_allowed"),
+                    "false",
+                ),
+                "postmessage_handler_observed": display(
+                    metadata.get("postmessage_handler_observed"),
+                    "false",
+                ),
+                "postmessage_origin_check_observed": display(
+                    metadata.get(
+                        "postmessage_origin_check_observed"
+                    ),
+                    "false",
+                ),
+                "websocket_usage_observed": display(
+                    metadata.get("websocket_usage_observed"),
+                    "false",
+                ),
+                "websocket_auth_signal_observed": display(
+                    metadata.get(
+                        "websocket_auth_signal_observed"
+                    ),
+                    "false",
+                ),
+                "source_text_discarded": display(
+                    metadata.get("source_text_discarded"),
+                    "false",
+                ),
+                "attribute_values_discarded": display(
+                    metadata.get("attribute_values_discarded"),
+                    "false",
+                ),
+                "script_executed": display(
+                    metadata.get("script_executed"),
+                    "false",
+                ),
                 "protection_sources": (
                     ", ".join(
                         item
@@ -2936,6 +3017,7 @@ TOOLS = [
     ("Saarthi 6A", "Attack Hypothesis Engine", "ENABLED"),
     ("Saarthi 6B", "Policy & Approval Gate", "APPROVAL"),
     ("Saarthi 6C.1", "Injection Surface Validator", "APPROVAL"),
+    ("Saarthi 6C.2", "Browser Attack Surface Validator", "APPROVAL"),
     ("Saarthi 6C.2", "Clickjacking Header Validator", "APPROVAL"),
     ("Saarthi 6C.2", "CSRF Protection Surface Validator", "APPROVAL"),
     ("Saarthi 6C.3", "HTTP Parameter Surface Validator", "APPROVAL"),
@@ -3371,6 +3453,71 @@ def build_scope_lines(
                         "Payload / Exploit  : "
                         f"{observation_value('payload_generated', max_length=12)} / "
                         f"{observation_value('exploit_executed', max_length=12)}"
+                    ),
+                ]
+            )
+        elif (
+            observation.get("validator_id")
+            == "6C.2-browser-attack-surface-analysis"
+        ):
+            scope_lines.extend(
+                [
+                    "",
+                    (
+                        "[bold cyan]6C.2 — BROWSER ATTACK SURFACE "
+                        "VALIDATION[/bold cyan]"
+                    ),
+                    (
+                        "Classification     : "
+                        f"{observation_value('validator_classification', max_length=40)}"
+                    ),
+                    (
+                        "Reason             : "
+                        f"{observation_value('validator_reason', max_length=120)}"
+                    ),
+                    (
+                        "Browser Coverage   : "
+                        f"{observation_value('browser_attack_types_covered', max_length=12)} types"
+                    ),
+                    (
+                        "Observed Surfaces  : "
+                        f"{observation_value('browser_observed_surfaces', max_length=120)}"
+                    ),
+                    (
+                        "Forms / Inputs / JS: "
+                        f"{observation_value('browser_form_count', max_length=10)} / "
+                        f"{observation_value('form_control_count', max_length=10)} / "
+                        f"{observation_value('script_block_count', max_length=10)}"
+                    ),
+                    (
+                        "postMessage / Origin: "
+                        f"{observation_value('postmessage_handler_observed', max_length=10)} / "
+                        f"{observation_value('postmessage_origin_check_observed', max_length=10)}"
+                    ),
+                    (
+                        "WebSocket / Auth   : "
+                        f"{observation_value('websocket_usage_observed', max_length=10)} / "
+                        f"{observation_value('websocket_auth_signal_observed', max_length=10)}"
+                    ),
+                    (
+                        "CORS Wildcard / Cred: "
+                        f"{observation_value('cors_wildcard_origin', max_length=10)} / "
+                        f"{observation_value('cors_credentials_allowed', max_length=10)}"
+                    ),
+                    (
+                        "Source / Attr Gone : "
+                        f"{observation_value('source_text_discarded', max_length=10)} / "
+                        f"{observation_value('attribute_values_discarded', max_length=10)}"
+                    ),
+                    (
+                        "Browser / Script   : "
+                        f"{observation_value('browser_launched', max_length=10)} / "
+                        f"{observation_value('script_executed', max_length=10)}"
+                    ),
+                    (
+                        "Payload / Exploit  : "
+                        f"{observation_value('payload_generated', max_length=10)} / "
+                        f"{observation_value('exploit_executed', max_length=10)}"
                     ),
                 ]
             )

@@ -5,6 +5,13 @@ from saarthi_ai.controlled_validation.api_exposure import (
     ApiExposureValidationResult,
     analyze_api_exposure_surface,
 )
+from saarthi_ai.controlled_validation.browser_surface import (
+    BROWSER_SURFACE_TYPES,
+    BrowserSurfaceClassification,
+    BrowserSurfaceSignal,
+    BrowserSurfaceValidationResult,
+    analyze_browser_surface,
+)
 from saarthi_ai.controlled_validation.clickjacking import (
     ClickjackingClassification,
     ClickjackingValidationResult,
@@ -80,6 +87,10 @@ __all__ = [
     "ALLOWED_METHODS",
     "ApiExposureClassification",
     "ApiExposureValidationResult",
+    "BROWSER_SURFACE_TYPES",
+    "BrowserSurfaceClassification",
+    "BrowserSurfaceSignal",
+    "BrowserSurfaceValidationResult",
     "DEFAULT_MAX_RESPONSE_BYTES",
     "DEFAULT_TIMEOUT_SECONDS",
     "DEFAULT_USER_AGENT",
@@ -121,6 +132,7 @@ __all__ = [
     "execute_bounded_observation",
     "analyze_clickjacking_protection",
     "analyze_api_exposure_surface",
+    "analyze_browser_surface",
     "analyze_csrf_surface",
     "analyze_injection_surface",
     "analyze_parameter_surface",

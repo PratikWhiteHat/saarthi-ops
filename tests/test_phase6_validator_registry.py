@@ -98,6 +98,26 @@ def test_all_non_command_injection_types_have_safe_surface_analysis() -> None:
     )
 
 
+def test_remaining_browser_types_have_safe_surface_analysis() -> None:
+    browser_items = list_phase6_validators("6C.2")
+
+    assert len(browser_items) == 13
+    assert sum(
+        item.status is ValidatorStatus.IMPLEMENTED
+        for item in browser_items
+    ) == 2
+    assert sum(
+        item.status is ValidatorStatus.PARTIAL
+        for item in browser_items
+    ) == 11
+    assert all(
+        item.implementation_action
+        == "browser_attack_surface_validation"
+        for item in browser_items
+        if item.status is ValidatorStatus.PARTIAL
+    )
+
+
 def test_module_summaries_are_deterministic() -> None:
     summaries = summarize_phase6_validator_modules()
 
@@ -123,6 +143,6 @@ def test_registry_builds_tui_module_rows() -> None:
     assert rows[0][0] == "Saarthi 6C.1"
     assert rows[1] == (
         "Saarthi 6C.2",
-        "Browser-Side Attacks (2 ready, 0 partial, 13 total)",
+        "Browser-Side Attacks (2 ready, 11 partial, 13 total)",
         "IN PROGRESS",
     )

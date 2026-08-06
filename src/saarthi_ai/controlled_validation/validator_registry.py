@@ -253,6 +253,25 @@ for _injection_name in _MODULES["6C.1"][1]:
         ),
     )
 
+for _browser_attack_name in _MODULES["6C.2"][1]:
+    if _browser_attack_name in {
+        "Clickjacking Validation",
+        "CSRF Validation",
+    }:
+        continue
+    _IMPLEMENTATION_OVERRIDES.setdefault(
+        ("6C.2", _browser_attack_name),
+        (
+            ValidatorStatus.PARTIAL,
+            ValidationLevel.L1_SAFE_DETECTION,
+            "browser_attack_surface_validation",
+            (
+                "Non-executing browser-surface analysis is available; "
+                "no script, browser, or payload is executed."
+            ),
+        ),
+    )
+
 _AUTHENTICATED_MODULES = frozenset({"6C.4", "6C.5"})
 _AUTHENTICATED_API_VALIDATORS = frozenset(
     {

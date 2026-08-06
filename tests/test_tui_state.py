@@ -3058,6 +3058,63 @@ def test_scope_lines_render_injection_surface_summary() -> None:
     assert "Payload / Exploit  : false / false" in rendered
 
 
+def test_scope_lines_render_browser_surface_summary() -> None:
+    from dataclasses import replace
+
+    from saarthi_ai.tui.app import (
+        build_scope_lines,
+        demo_snapshot,
+    )
+
+    snapshot = replace(
+        demo_snapshot(),
+        attack_hypothesis_set=None,
+        controlled_validation_plan=None,
+        controlled_observation={
+            "evidence_id": "evidence-browser-surface",
+            "target_url": "https://example.com/page?redirect=/home",
+            "action": "browser_attack_surface_validation",
+            "method": "GET",
+            "status_code": "200",
+            "validator_id": "6C.2-browser-attack-surface-analysis",
+            "validator_classification": "review_recommended",
+            "validator_reason": "Browser surfaces require review.",
+            "browser_attack_types_covered": "11",
+            "browser_observed_surfaces": (
+                "DOM-Based XSS=1, CORS Exploitation=2"
+            ),
+            "browser_form_count": "1",
+            "form_control_count": "2",
+            "script_block_count": "1",
+            "postmessage_handler_observed": "true",
+            "postmessage_origin_check_observed": "true",
+            "websocket_usage_observed": "true",
+            "websocket_auth_signal_observed": "false",
+            "cors_wildcard_origin": "true",
+            "cors_credentials_allowed": "false",
+            "source_text_discarded": "true",
+            "attribute_values_discarded": "true",
+            "browser_launched": "false",
+            "script_executed": "false",
+            "payload_generated": "false",
+            "exploit_executed": "false",
+        },
+    )
+
+    rendered = "\n".join(build_scope_lines(snapshot))
+
+    assert "6C.2 — BROWSER ATTACK SURFACE VALIDATION" in rendered
+    assert "Browser Coverage   : 11 types" in rendered
+    assert "DOM-Based XSS=1" in rendered
+    assert "Forms / Inputs / JS: 1 / 2 / 1" in rendered
+    assert "postMessage / Origin: true / true" in rendered
+    assert "WebSocket / Auth   : true / false" in rendered
+    assert "CORS Wildcard / Cred: true / false" in rendered
+    assert "Source / Attr Gone : true / true" in rendered
+    assert "Browser / Script   : false / false" in rendered
+    assert "Payload / Exploit  : false / false" in rendered
+
+
 def test_scope_lines_render_upload_surface_summary() -> None:
     from dataclasses import replace
 
@@ -3131,6 +3188,16 @@ def test_injection_surface_validator_tool_row_requires_approval() -> None:
     assert (
         "Saarthi 6C.1",
         "Injection Surface Validator",
+        "APPROVAL",
+    ) in TOOLS
+
+
+def test_browser_surface_validator_tool_row_requires_approval() -> None:
+    from saarthi_ai.tui.app import TOOLS
+
+    assert (
+        "Saarthi 6C.2",
+        "Browser Attack Surface Validator",
         "APPROVAL",
     ) in TOOLS
 

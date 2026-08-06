@@ -139,6 +139,20 @@ def test_injection_surface_validation_is_low_risk() -> None:
     assert result.risk is ControlledValidationRisk.LOW
 
 
+def test_browser_attack_surface_validation_is_low_risk() -> None:
+    result = evaluate_controlled_validation(
+        make_request(
+            action=(
+                ControlledValidationAction
+                .BROWSER_ATTACK_SURFACE_VALIDATION
+            )
+        )
+    )
+
+    assert result.decision is ControlledValidationDecision.ALLOW
+    assert result.risk is ControlledValidationRisk.LOW
+
+
 def test_authorization_is_required() -> None:
     result = evaluate_controlled_validation(
         make_request(authorized=False)

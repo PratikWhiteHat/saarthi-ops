@@ -160,6 +160,41 @@ async def test_injection_surface_analysis_uses_one_unmodified_get() -> None:
 
 
 @pytest.mark.asyncio
+async def test_browser_surface_analysis_never_launches_browser_or_script() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            200,
+            headers={
+                "Content-Type": "text/html",
+                "Access-Control-Allow-Origin": "*",
+            },
+            content=b"<script>window.location = destination;</script>",
+            request=request,
+        )
+
+    result = await execute_bounded_observation(
+        make_request(
+            action=(
+                ControlledValidationAction
+                .BROWSER_ATTACK_SURFACE_VALIDATION
+            )
+        ),
+        transport=httpx.MockTransport(handler),
+    )
+
+    assert len(requests) == 1
+    assert requests[0].method == "GET"
+    assert requests[0].content == b""
+    assert result.browser_surface_analysis is not None
+    assert result.browser_surface_analysis.browser_launched is False
+    assert result.browser_surface_analysis.script_executed is False
+    assert result.browser_surface_analysis.payload_generated is False
+
+
+@pytest.mark.asyncio
 async def test_sensitive_response_headers_are_redacted() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
