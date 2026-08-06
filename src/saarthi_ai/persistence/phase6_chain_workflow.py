@@ -44,11 +44,16 @@ from saarthi_ai.persistence.controlled_validation_workflow import (
     create_tracked_controlled_validation_plan,
 )
 from saarthi_ai.persistence.database import SaarthiDatabase
-from saarthi_ai.persistence.models import AuditEventType, ExecutionState
+from saarthi_ai.persistence.models import (
+    AuditEventType,
+    EvidenceType,
+    ExecutionState,
+)
 from saarthi_ai.persistence.nuclei_execution_verification import (
     NucleiExecutionVerificationRequest,
 )
 from saarthi_ai.persistence.nuclei_execution_workflow import (
+    NucleiExecutionWorkflowError,
     run_tracked_nuclei_execution,
 )
 from saarthi_ai.persistence.nuclei_preparation_workflow import (
@@ -298,36 +303,85 @@ async def run_phase6_safe_chain(
                 actor=actor,
                 evidence_root=evidence_root / "nuclei-preparation",
             )
-            execution = run_tracked_nuclei_execution(
-                database,
-                child.execution_id,
-                NucleiExecutionVerificationRequest(
-                    target_url=preparation.plan.target_url,
-                    arguments=preparation.plan.arguments,
-                    authorization_confirmed=True,
-                    active_testing_allowed=True,
-                    explicitly_approved=True,
-                ),
-                runner=nuclei_runner or run_tool,
-                actor=actor,
-                evidence_root=evidence_root / "nuclei-execution",
-            )
-            results.append(
-                OrchestrationPhaseResult(
-                    phase=OrchestrationPhase.NUCLEI,
-                    execution_id=child.execution_id,
-                    evidence_id=execution.evidence.evidence_id,
-                    evidence_path=execution.evidence.path,
-                    metrics={
-                        "executed": True,
-                        "network_activity": True,
-                        "exit_code": execution.result.exit_code,
-                    },
-                    reason=(
-                        "Approved conservative Nuclei profile executed."
+            try:
+                execution = run_tracked_nuclei_execution(
+                    database,
+                    child.execution_id,
+                    NucleiExecutionVerificationRequest(
+                        target_url=preparation.plan.target_url,
+                        arguments=preparation.plan.arguments,
+                        authorization_confirmed=True,
+                        active_testing_allowed=True,
+                        explicitly_approved=True,
+                    ),
+                    runner=nuclei_runner or run_tool,
+                    actor=actor,
+                    evidence_root=evidence_root / "nuclei-execution",
+                )
+            except NucleiExecutionWorkflowError as exc:
+                execution_evidence = database.list_evidence(
+                    child.execution_id,
+                    evidence_type=(
+                        EvidenceType.CONTROLLED_NUCLEI_EXECUTION
                     ),
                 )
-            )
+                latest_evidence = (
+                    execution_evidence[-1]
+                    if execution_evidence
+                    else None
+                )
+                results.append(
+                    OrchestrationPhaseResult(
+                        phase=OrchestrationPhase.NUCLEI,
+                        outcome=OrchestrationPhaseOutcome.FAILED,
+                        required=False,
+                        execution_id=child.execution_id,
+                        evidence_id=(
+                            latest_evidence.evidence_id
+                            if latest_evidence is not None
+                            else None
+                        ),
+                        evidence_path=(
+                            latest_evidence.path
+                            if latest_evidence is not None
+                            else None
+                        ),
+                        metrics={
+                            "executed": True,
+                            "network_activity": True,
+                            "timed_out": bool(
+                                latest_evidence is not None
+                                and latest_evidence.metadata.get(
+                                    "timed_out"
+                                )
+                            ),
+                            "continued_after_failure": True,
+                        },
+                        reason=(
+                            "Optional bounded Nuclei execution failed "
+                            "safely; Phase 6C continued."
+                        ),
+                        error_summary=str(exc),
+                    )
+                )
+            else:
+                results.append(
+                    OrchestrationPhaseResult(
+                        phase=OrchestrationPhase.NUCLEI,
+                        execution_id=child.execution_id,
+                        evidence_id=execution.evidence.evidence_id,
+                        evidence_path=execution.evidence.path,
+                        metrics={
+                            "executed": True,
+                            "network_activity": True,
+                            "exit_code": execution.result.exit_code,
+                        },
+                        reason=(
+                            "Approved conservative Nuclei profile "
+                            "executed."
+                        ),
+                    )
+                )
         else:
             results.append(
                 OrchestrationPhaseResult(

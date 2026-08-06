@@ -352,7 +352,13 @@ class ReadOnlySaarthiRepository:
             None,
         )
         if controlled_nuclei_execution is not None:
-            phase6_chain_status["nuclei"] = "EXECUTED"
+            if (
+                controlled_nuclei_execution.get("timed_out")
+                == "true"
+            ):
+                phase6_chain_status["nuclei"] = "TIMED OUT"
+            elif phase6_chain_status.get("nuclei") != "FAILED":
+                phase6_chain_status["nuclei"] = "EXECUTED"
 
         controlled_nuclei_preparation = (
             self._load_controlled_nuclei_preparation(
@@ -3136,6 +3142,8 @@ def current_phase_for_dashboard(
             "ANALYZING",
             "PREVIEW READY",
             "EXECUTED",
+            "FAILED",
+            "TIMED OUT",
         }
         or phase6_chain_status.get("sqlmap")
         in {

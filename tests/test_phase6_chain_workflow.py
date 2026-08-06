@@ -305,3 +305,83 @@ async def test_nuclei_execution_requires_distinct_approval_and_is_bounded(
     assert snapshot.current_phase == (
         "6C — LOW-RISK ATTACK VALIDATORS"
     )
+
+
+@pytest.mark.asyncio
+async def test_nuclei_timeout_is_optional_and_chain_continues(
+    database: SaarthiDatabase,
+    tmp_path: Path,
+) -> None:
+    def http_handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text="<html></html>")
+
+    def timed_out_runner(profile, arguments, *, on_output=None):
+        argument_tuple = tuple(arguments)
+        return ToolRunResult(
+            tool_name=profile.name,
+            executable="/test/bin/nuclei",
+            arguments=argument_tuple,
+            exit_code=-1,
+            stdout="partial bounded output\n",
+            stderr="process timeout\n",
+            stdout_sha256=hashlib.sha256(
+                b"partial bounded output\n"
+            ).hexdigest(),
+            stderr_sha256=hashlib.sha256(
+                b"process timeout\n"
+            ).hexdigest(),
+            timed_out=True,
+        )
+
+    context = create_orchestration(
+        database,
+        assessment_name="Nuclei Timeout Continuation",
+        target_url="https://example.com/?id=1",
+        active_testing_allowed=True,
+        intrusive_testing_allowed=True,
+    )
+
+    result = await run_phase6_safe_chain(
+        database,
+        context,
+        evidence_root=tmp_path / "evidence",
+        explicitly_approved=True,
+        nuclei_preview_approved=True,
+        nuclei_execute_approved=True,
+        sqlmap_preview_approved=True,
+        transport=httpx.MockTransport(http_handler),
+        nuclei_runner=timed_out_runner,
+    )
+
+    nuclei = next(
+        item
+        for item in result.phase_results
+        if item.phase is OrchestrationPhase.NUCLEI
+    )
+    sqlmap = next(
+        item
+        for item in result.phase_results
+        if item.phase is OrchestrationPhase.SQLMAP_PREVIEW
+    )
+    validators = [
+        item
+        for item in result.phase_results
+        if item.phase is OrchestrationPhase.SAFE_VALIDATOR
+    ]
+
+    assert nuclei.failed is True
+    assert nuclei.required is False
+    assert nuclei.metrics["timed_out"] is True
+    assert nuclei.metrics["continued_after_failure"] is True
+    assert nuclei.evidence_id is not None
+    assert sqlmap.metrics["status"] == "awaiting_external_result"
+    assert len(validators) == len(SAFE_VALIDATOR_ACTIONS)
+    assert all(item.completed for item in validators)
+    assert result.calculated_status.value == "partial"
+
+    snapshot = ReadOnlySaarthiRepository(
+        database.database_path
+    ).load()
+    assert snapshot.phase6_chain_status["nuclei"] == "TIMED OUT"
+    assert snapshot.phase6_chain_status["sqlmap"] == "AWAITING RESULT"
+    assert snapshot.phase6_chain_status["validator_completed"] == "9"
