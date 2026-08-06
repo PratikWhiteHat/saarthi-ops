@@ -1586,7 +1586,7 @@ def test_scope_lines_without_controlled_evidence_remain_normal() -> None:
     assert "CONTROLLED NUCLEI PREVIEW" not in rendered
 
 
-def test_nuclei_tool_row_is_dry_run_only() -> None:
+def test_nuclei_tool_row_requires_approval() -> None:
     from saarthi_ai.tui.app import TOOLS
 
     nuclei_rows = [
@@ -1598,8 +1598,8 @@ def test_nuclei_tool_row_is_dry_run_only() -> None:
     assert nuclei_rows == [
         (
             "nuclei",
-            "Controlled Invocation Preview",
-            "DRY-RUN",
+            "Controlled Preview / Execution",
+            "APPROVAL",
         )
     ]
 
@@ -2100,3 +2100,218 @@ def test_nuclei_preparation_rendering_escapes_and_redacts() -> None:
     assert "super-secret" not in rendered
     assert "[REDACTED]" in rendered
     assert "x" * 121 not in rendered
+
+
+def test_completed_nuclei_execution_maps_to_official_phase_6c() -> None:
+    assert (
+        infer_phase(
+            "completed",
+            {"controlled_nuclei_execution"},
+        )
+        == "6C — CONTROLLED NUCLEI EXECUTION"
+    )
+    assert (
+        infer_phase_short(
+            "completed",
+            {"controlled_nuclei_execution"},
+        )
+        == "6C"
+    )
+
+
+def test_failed_nuclei_execution_maps_to_phase_6c_review() -> None:
+    assert (
+        infer_phase(
+            "failed",
+            {"controlled_nuclei_execution"},
+        )
+        == "6C — CONTROLLED NUCLEI REVIEW"
+    )
+
+
+def test_loads_safe_controlled_nuclei_execution() -> None:
+    import json
+    import sqlite3
+
+    from saarthi_ai.tui.app import ReadOnlySaarthiRepository
+
+    connection = sqlite3.connect(":memory:")
+    connection.row_factory = sqlite3.Row
+    connection.execute(
+        """
+        CREATE TABLE evidence (
+            evidence_id TEXT PRIMARY KEY,
+            execution_id TEXT NOT NULL,
+            evidence_type TEXT NOT NULL,
+            sha256 TEXT,
+            metadata_json TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        )
+        """
+    )
+    connection.execute(
+        """
+        INSERT INTO evidence (
+            evidence_id,
+            execution_id,
+            evidence_type,
+            sha256,
+            metadata_json,
+            created_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (
+            "evidence-nuclei-execution",
+            "execution-test",
+            "controlled_nuclei_execution",
+            "c" * 64,
+            json.dumps(
+                {
+                    "phase": "6C",
+                    "preparation_evidence_id": (
+                        "evidence-nuclei-preparation"
+                    ),
+                    "target_url": "https://example.com/",
+                    "executable": "/opt/homebrew/bin/nuclei",
+                    "arguments": [
+                        "-u",
+                        "https://example.com/",
+                        "-retries",
+                        "0",
+                    ],
+                    "exit_code": 0,
+                    "timed_out": False,
+                    "stdout_bytes": 128,
+                    "stderr_bytes": 0,
+                    "stdout_truncated": False,
+                    "stderr_truncated": False,
+                    "started_at": "2026-08-06T08:00:00+00:00",
+                    "completed_at": "2026-08-06T08:00:02+00:00",
+                    "executed": True,
+                    "network_activity": True,
+                    "subprocess_started": True,
+                    "runner_invoked": True,
+                    "executable_resolved": True,
+                    "automatic_retry": False,
+                }
+            ),
+            "2026-08-06T08:00:03+00:00",
+        ),
+    )
+
+    repository = ReadOnlySaarthiRepository()
+    execution = repository._load_controlled_nuclei_execution(
+        connection,
+        {"evidence"},
+        "execution-test",
+    )
+
+    assert execution is not None
+    assert execution["evidence_id"] == "evidence-nuclei-execution"
+    assert execution["evidence_sha256"] == "c" * 64
+    assert (
+        execution["preparation_evidence_id"]
+        == "evidence-nuclei-preparation"
+    )
+    assert execution["tool_name"] == "nuclei"
+    assert execution["target_url"] == "https://example.com/"
+    assert execution["executable"] == "/opt/homebrew/bin/nuclei"
+    assert execution["arguments"].endswith("-retries 0")
+    assert execution["exit_code"] == "0"
+    assert execution["timed_out"] == "false"
+    assert execution["stdout_bytes"] == "128"
+    assert execution["stderr_bytes"] == "0"
+    assert execution["executed"] == "true"
+    assert execution["network_activity"] == "true"
+    assert execution["subprocess_started"] == "true"
+    assert execution["runner_invoked"] == "true"
+    assert execution["executable_resolved"] == "true"
+    assert execution["automatic_retry"] == "false"
+
+
+def test_scope_lines_render_controlled_nuclei_execution() -> None:
+    from dataclasses import replace
+
+    from saarthi_ai.tui.app import (
+        build_scope_lines,
+        demo_snapshot,
+    )
+
+    snapshot = replace(
+        demo_snapshot(),
+        current_phase="6C — CONTROLLED NUCLEI EXECUTION",
+        execution_state="completed",
+        controlled_nuclei_execution={
+            "evidence_id": "evidence-nuclei-execution",
+            "evidence_sha256": "c" * 64,
+            "preparation_evidence_id": (
+                "evidence-nuclei-preparation"
+            ),
+            "tool_name": "nuclei",
+            "target_url": "https://example.com/",
+            "executable": "/opt/homebrew/bin/nuclei",
+            "arguments": "-u https://example.com/ -retries 0",
+            "exit_code": "0",
+            "timed_out": "false",
+            "stdout_bytes": "128",
+            "stderr_bytes": "0",
+            "stdout_truncated": "false",
+            "stderr_truncated": "false",
+            "started_at": "2026-08-06T08:00:00+00:00",
+            "completed_at": "2026-08-06T08:00:02+00:00",
+            "executed": "true",
+            "network_activity": "true",
+            "subprocess_started": "true",
+            "runner_invoked": "true",
+            "executable_resolved": "true",
+            "automatic_retry": "false",
+        },
+    )
+
+    rendered = "\n".join(build_scope_lines(snapshot))
+
+    assert "CONTROLLED NUCLEI EXECUTION" in rendered
+    assert "evidence-nuclei-execution" in rendered
+    assert "evidence-nuclei-preparation" in rendered
+    assert "nuclei · https://example.com/" in rendered
+    assert "/opt/homebrew/bin/nuclei" in rendered
+    assert "Exit / Timed Out   : 0 · false" in rendered
+    assert "Output Bytes       : stdout 128 · stderr 0" in rendered
+    assert "Executed           : true" in rendered
+    assert "Network Activity   : true" in rendered
+    assert "Subprocess Started : true" in rendered
+    assert "Runner Invoked     : true" in rendered
+    assert "Executable Resolved: true" in rendered
+    assert "Automatic Retry    : false" in rendered
+    assert "Read-only Phase 6C execution evidence" in rendered
+
+
+def test_nuclei_execution_has_priority_over_preparation() -> None:
+    from dataclasses import replace
+
+    from saarthi_ai.tui.app import (
+        build_scope_lines,
+        demo_snapshot,
+    )
+
+    snapshot = replace(
+        demo_snapshot(),
+        controlled_nuclei_execution={
+            "evidence_id": "evidence-nuclei-execution",
+            "tool_name": "nuclei",
+            "target_url": "https://example.com/",
+        },
+        controlled_nuclei_preparation={
+            "evidence_id": "evidence-nuclei-preparation",
+            "tool_name": "nuclei",
+            "target_url": "https://example.com/",
+        },
+    )
+
+    rendered = "\n".join(build_scope_lines(snapshot))
+
+    assert "CONTROLLED NUCLEI EXECUTION" in rendered
+    assert "evidence-nuclei-execution" in rendered
+    assert "CONTROLLED NUCLEI PREPARATION" not in rendered
+    assert "evidence-nuclei-preparation" not in rendered

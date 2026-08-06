@@ -37,6 +37,7 @@ class DashboardSnapshot:
     outcome_counts: dict[str, int] = field(default_factory=dict)
     optional_failure_summary: str | None = None
     controlled_observation: dict[str, str] | None = None
+    controlled_nuclei_execution: dict[str, str] | None = None
     controlled_nuclei_preparation: dict[str, str] | None = None
     controlled_nuclei_preview: dict[str, str] | None = None
 
@@ -251,6 +252,14 @@ class ReadOnlySaarthiRepository:
             )
             controlled_observation.update(reuse)
 
+        controlled_nuclei_execution = (
+            self._load_controlled_nuclei_execution(
+                connection,
+                tables,
+                execution_id,
+            )
+        )
+
         controlled_nuclei_preparation = (
             self._load_controlled_nuclei_preparation(
                 connection,
@@ -314,6 +323,7 @@ class ReadOnlySaarthiRepository:
             outcome_counts=outcome_counts,
             optional_failure_summary=optional_failure_summary,
             controlled_observation=controlled_observation,
+            controlled_nuclei_execution=controlled_nuclei_execution,
             controlled_nuclei_preparation=(
                 controlled_nuclei_preparation
             ),
@@ -616,6 +626,183 @@ class ReadOnlySaarthiRepository:
             }
 
         return defaults
+
+    def _load_controlled_nuclei_execution(
+        self,
+        connection: sqlite3.Connection,
+        tables: set[str],
+        execution_id: str,
+    ) -> dict[str, str] | None:
+        """Load the newest valid controlled Nuclei execution summary."""
+
+        table = next(
+            (
+                name
+                for name in ("evidence", "evidence_items")
+                if name in tables
+            ),
+            None,
+        )
+
+        if table is None:
+            return None
+
+        columns = self._columns(connection, table)
+        execution_column = self._pick(
+            columns,
+            "execution_id",
+            "execution",
+        )
+        type_column = self._pick(
+            columns,
+            "evidence_type",
+            "type",
+            "kind",
+        )
+        evidence_id_column = self._pick(
+            columns,
+            "evidence_id",
+            "id",
+        )
+        sha256_column = self._pick(columns, "sha256")
+        metadata_column = self._pick(
+            columns,
+            "metadata_json",
+            "metadata",
+        )
+        created_column = self._pick(
+            columns,
+            "created_at",
+            "timestamp",
+        )
+
+        if (
+            execution_column is None
+            or type_column is None
+            or metadata_column is None
+        ):
+            return None
+
+        order_sql = (
+            f'ORDER BY "{created_column}" DESC'
+            if created_column
+            else ""
+        )
+
+        rows = connection.execute(
+            f"""
+            SELECT *
+            FROM "{table}"
+            WHERE "{execution_column}" = ?
+              AND LOWER("{type_column}") = ?
+            {order_sql}
+            LIMIT 50
+            """,
+            (
+                execution_id,
+                "controlled_nuclei_execution",
+            ),
+        ).fetchall()
+
+        def display(value: Any, default: str = "—") -> str:
+            if value is None:
+                return default
+
+            if isinstance(value, bool):
+                return str(value).lower()
+
+            if isinstance(value, int) and not isinstance(value, bool):
+                return str(value)
+
+            if isinstance(value, str):
+                return value
+
+            return default
+
+        for row in rows:
+            try:
+                metadata = json.loads(str(row[metadata_column]))
+            except (
+                json.JSONDecodeError,
+                TypeError,
+                ValueError,
+            ):
+                continue
+
+            if not isinstance(metadata, dict):
+                continue
+
+            arguments = metadata.get("arguments")
+
+            if isinstance(arguments, list) and all(
+                isinstance(item, str) for item in arguments
+            ):
+                argument_summary = " ".join(arguments)
+            else:
+                argument_summary = "—"
+
+            return {
+                "evidence_id": (
+                    display(row[evidence_id_column])
+                    if evidence_id_column
+                    else "—"
+                ),
+                "evidence_sha256": (
+                    display(row[sha256_column])
+                    if sha256_column
+                    else "—"
+                ),
+                "preparation_evidence_id": display(
+                    metadata.get("preparation_evidence_id")
+                ),
+                "tool_name": "nuclei",
+                "target_url": display(metadata.get("target_url")),
+                "executable": display(metadata.get("executable")),
+                "arguments": argument_summary,
+                "exit_code": display(metadata.get("exit_code")),
+                "timed_out": display(
+                    metadata.get("timed_out"),
+                    "false",
+                ),
+                "stdout_bytes": display(metadata.get("stdout_bytes")),
+                "stderr_bytes": display(metadata.get("stderr_bytes")),
+                "stdout_truncated": display(
+                    metadata.get("stdout_truncated"),
+                    "false",
+                ),
+                "stderr_truncated": display(
+                    metadata.get("stderr_truncated"),
+                    "false",
+                ),
+                "started_at": display(metadata.get("started_at")),
+                "completed_at": display(metadata.get("completed_at")),
+                "executed": display(
+                    metadata.get("executed"),
+                    "false",
+                ),
+                "network_activity": display(
+                    metadata.get("network_activity"),
+                    "false",
+                ),
+                "subprocess_started": display(
+                    metadata.get("subprocess_started"),
+                    "false",
+                ),
+                "runner_invoked": display(
+                    metadata.get("runner_invoked"),
+                    "false",
+                ),
+                "executable_resolved": display(
+                    metadata.get("executable_resolved"),
+                    "false",
+                ),
+                "automatic_retry": display(
+                    metadata.get("automatic_retry"),
+                    "false",
+                ),
+            }
+
+        return None
 
     def _load_controlled_nuclei_preparation(
         self,
@@ -1764,6 +1951,11 @@ def infer_phase(
 
     if normalized == "completed":
         if (
+            "controlled_nuclei_execution"
+            in normalized_evidence
+        ):
+            return "6C — CONTROLLED NUCLEI EXECUTION"
+        if (
             "controlled_validation_observation"
             in normalized_evidence
         ):
@@ -1791,6 +1983,11 @@ def infer_phase(
         return "3B — SUBDOMAIN ENUMERATION"
 
     if normalized in {"running", "analyzing"}:
+        if (
+            "controlled_nuclei_execution"
+            in normalized_evidence
+        ):
+            return "6C — CONTROLLED NUCLEI EXECUTION"
         if (
             "controlled_validation_observation"
             in normalized_evidence
@@ -1830,6 +2027,11 @@ def infer_phase(
 
     if normalized == "failed":
         if (
+            "controlled_nuclei_execution"
+            in normalized_evidence
+        ):
+            return "6C — CONTROLLED NUCLEI REVIEW"
+        if (
             "controlled_validation_observation"
             in normalized_evidence
         ):
@@ -1847,6 +2049,8 @@ def infer_phase_short(
 
     phase = infer_phase(state, evidence_types)
 
+    if phase.startswith("6C"):
+        return "6C"
     if phase.startswith("6J"):
         return "6J"
     if phase.startswith("6I"):
@@ -2033,7 +2237,7 @@ TOOLS = [
     ("crt.sh", "Certificate Transparency", "ENABLED"),
     ("httpx", "Live Host & Service Probe", "ENABLED"),
     ("katana", "Web Crawler", "ENABLED"),
-    ("nuclei", "Controlled Invocation Preview", "DRY-RUN"),
+    ("nuclei", "Controlled Preview / Execution", "APPROVAL"),
     ("sqlmap", "SQL Injection Testing", "PHASE 4A"),
     ("ghauri", "Blind SQLi Cross-check", "PHASE 4B"),
     ("Saarthi JS", "JavaScript Intelligence", "ENABLED"),
@@ -2172,6 +2376,109 @@ def build_scope_lines(
                 "disabled. Review the audit log and create a new "
                 "approved execution before another observation."
                 "[/yellow]"
+            )
+
+    elif snapshot.controlled_nuclei_execution:
+        execution = snapshot.controlled_nuclei_execution
+
+        def nuclei_execution_value(
+            key: str,
+            *,
+            max_length: int = 96,
+        ) -> str:
+            return safe_tui_display(
+                execution.get(key),
+                max_length=max_length,
+            )
+
+        scope_lines.extend(
+            [
+                "",
+                "[bold cyan]CONTROLLED NUCLEI EXECUTION[/bold cyan]",
+                (
+                    "Evidence ID        : "
+                    f"{nuclei_execution_value('evidence_id', max_length=72)}"
+                ),
+                (
+                    "Preparation        : "
+                    f"{nuclei_execution_value('preparation_evidence_id', max_length=72)}"
+                ),
+                (
+                    "Tool / Target      : "
+                    f"{nuclei_execution_value('tool_name', max_length=20)} · "
+                    f"{nuclei_execution_value('target_url', max_length=88)}"
+                ),
+                (
+                    "Executable         : "
+                    f"{nuclei_execution_value('executable', max_length=88)}"
+                ),
+                (
+                    "Arguments          : "
+                    f"{nuclei_execution_value('arguments', max_length=120)}"
+                ),
+                (
+                    "Exit / Timed Out   : "
+                    f"{nuclei_execution_value('exit_code', max_length=12)} · "
+                    f"{nuclei_execution_value('timed_out', max_length=12)}"
+                ),
+                (
+                    "Output Bytes       : stdout "
+                    f"{nuclei_execution_value('stdout_bytes', max_length=20)} · stderr "
+                    f"{nuclei_execution_value('stderr_bytes', max_length=20)}"
+                ),
+                (
+                    "Output Truncated   : stdout "
+                    f"{nuclei_execution_value('stdout_truncated', max_length=12)} · stderr "
+                    f"{nuclei_execution_value('stderr_truncated', max_length=12)}"
+                ),
+                (
+                    "Started            : "
+                    f"{nuclei_execution_value('started_at', max_length=40)}"
+                ),
+                (
+                    "Completed          : "
+                    f"{nuclei_execution_value('completed_at', max_length=40)}"
+                ),
+                (
+                    "Executed           : "
+                    f"{nuclei_execution_value('executed', max_length=12)}"
+                ),
+                (
+                    "Network Activity   : "
+                    f"{nuclei_execution_value('network_activity', max_length=12)}"
+                ),
+                (
+                    "Subprocess Started : "
+                    f"{nuclei_execution_value('subprocess_started', max_length=12)}"
+                ),
+                (
+                    "Runner Invoked     : "
+                    f"{nuclei_execution_value('runner_invoked', max_length=12)}"
+                ),
+                (
+                    "Executable Resolved: "
+                    f"{nuclei_execution_value('executable_resolved', max_length=12)}"
+                ),
+                (
+                    "Automatic Retry    : "
+                    f"{nuclei_execution_value('automatic_retry', max_length=12)}"
+                ),
+                (
+                    "Evidence SHA-256   : "
+                    f"{nuclei_execution_value('evidence_sha256', max_length=72)}"
+                ),
+                (
+                    "[dim]Read-only Phase 6C execution evidence. "
+                    "Automatic retry remains disabled.[/dim]"
+                ),
+            ]
+        )
+
+        if snapshot.execution_state.lower() == "failed":
+            scope_lines.append(
+                "[yellow]Failure Guidance   : Review the bounded stdout, "
+                "stderr, and audit trail before creating a new approved "
+                "execution. Automatic retry is disabled.[/yellow]"
             )
 
     elif snapshot.controlled_nuclei_preparation:
