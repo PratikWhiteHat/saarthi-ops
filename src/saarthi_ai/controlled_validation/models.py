@@ -48,6 +48,9 @@ class ControlledValidationAction(StrEnum):
     API_DATA_EXPOSURE_SURFACE_VALIDATION = (
         "api_data_exposure_surface_validation"
     )
+    FILE_UPLOAD_SURFACE_VALIDATION = (
+        "file_upload_surface_validation"
+    )
     AUTHORIZATION_BOUNDARY = "authorization_boundary"
     STATE_CHANGE_VALIDATION = "state_change_validation"
     FILE_PROCESSING_VALIDATION = "file_processing_validation"

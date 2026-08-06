@@ -609,6 +609,144 @@ async def test_api_exposure_reuse_sends_no_second_request(
 
 
 @pytest.mark.asyncio
+async def test_upload_surface_persists_only_aggregate_metadata(
+    database: SaarthiDatabase,
+    tmp_path: Path,
+) -> None:
+    execution_id = create_execution(database)
+    request = make_request(
+        execution_id,
+        action=(
+            ControlledValidationAction
+            .FILE_UPLOAD_SURFACE_VALIDATION
+        ),
+    )
+    create_tracked_controlled_validation_plan(
+        database,
+        request.validation,
+        evidence_root=tmp_path / "plans",
+    )
+    field_name = "private_document_upload"
+    field_value = "/local/private/document.pdf"
+    action = "/internal/private-upload-handler"
+    captured: list[httpx.Request] = []
+
+    def handler(request_object: httpx.Request) -> httpx.Response:
+        captured.append(request_object)
+        return httpx.Response(
+            200,
+            headers={"Content-Type": "text/html"},
+            content=(
+                f"<form method='post' action='{action}' "
+                "enctype='multipart/form-data'>"
+                f"<input type='file' name='{field_name}' "
+                f"value='{field_value}' accept='.pdf'>"
+                "</form>"
+            ),
+            request=request_object,
+        )
+
+    result = await run_tracked_controlled_validation_observation(
+        database,
+        request,
+        transport=httpx.MockTransport(handler),
+        evidence_root=tmp_path / "observations",
+    )
+
+    assert len(captured) == 1
+    assert captured[0].method == "GET"
+    assert captured[0].content == b""
+    assert result.validator_analysis is not None
+    assert (
+        result.validator_analysis.validator_id
+        == "6C.5-file-upload-surface-validation"
+    )
+    assert result.validator_analysis.upload_form_count == 1
+    assert result.validator_analysis.file_input_count == 1
+    assert result.validator_analysis.file_uploaded is False
+    assert result.validator_analysis.form_submitted is False
+    assert result.validator_analysis.request_body_sent is False
+
+    evidence_text = Path(result.evidence.path).read_text()
+    metadata_text = json.dumps(result.evidence.metadata)
+    for discarded in (
+        field_name,
+        field_value,
+        action,
+        ".pdf",
+    ):
+        assert discarded not in evidence_text
+        assert discarded not in metadata_text
+
+    payload = json.loads(evidence_text)
+    analysis = payload["validator_analysis"]
+    assert analysis["upload_form_count"] == 1
+    assert analysis["file_input_count"] == 1
+    assert analysis["field_names_discarded"] is True
+    assert analysis["field_values_discarded"] is True
+    assert analysis["form_actions_discarded"] is True
+    assert analysis["file_uploaded"] is False
+    assert analysis["form_submitted"] is False
+    assert analysis["request_body_sent"] is False
+    assert analysis["payload_generated"] is False
+    assert "body" not in payload["response"]
+
+
+@pytest.mark.asyncio
+async def test_upload_surface_reuse_sends_no_second_request(
+    database: SaarthiDatabase,
+    tmp_path: Path,
+) -> None:
+    execution_id = create_execution(database)
+    request = make_request(
+        execution_id,
+        action=(
+            ControlledValidationAction
+            .FILE_UPLOAD_SURFACE_VALIDATION
+        ),
+    )
+    create_tracked_controlled_validation_plan(
+        database,
+        request.validation,
+        evidence_root=tmp_path / "plans",
+    )
+    request_count = 0
+
+    def handler(request_object: httpx.Request) -> httpx.Response:
+        nonlocal request_count
+        request_count += 1
+        return httpx.Response(
+            200,
+            headers={"Content-Type": "text/html"},
+            content=b"<p>No upload surface</p>",
+            request=request_object,
+        )
+
+    transport = httpx.MockTransport(handler)
+    first = await run_tracked_controlled_validation_observation(
+        database,
+        request,
+        transport=transport,
+        evidence_root=tmp_path / "observations",
+    )
+    second = await run_tracked_controlled_validation_observation(
+        database,
+        request,
+        transport=transport,
+        evidence_root=tmp_path / "observations",
+    )
+
+    assert request_count == 1
+    assert first.validator_analysis is not None
+    assert second.validator_analysis is not None
+    assert (
+        second.validator_analysis.classification.value
+        == "no_upload_surface_observed"
+    )
+    assert second.reused_existing_evidence is True
+
+
+@pytest.mark.asyncio
 async def test_clickjacking_validator_persists_header_only_analysis(
     database: SaarthiDatabase,
     tmp_path: Path,

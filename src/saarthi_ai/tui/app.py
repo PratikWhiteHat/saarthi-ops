@@ -694,6 +694,46 @@ class ReadOnlySaarthiRepository:
                     metadata.get("request_body_sent"),
                     "false",
                 ),
+                "upload_form_count": display(
+                    metadata.get("upload_form_count"),
+                    "0",
+                ),
+                "file_input_count": display(
+                    metadata.get("file_input_count"),
+                    "0",
+                ),
+                "post_upload_form_count": display(
+                    metadata.get("post_upload_form_count"),
+                    "0",
+                ),
+                "multipart_upload_form_count": display(
+                    metadata.get("multipart_upload_form_count"),
+                    "0",
+                ),
+                "restricted_accept_input_count": display(
+                    metadata.get("restricted_accept_input_count"),
+                    "0",
+                ),
+                "unrestricted_accept_input_count": display(
+                    metadata.get("unrestricted_accept_input_count"),
+                    "0",
+                ),
+                "field_names_discarded": display(
+                    metadata.get("field_names_discarded"),
+                    "false",
+                ),
+                "field_values_discarded": display(
+                    metadata.get("field_values_discarded"),
+                    "false",
+                ),
+                "form_actions_discarded": display(
+                    metadata.get("form_actions_discarded"),
+                    "false",
+                ),
+                "file_uploaded": display(
+                    metadata.get("file_uploaded"),
+                    "false",
+                ),
                 "nodes_inspected": display(
                     metadata.get("nodes_inspected"),
                     "0",
@@ -2777,6 +2817,7 @@ TOOLS = [
     ("Saarthi 6C.2", "CSRF Protection Surface Validator", "APPROVAL"),
     ("Saarthi 6C.3", "HTTP Parameter Surface Validator", "APPROVAL"),
     ("Saarthi 6C.4", "Session Cookie Attribute Validator", "APPROVAL"),
+    ("Saarthi 6C.5", "File Upload Surface Validator", "APPROVAL"),
     ("Saarthi 6C.7", "API Data-Exposure Surface Validator", "APPROVAL"),
     ("nuclei", "Controlled Preview / Execution", "APPROVAL"),
     ("sqlmap", "SQL Injection Testing", "PHASE 4A"),
@@ -3245,6 +3286,73 @@ def build_scope_lines(
                     (
                         "Browser Launched   : "
                         f"{observation_value('browser_launched', max_length=12)}"
+                    ),
+                    (
+                        "Request Body Sent  : "
+                        f"{observation_value('request_body_sent', max_length=12)}"
+                    ),
+                    (
+                        "Payload Generated  : "
+                        f"{observation_value('payload_generated', max_length=12)}"
+                    ),
+                ]
+            )
+        elif (
+            observation.get("validator_id")
+            == "6C.5-file-upload-surface-validation"
+        ):
+            scope_lines.extend(
+                [
+                    "",
+                    (
+                        "[bold cyan]6C.5 — FILE UPLOAD SURFACE "
+                        "VALIDATION[/bold cyan]"
+                    ),
+                    (
+                        "Classification     : "
+                        f"{observation_value('validator_classification', max_length=40)}"
+                    ),
+                    (
+                        "Reason             : "
+                        f"{observation_value('validator_reason', max_length=120)}"
+                    ),
+                    (
+                        "Upload Forms       : "
+                        f"{observation_value('upload_form_count', max_length=12)}"
+                    ),
+                    (
+                        "File Inputs        : "
+                        f"{observation_value('file_input_count', max_length=12)}"
+                    ),
+                    (
+                        "POST / Multipart   : "
+                        f"{observation_value('post_upload_form_count', max_length=12)} / "
+                        f"{observation_value('multipart_upload_form_count', max_length=12)}"
+                    ),
+                    (
+                        "Accept Restricted  : "
+                        f"{observation_value('restricted_accept_input_count', max_length=12)}"
+                    ),
+                    (
+                        "Accept Unrestricted: "
+                        f"{observation_value('unrestricted_accept_input_count', max_length=12)}"
+                    ),
+                    (
+                        "Names / Values Gone: "
+                        f"{observation_value('field_names_discarded', max_length=12)} / "
+                        f"{observation_value('field_values_discarded', max_length=12)}"
+                    ),
+                    (
+                        "Actions Discarded  : "
+                        f"{observation_value('form_actions_discarded', max_length=12)}"
+                    ),
+                    (
+                        "File Uploaded      : "
+                        f"{observation_value('file_uploaded', max_length=12)}"
+                    ),
+                    (
+                        "Form Submitted     : "
+                        f"{observation_value('form_submitted', max_length=12)}"
                     ),
                     (
                         "Request Body Sent  : "

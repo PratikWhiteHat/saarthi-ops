@@ -54,6 +54,11 @@ from saarthi_ai.controlled_validation.session_cookie import (
     SessionCookieValidationResult,
     analyze_session_cookie_attributes,
 )
+from saarthi_ai.controlled_validation.upload_surface import (
+    UploadSurfaceClassification,
+    UploadSurfaceValidationResult,
+    analyze_upload_surface,
+)
 
 __all__ = [
     "ALLOWED_METHODS",
@@ -84,6 +89,8 @@ __all__ = [
     "CsrfSurfaceValidationResult",
     "SessionCookieClassification",
     "SessionCookieValidationResult",
+    "UploadSurfaceClassification",
+    "UploadSurfaceValidationResult",
     "evaluate_controlled_validation",
     "evaluate_controlled_validation_execution",
     "execute_bounded_observation",
@@ -92,4 +99,5 @@ __all__ = [
     "analyze_csrf_surface",
     "analyze_parameter_surface",
     "analyze_session_cookie_attributes",
+    "analyze_upload_surface",
 ]

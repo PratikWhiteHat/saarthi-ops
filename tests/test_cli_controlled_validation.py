@@ -1863,8 +1863,8 @@ def test_controlled_observe_rejects_head_for_session_cookie() -> None:
     assert result.exit_code == 1
     normalized = " ".join(result.stdout.split())
     assert (
-        "Session-cookie, CSRF, and API exposure-surface validation "
-        "require GET"
+        "Session-cookie, CSRF, API exposure-surface, and file-upload "
+        "surface validation require GET"
         in normalized
     )
 
@@ -2081,4 +2081,112 @@ def test_controlled_observe_renders_api_exposure_analysis(
     assert "Raw JSON stored: false" in normalized
     assert "Request body sent: false" in normalized
     assert "Authentication used: false" in normalized
+    assert "Payload generated: false" in normalized
+
+
+def test_controlled_observe_renders_upload_surface_analysis(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    import saarthi_ai.cli as cli_module
+
+    captured: dict[str, object] = {}
+
+    async def fake_workflow(
+        database,
+        request,
+        *,
+        transport=None,
+        actor,
+        evidence_root,
+    ):
+        captured["request"] = request
+        return SimpleNamespace(
+            execution=SimpleNamespace(
+                state=SimpleNamespace(value="completed"),
+            ),
+            observation=SimpleNamespace(
+                policy=SimpleNamespace(
+                    decision=SimpleNamespace(value="allow"),
+                ),
+                method=request.method,
+                request_attempted=True,
+                response_received=True,
+                status_code=200,
+                final_url=request.validation.target_url,
+                body_bytes_captured=80,
+                body_truncated=False,
+                body_sha256="b" * 64,
+            ),
+            validator_analysis=SimpleNamespace(
+                validator_id=(
+                    "6C.5-file-upload-surface-validation"
+                ),
+                classification=SimpleNamespace(
+                    value="upload_surface_observed"
+                ),
+                reason="A file-input surface was observed.",
+                upload_form_count=1,
+                file_input_count=2,
+                post_upload_form_count=1,
+                multipart_upload_form_count=1,
+                restricted_accept_input_count=1,
+                unrestricted_accept_input_count=1,
+            ),
+            evidence=SimpleNamespace(
+                evidence_id="evidence-upload-surface",
+                path=str(evidence_root / "upload-surface.json"),
+                sha256="a" * 64,
+            ),
+            reused_existing_evidence=False,
+        )
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        cli_module,
+        "get_database",
+        lambda: object(),
+    )
+    monkeypatch.setattr(
+        cli_module,
+        "run_tracked_controlled_validation_observation",
+        fake_workflow,
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "controlled",
+            "observe",
+            "--execution",
+            "execution-test",
+            "--url",
+            "https://example.com/upload",
+            "--action",
+            "file_upload_surface_validation",
+            "--method",
+            "GET",
+            "--approved",
+        ],
+    )
+
+    assert result.exit_code == 0
+    request = captured["request"]
+    assert (
+        request.validation.action
+        is ControlledValidationAction.FILE_UPLOAD_SURFACE_VALIDATION
+    )
+    normalized = " ".join(result.stdout.split())
+    assert "6C.5 File Upload Surface Validation" in normalized
+    assert "Classification: upload_surface_observed" in normalized
+    assert "Upload forms: 1" in normalized
+    assert "File inputs: 2" in normalized
+    assert "POST / multipart upload forms: 1 / 1" in normalized
+    assert "Restricted / unrestricted accept: 1 / 1" in normalized
+    assert "Field names discarded: true" in normalized
+    assert "Field values discarded: true" in normalized
+    assert "Form actions discarded: true" in normalized
+    assert "File uploaded: false" in normalized
+    assert "Form submitted: false" in normalized
+    assert "Request body sent: false" in normalized
     assert "Payload generated: false" in normalized

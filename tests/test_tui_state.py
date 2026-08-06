@@ -2960,3 +2960,70 @@ def test_api_exposure_validator_tool_row_requires_approval() -> None:
         "API Data-Exposure Surface Validator",
         "APPROVAL",
     ) in TOOLS
+
+
+def test_scope_lines_render_upload_surface_summary() -> None:
+    from dataclasses import replace
+
+    from saarthi_ai.tui.app import (
+        build_scope_lines,
+        demo_snapshot,
+    )
+
+    snapshot = replace(
+        demo_snapshot(),
+        attack_hypothesis_set=None,
+        controlled_validation_plan=None,
+        controlled_observation={
+            "evidence_id": "evidence-upload-surface",
+            "target_url": "https://example.com/upload",
+            "action": "file_upload_surface_validation",
+            "method": "GET",
+            "status_code": "200",
+            "validator_id": (
+                "6C.5-file-upload-surface-validation"
+            ),
+            "validator_classification": (
+                "upload_surface_observed"
+            ),
+            "validator_reason": "A file-input surface was observed.",
+            "upload_form_count": "1",
+            "file_input_count": "2",
+            "post_upload_form_count": "1",
+            "multipart_upload_form_count": "1",
+            "restricted_accept_input_count": "1",
+            "unrestricted_accept_input_count": "1",
+            "field_names_discarded": "true",
+            "field_values_discarded": "true",
+            "form_actions_discarded": "true",
+            "file_uploaded": "false",
+            "form_submitted": "false",
+            "request_body_sent": "false",
+            "payload_generated": "false",
+        },
+    )
+
+    rendered = "\n".join(build_scope_lines(snapshot))
+
+    assert "6C.5 — FILE UPLOAD SURFACE VALIDATION" in rendered
+    assert "upload_surface_observed" in rendered
+    assert "Upload Forms       : 1" in rendered
+    assert "File Inputs        : 2" in rendered
+    assert "POST / Multipart   : 1 / 1" in rendered
+    assert "Accept Restricted  : 1" in rendered
+    assert "Accept Unrestricted: 1" in rendered
+    assert "Names / Values Gone: true / true" in rendered
+    assert "Actions Discarded  : true" in rendered
+    assert "File Uploaded      : false" in rendered
+    assert "Form Submitted     : false" in rendered
+    assert "Request Body Sent  : false" in rendered
+
+
+def test_upload_surface_validator_tool_row_requires_approval() -> None:
+    from saarthi_ai.tui.app import TOOLS
+
+    assert (
+        "Saarthi 6C.5",
+        "File Upload Surface Validator",
+        "APPROVAL",
+    ) in TOOLS

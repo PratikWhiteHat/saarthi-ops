@@ -28,6 +28,10 @@ from saarthi_ai.controlled_validation.session_cookie import (
     SessionCookieValidationResult,
     analyze_session_cookie_attributes,
 )
+from saarthi_ai.controlled_validation.upload_surface import (
+    UploadSurfaceValidationResult,
+    analyze_upload_surface,
+)
 from saarthi_ai.execution.http_collector import (
     read_limited_body,
     sanitize_headers,
@@ -58,6 +62,7 @@ class ControlledValidationObservationResult:
     ) = None
     csrf_surface_analysis: CsrfSurfaceValidationResult | None = None
     api_exposure_analysis: ApiExposureValidationResult | None = None
+    upload_surface_analysis: UploadSurfaceValidationResult | None = None
     error_type: str | None = None
     error: str | None = None
 
@@ -230,6 +235,23 @@ async def execute_bounded_observation(
                             request.validation.action
                             is ControlledValidationAction
                             .API_DATA_EXPOSURE_SURFACE_VALIDATION
+                        )
+                        else None
+                    ),
+                    upload_surface_analysis=(
+                        analyze_upload_surface(
+                            target_url=request.validation.target_url,
+                            status_code=response.status_code,
+                            content_type=response.headers.get(
+                                "content-type"
+                            ),
+                            body=body,
+                            body_truncated=truncated,
+                        )
+                        if (
+                            request.validation.action
+                            is ControlledValidationAction
+                            .FILE_UPLOAD_SURFACE_VALIDATION
                         )
                         else None
                     ),

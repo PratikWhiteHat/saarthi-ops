@@ -398,3 +398,46 @@ async def test_api_exposure_analysis_retains_only_aggregate_counts() -> None:
     assert secret not in rendered
     assert "api_key" not in rendered
     assert "private@example.com" not in rendered
+
+
+@pytest.mark.asyncio
+async def test_upload_surface_never_submits_or_retains_form_data() -> None:
+    secret = "private-upload-field"
+    action = "/private/upload-handler"
+    captured: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.append(request)
+        return httpx.Response(
+            200,
+            headers={"Content-Type": "text/html"},
+            content=(
+                f"<form method='post' action='{action}' "
+                "enctype='multipart/form-data'>"
+                f"<input type='file' name='{secret}'>"
+                "</form>"
+            ),
+            request=request,
+        )
+
+    result = await execute_bounded_observation(
+        make_request(
+            action=(
+                ControlledValidationAction
+                .FILE_UPLOAD_SURFACE_VALIDATION
+            )
+        ),
+        transport=httpx.MockTransport(handler),
+    )
+
+    assert len(captured) == 1
+    assert captured[0].method == "GET"
+    assert captured[0].content == b""
+    assert result.upload_surface_analysis is not None
+    analysis = result.upload_surface_analysis
+    assert analysis.upload_form_count == 1
+    assert analysis.file_uploaded is False
+    assert analysis.form_submitted is False
+    assert analysis.request_body_sent is False
+    assert secret not in repr(analysis)
+    assert action not in repr(analysis)

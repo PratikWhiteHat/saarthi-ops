@@ -49,6 +49,10 @@ from saarthi_ai.controlled_validation.session_cookie import (
     SessionCookieClassification,
     SessionCookieValidationResult,
 )
+from saarthi_ai.controlled_validation.upload_surface import (
+    UploadSurfaceClassification,
+    UploadSurfaceValidationResult,
+)
 from saarthi_ai.persistence.database import (
     InvalidStateTransitionError,
     SaarthiDatabase,
@@ -76,6 +80,7 @@ ValidatorAnalysis = (
     | SessionCookieValidationResult
     | CsrfSurfaceValidationResult
     | ApiExposureValidationResult
+    | UploadSurfaceValidationResult
 )
 
 
@@ -501,6 +506,52 @@ def _validator_analysis_from_evidence(
             parse_error=bool(metadata.get("parse_error")),
         )
 
+    if validator_id == "6C.5-file-upload-surface-validation":
+        try:
+            classification = UploadSurfaceClassification(
+                str(metadata["validator_classification"])
+            )
+        except (KeyError, ValueError):
+            return None
+
+        return UploadSurfaceValidationResult(
+            validator_id=validator_id,
+            classification=classification,
+            reason=str(metadata.get("validator_reason") or ""),
+            form_count=int(metadata.get("form_count") or 0),
+            upload_form_count=int(
+                metadata.get("upload_form_count") or 0
+            ),
+            file_input_count=int(
+                metadata.get("file_input_count") or 0
+            ),
+            post_upload_form_count=int(
+                metadata.get("post_upload_form_count") or 0
+            ),
+            multipart_upload_form_count=int(
+                metadata.get("multipart_upload_form_count") or 0
+            ),
+            cross_origin_upload_form_count=int(
+                metadata.get("cross_origin_upload_form_count") or 0
+            ),
+            orphan_file_input_count=int(
+                metadata.get("orphan_file_input_count") or 0
+            ),
+            restricted_accept_input_count=int(
+                metadata.get("restricted_accept_input_count") or 0
+            ),
+            unrestricted_accept_input_count=int(
+                metadata.get("unrestricted_accept_input_count") or 0
+            ),
+            multiple_file_input_count=int(
+                metadata.get("multiple_file_input_count") or 0
+            ),
+            body_truncated=bool(metadata.get("body_truncated")),
+            analysis_truncated=bool(
+                metadata.get("analysis_truncated")
+            ),
+        )
+
     return None
 
 
@@ -787,7 +838,10 @@ def _serialize_observation(
                     ),
                 }
             )
-        else:
+        elif isinstance(
+            validator_analysis,
+            ApiExposureValidationResult,
+        ):
             serialized_analysis.update(
                 {
                     "nodes_inspected": (
@@ -817,6 +871,64 @@ def _serialize_observation(
                     ),
                     "authentication_used": (
                         validator_analysis.authentication_used
+                    ),
+                }
+            )
+        else:
+            serialized_analysis.update(
+                {
+                    "form_count": validator_analysis.form_count,
+                    "upload_form_count": (
+                        validator_analysis.upload_form_count
+                    ),
+                    "file_input_count": (
+                        validator_analysis.file_input_count
+                    ),
+                    "post_upload_form_count": (
+                        validator_analysis.post_upload_form_count
+                    ),
+                    "multipart_upload_form_count": (
+                        validator_analysis.multipart_upload_form_count
+                    ),
+                    "cross_origin_upload_form_count": (
+                        validator_analysis
+                        .cross_origin_upload_form_count
+                    ),
+                    "orphan_file_input_count": (
+                        validator_analysis.orphan_file_input_count
+                    ),
+                    "restricted_accept_input_count": (
+                        validator_analysis
+                        .restricted_accept_input_count
+                    ),
+                    "unrestricted_accept_input_count": (
+                        validator_analysis
+                        .unrestricted_accept_input_count
+                    ),
+                    "multiple_file_input_count": (
+                        validator_analysis.multiple_file_input_count
+                    ),
+                    "body_truncated": (
+                        validator_analysis.body_truncated
+                    ),
+                    "analysis_truncated": (
+                        validator_analysis.analysis_truncated
+                    ),
+                    "field_names_discarded": (
+                        validator_analysis.field_names_discarded
+                    ),
+                    "field_values_discarded": (
+                        validator_analysis.field_values_discarded
+                    ),
+                    "form_actions_discarded": (
+                        validator_analysis.form_actions_discarded
+                    ),
+                    "file_uploaded": validator_analysis.file_uploaded,
+                    "form_submitted": (
+                        validator_analysis.form_submitted
+                    ),
+                    "request_body_sent": (
+                        validator_analysis.request_body_sent
                     ),
                 }
             )
@@ -963,7 +1075,7 @@ def _validator_metadata(
                 "request_body_sent": analysis.request_body_sent,
             }
         )
-    else:
+    elif isinstance(analysis, ApiExposureValidationResult):
         metadata.update(
             {
                 "nodes_inspected": analysis.nodes_inspected,
@@ -984,6 +1096,49 @@ def _validator_metadata(
                 "raw_json_stored": analysis.raw_json_stored,
                 "request_body_sent": analysis.request_body_sent,
                 "authentication_used": analysis.authentication_used,
+            }
+        )
+    else:
+        metadata.update(
+            {
+                "form_count": analysis.form_count,
+                "upload_form_count": analysis.upload_form_count,
+                "file_input_count": analysis.file_input_count,
+                "post_upload_form_count": (
+                    analysis.post_upload_form_count
+                ),
+                "multipart_upload_form_count": (
+                    analysis.multipart_upload_form_count
+                ),
+                "cross_origin_upload_form_count": (
+                    analysis.cross_origin_upload_form_count
+                ),
+                "orphan_file_input_count": (
+                    analysis.orphan_file_input_count
+                ),
+                "restricted_accept_input_count": (
+                    analysis.restricted_accept_input_count
+                ),
+                "unrestricted_accept_input_count": (
+                    analysis.unrestricted_accept_input_count
+                ),
+                "multiple_file_input_count": (
+                    analysis.multiple_file_input_count
+                ),
+                "body_truncated": analysis.body_truncated,
+                "analysis_truncated": analysis.analysis_truncated,
+                "field_names_discarded": (
+                    analysis.field_names_discarded
+                ),
+                "field_values_discarded": (
+                    analysis.field_values_discarded
+                ),
+                "form_actions_discarded": (
+                    analysis.form_actions_discarded
+                ),
+                "file_uploaded": analysis.file_uploaded,
+                "form_submitted": analysis.form_submitted,
+                "request_body_sent": analysis.request_body_sent,
             }
         )
 
@@ -1243,6 +1398,16 @@ async def run_tracked_controlled_validation_observation(
             if validator_analysis is None:
                 raise ControlledValidationObservationWorkflowError(
                     "API exposure analysis was not produced safely."
+                )
+        elif (
+            validation.action
+            is ControlledValidationAction
+            .FILE_UPLOAD_SURFACE_VALIDATION
+        ):
+            validator_analysis = observation.upload_surface_analysis
+            if validator_analysis is None:
+                raise ControlledValidationObservationWorkflowError(
+                    "File-upload surface analysis was not produced safely."
                 )
 
         database.add_audit_event(
