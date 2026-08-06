@@ -506,6 +506,56 @@ def test_phase6_chain_status_tracks_permissions_and_validators() -> None:
     ) == "6C Browser"
 
 
+def test_phase6_chain_status_shows_active_nuclei_execution() -> None:
+    import json
+    import sqlite3
+
+    from saarthi_ai.tui.app import (
+        build_phase6_chain_status,
+        current_phase_for_dashboard,
+    )
+
+    connection = sqlite3.connect(":memory:")
+    connection.row_factory = sqlite3.Row
+    connection.execute(
+        """
+        CREATE TABLE executions (
+            execution_id TEXT,
+            state TEXT,
+            metadata_json TEXT
+        )
+        """
+    )
+    connection.execute(
+        "INSERT INTO executions VALUES (?, ?, ?)",
+        (
+            "execution-nuclei",
+            "running",
+            json.dumps(
+                {
+                    "phase_code": "6C-nuclei",
+                    "phase_name": "Controlled Nuclei Execution",
+                }
+            ),
+        ),
+    )
+
+    rows = connection.execute("SELECT * FROM executions").fetchall()
+    status = build_phase6_chain_status(
+        rows,
+        "metadata_json",
+        "state",
+    )
+
+    assert status["nuclei"] == "RUNNING"
+    assert current_phase_for_dashboard(
+        "completed",
+        (),
+        {"3A", "6A"},
+        status,
+    ) == "6C — LOW-RISK ATTACK VALIDATORS"
+
+
 def test_phase6_is_complete_only_after_every_safe_validator() -> None:
     import json
     import sqlite3
@@ -653,6 +703,24 @@ def test_phase_rows_uses_completed_orchestration_phases() -> None:
     assert status_by_phase["4B"] == "NEXT"
     assert status_by_phase["4C"] == "PLANNED"
     assert status_by_phase["4D"] == "PLANNED"
+
+
+def test_phase_rows_marks_active_phase6_child_in_progress() -> None:
+    from saarthi_ai.tui.app import phase_rows
+
+    rows = phase_rows(
+        "6C — LOW-RISK ATTACK VALIDATORS",
+        {"3A", "3B", "3C", "3D", "3E", "4A", "5A", "5B", "5C", "5D", "6A"},
+    )
+    status_by_phase = {
+        phase: status
+        for _, phase, _, status, _ in rows
+    }
+
+    assert status_by_phase["6A"] == "DONE"
+    assert status_by_phase["6B"] == "NOT RUN"
+    assert status_by_phase["6C"] == "IN PROGRESS"
+    assert status_by_phase["6D"] == "PLANNED"
 
 
 def test_parse_execution_metadata_rejects_invalid_json() -> None:

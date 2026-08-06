@@ -2774,6 +2774,12 @@ def build_phase6_chain_status(
         state = child_states.get(tool)
         if state in {"planned", "completed"}:
             return "PREVIEW READY"
+        if state in {"created", "validated"}:
+            return "PREPARING"
+        if state == "running":
+            return "RUNNING"
+        if state == "analyzing":
+            return "ANALYZING"
         if state == "failed":
             return "FAILED"
         return "APPROVAL REQUIRED"
@@ -3119,8 +3125,15 @@ def current_phase_for_dashboard(
     if (
         int(phase6_chain_status.get("validator_completed", "0")) > 0
         or phase6_chain_status.get("nuclei")
-        in {"PREVIEW READY", "EXECUTED"}
-        or phase6_chain_status.get("sqlmap") == "PREVIEW READY"
+        in {
+            "PREPARING",
+            "RUNNING",
+            "ANALYZING",
+            "PREVIEW READY",
+            "EXECUTED",
+        }
+        or phase6_chain_status.get("sqlmap")
+        in {"PREPARING", "RUNNING", "ANALYZING", "PREVIEW READY"}
     ):
         return "6C — LOW-RISK ATTACK VALIDATORS"
 
@@ -3238,6 +3251,12 @@ def phase_rows(
     if normalized_completed:
         rows: list[tuple[str, str, str, str, str]] = []
         phase_codes = [code for code, _ in BASE_PHASES]
+        current_code = current_phase.split(" ", 1)[0]
+        current_index = (
+            phase_codes.index(current_code)
+            if current_code in phase_codes
+            else -1
+        )
 
         completed_indexes = [
             phase_codes.index(code)
@@ -3254,7 +3273,17 @@ def phase_rows(
             if code in normalized_completed:
                 marker = "✓"
                 status = "DONE"
+            elif code == current_code:
+                marker = "→"
+                status = "IN PROGRESS"
             elif index < latest_completed_index:
+                marker = "!"
+                status = (
+                    "NO CAND."
+                    if code in {"4B", "4C", "4D"}
+                    else "NOT RUN"
+                )
+            elif 0 <= current_index and index < current_index:
                 marker = "!"
                 status = (
                     "NO CAND."
