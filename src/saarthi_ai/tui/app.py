@@ -37,6 +37,7 @@ class DashboardSnapshot:
     outcome_counts: dict[str, int] = field(default_factory=dict)
     optional_failure_summary: str | None = None
     attack_hypothesis_set: dict[str, str] | None = None
+    controlled_validation_plan: dict[str, str] | None = None
     controlled_observation: dict[str, str] | None = None
     controlled_nuclei_execution: dict[str, str] | None = None
     controlled_nuclei_preparation: dict[str, str] | None = None
@@ -244,6 +245,22 @@ class ReadOnlySaarthiRepository:
             )
         )
 
+        controlled_validation_plan = next(
+            (
+                summary
+                for related_execution_id in orchestration_execution_ids
+                if (
+                    summary
+                    := self._load_controlled_validation_plan(
+                        connection,
+                        tables,
+                        related_execution_id,
+                    )
+                )
+            ),
+            None,
+        )
+
         controlled_observation = (
             self._load_controlled_validation_observation(
                 connection,
@@ -332,6 +349,7 @@ class ReadOnlySaarthiRepository:
             outcome_counts=outcome_counts,
             optional_failure_summary=optional_failure_summary,
             attack_hypothesis_set=attack_hypothesis_set,
+            controlled_validation_plan=controlled_validation_plan,
             controlled_observation=controlled_observation,
             controlled_nuclei_execution=controlled_nuclei_execution,
             controlled_nuclei_preparation=(
@@ -569,6 +587,132 @@ class ReadOnlySaarthiRepository:
             }
 
         return None
+
+    def _load_controlled_validation_plan(
+        self,
+        connection: sqlite3.Connection,
+        tables: set[str],
+        execution_id: str,
+    ) -> dict[str, str] | None:
+        """Load a safe Phase 6B plan and hypothesis-link summary."""
+
+        table = next(
+            (
+                name
+                for name in ("evidence", "evidence_items")
+                if name in tables
+            ),
+            None,
+        )
+        if table is None:
+            return None
+
+        columns = self._columns(connection, table)
+        execution_column = self._pick(
+            columns,
+            "execution_id",
+            "execution",
+        )
+        type_column = self._pick(
+            columns,
+            "evidence_type",
+            "type",
+            "kind",
+        )
+        evidence_id_column = self._pick(
+            columns,
+            "evidence_id",
+            "id",
+        )
+        sha256_column = self._pick(columns, "sha256")
+        metadata_column = self._pick(
+            columns,
+            "metadata_json",
+            "metadata",
+        )
+        created_column = self._pick(
+            columns,
+            "created_at",
+            "timestamp",
+        )
+        if (
+            execution_column is None
+            or type_column is None
+            or metadata_column is None
+        ):
+            return None
+
+        order_sql = (
+            f'ORDER BY "{created_column}" DESC'
+            if created_column
+            else ""
+        )
+        row = connection.execute(
+            f"""
+            SELECT *
+            FROM "{table}"
+            WHERE "{execution_column}" = ?
+              AND LOWER("{type_column}") = ?
+            {order_sql}
+            LIMIT 1
+            """,
+            (execution_id, "controlled_validation_plan"),
+        ).fetchone()
+        if row is None:
+            return None
+
+        try:
+            metadata = json.loads(str(row[metadata_column]))
+        except (json.JSONDecodeError, TypeError, ValueError):
+            return None
+        if not isinstance(metadata, dict):
+            return None
+
+        def display(value: Any, default: str = "—") -> str:
+            if isinstance(value, bool):
+                return str(value).lower()
+            if isinstance(value, int) and not isinstance(value, bool):
+                return str(value)
+            if isinstance(value, str):
+                return value
+            return default
+
+        return {
+            "execution_id": execution_id,
+            "evidence_id": (
+                display(row[evidence_id_column])
+                if evidence_id_column
+                else "—"
+            ),
+            "evidence_sha256": (
+                display(row[sha256_column])
+                if sha256_column
+                else "—"
+            ),
+            "target_url": display(metadata.get("target_url")),
+            "action": display(metadata.get("action")),
+            "risk": display(metadata.get("risk")),
+            "policy_decision": display(
+                metadata.get("policy_decision")
+            ),
+            "requested_requests": display(
+                metadata.get("requested_requests")
+            ),
+            "source_execution_id": display(
+                metadata.get("source_execution_id")
+            ),
+            "source_hypothesis_evidence_id": display(
+                metadata.get("source_hypothesis_evidence_id")
+            ),
+            "source_hypothesis_id": display(
+                metadata.get("source_hypothesis_id")
+            ),
+            "executed": display(metadata.get("executed"), "false"),
+            "network_activity": display(
+                metadata.get("network_activity"),
+                "false",
+            ),
+        }
 
     def _load_controlled_validation_observation(
         self,
@@ -2435,6 +2579,7 @@ TOOLS = [
     ("httpx", "Live Host & Service Probe", "ENABLED"),
     ("katana", "Web Crawler", "ENABLED"),
     ("Saarthi 6A", "Attack Hypothesis Engine", "ENABLED"),
+    ("Saarthi 6B", "Policy & Approval Gate", "APPROVAL"),
     ("nuclei", "Controlled Preview / Execution", "APPROVAL"),
     ("sqlmap", "SQL Injection Testing", "PHASE 4A"),
     ("ghauri", "Blind SQLi Cross-check", "PHASE 4B"),
@@ -2570,6 +2715,76 @@ def build_scope_lines(
                     "[dim]Read-only Phase 6A candidate paths generated "
                     "from redacted evidence metadata. No validation or "
                     "security test was executed.[/dim]"
+                ),
+            ]
+        )
+
+    elif snapshot.controlled_validation_plan:
+        plan = snapshot.controlled_validation_plan
+
+        def plan_value(
+            key: str,
+            *,
+            max_length: int = 96,
+        ) -> str:
+            return safe_tui_display(
+                plan.get(key),
+                max_length=max_length,
+            )
+
+        scope_lines.extend(
+            [
+                "",
+                "[bold cyan]PHASE 6B — POLICY & APPROVAL GATE[/bold cyan]",
+                (
+                    "Validation Execution: "
+                    f"{plan_value('execution_id', max_length=72)}"
+                ),
+                (
+                    "Plan Evidence       : "
+                    f"{plan_value('evidence_id', max_length=72)}"
+                ),
+                (
+                    "Source Execution    : "
+                    f"{plan_value('source_execution_id', max_length=72)}"
+                ),
+                (
+                    "Source Hypothesis   : "
+                    f"{plan_value('source_hypothesis_id', max_length=72)}"
+                ),
+                (
+                    "Source Evidence     : "
+                    f"{plan_value('source_hypothesis_evidence_id', max_length=72)}"
+                ),
+                (
+                    "Target              : "
+                    f"{plan_value('target_url', max_length=88)}"
+                ),
+                (
+                    "Action / Risk       : "
+                    f"{plan_value('action', max_length=48)} / "
+                    f"{plan_value('risk', max_length=16)}"
+                ),
+                (
+                    "Policy Decision     : "
+                    f"{plan_value('policy_decision', max_length=20)}"
+                ),
+                (
+                    "Request Bound       : "
+                    f"{plan_value('requested_requests', max_length=8)}"
+                ),
+                (
+                    "Executed            : "
+                    f"{plan_value('executed', max_length=12)}"
+                ),
+                (
+                    "Network Activity    : "
+                    f"{plan_value('network_activity', max_length=12)}"
+                ),
+                (
+                    "[dim]Integrity-checked 6A hypothesis routed into a "
+                    "separate approval-gated plan. No validation request "
+                    "was sent.[/dim]"
                 ),
             ]
         )

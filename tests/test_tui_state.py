@@ -2514,3 +2514,131 @@ def test_attack_hypothesis_tool_row_is_enabled() -> None:
         "Attack Hypothesis Engine",
         "ENABLED",
     ) in TOOLS
+
+
+def test_loads_linked_phase_6b_plan_summary() -> None:
+    import json
+    import sqlite3
+
+    from saarthi_ai.tui.app import ReadOnlySaarthiRepository
+
+    connection = sqlite3.connect(":memory:")
+    connection.row_factory = sqlite3.Row
+    connection.execute(
+        """
+        CREATE TABLE evidence (
+            evidence_id TEXT PRIMARY KEY,
+            execution_id TEXT NOT NULL,
+            evidence_type TEXT NOT NULL,
+            sha256 TEXT,
+            metadata_json TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        )
+        """
+    )
+    connection.execute(
+        """
+        INSERT INTO evidence (
+            evidence_id,
+            execution_id,
+            evidence_type,
+            sha256,
+            metadata_json,
+            created_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (
+            "evidence-plan",
+            "execution-validation",
+            "controlled_validation_plan",
+            "e" * 64,
+            json.dumps(
+                {
+                    "phase": "6B",
+                    "target_url": "https://example.com/",
+                    "action": "input_handling_observation",
+                    "risk": "low",
+                    "policy_decision": "allow",
+                    "requested_requests": 2,
+                    "source_execution_id": "execution-source",
+                    "source_hypothesis_evidence_id": (
+                        "evidence-hypotheses"
+                    ),
+                    "source_hypothesis_id": "hypothesis-test",
+                    "executed": False,
+                    "network_activity": False,
+                }
+            ),
+            "2026-08-06T10:00:00+00:00",
+        ),
+    )
+
+    summary = (
+        ReadOnlySaarthiRepository()._load_controlled_validation_plan(
+            connection,
+            {"evidence"},
+            "execution-validation",
+        )
+    )
+
+    assert summary is not None
+    assert summary["execution_id"] == "execution-validation"
+    assert summary["evidence_id"] == "evidence-plan"
+    assert summary["source_execution_id"] == "execution-source"
+    assert summary["source_hypothesis_id"] == "hypothesis-test"
+    assert summary["action"] == "input_handling_observation"
+    assert summary["policy_decision"] == "allow"
+    assert summary["executed"] == "false"
+    assert summary["network_activity"] == "false"
+
+
+def test_scope_lines_render_linked_phase_6b_plan() -> None:
+    from dataclasses import replace
+
+    from saarthi_ai.tui.app import (
+        build_scope_lines,
+        demo_snapshot,
+    )
+
+    snapshot = replace(
+        demo_snapshot(),
+        current_phase="6B — CONTROLLED VALIDATION PLAN",
+        attack_hypothesis_set=None,
+        controlled_validation_plan={
+            "execution_id": "execution-validation",
+            "evidence_id": "evidence-plan",
+            "source_execution_id": "execution-source",
+            "source_hypothesis_evidence_id": "evidence-hypotheses",
+            "source_hypothesis_id": "hypothesis-test",
+            "target_url": "https://example.com/",
+            "action": "input_handling_observation",
+            "risk": "low",
+            "policy_decision": "allow",
+            "requested_requests": "2",
+            "executed": "false",
+            "network_activity": "false",
+        },
+    )
+
+    rendered = "\n".join(build_scope_lines(snapshot))
+
+    assert "PHASE 6B — POLICY & APPROVAL GATE" in rendered
+    assert "execution-validation" in rendered
+    assert "execution-source" in rendered
+    assert "hypothesis-test" in rendered
+    assert "input_handling_observation / low" in rendered
+    assert "Policy Decision     : allow" in rendered
+    assert "Executed            : false" in rendered
+    assert "Network Activity    : false" in rendered
+    assert "No validation request was sent" in rendered
+
+
+def test_phase_6b_policy_gate_tool_row_requires_approval() -> None:
+    from saarthi_ai.tui.app import TOOLS
+
+    assert (
+        "Saarthi 6B",
+        "Policy & Approval Gate",
+        "APPROVAL",
+    ) in TOOLS

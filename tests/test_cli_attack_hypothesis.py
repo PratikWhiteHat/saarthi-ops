@@ -197,3 +197,156 @@ def test_hypotheses_enforces_cli_bound() -> None:
 
     assert result.exit_code != 0
 
+
+def test_route_hypothesis_requires_fresh_approval() -> None:
+    result = runner.invoke(
+        app,
+        [
+            "controlled",
+            "route-hypothesis",
+            "--execution",
+            "execution-source",
+            "--evidence",
+            "evidence-hypotheses",
+            "--hypothesis",
+            "hypothesis-test",
+        ],
+    )
+
+    assert result.exit_code == 1
+    normalized = " ".join(result.stdout.split())
+    assert "Fresh approval required" in normalized
+    assert "Executed: false" in normalized
+    assert "Network activity: false" in normalized
+
+
+def test_route_hypothesis_creates_linked_plan(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    import saarthi_ai.cli as cli_module
+
+    captured: dict[str, object] = {}
+
+    def fake_route(
+        database,
+        request,
+        *,
+        actor,
+        evidence_root,
+    ):
+        captured["database"] = database
+        captured["request"] = request
+        captured["actor"] = actor
+        captured["evidence_root"] = evidence_root
+        return SimpleNamespace(
+            validation_execution=SimpleNamespace(
+                execution_id="execution-validation",
+                state=SimpleNamespace(value="planned"),
+            ),
+            plan=SimpleNamespace(
+                policy=SimpleNamespace(
+                    decision=SimpleNamespace(value="allow"),
+                    risk=SimpleNamespace(value="low"),
+                ),
+                evidence=SimpleNamespace(
+                    evidence_id="evidence-plan",
+                    path=str(evidence_root / "plan.json"),
+                    sha256="c" * 64,
+                    metadata={"action": "input_handling_observation"},
+                ),
+            ),
+            reused_validation_execution=False,
+        )
+
+    database = object()
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        cli_module,
+        "get_database",
+        lambda: database,
+    )
+    monkeypatch.setattr(
+        cli_module,
+        "route_hypothesis_to_controlled_validation",
+        fake_route,
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "controlled",
+            "route-hypothesis",
+            "--execution",
+            "execution-source",
+            "--evidence",
+            "evidence-hypotheses",
+            "--hypothesis",
+            "hypothesis-test",
+            "--requests",
+            "2",
+            "--approved",
+        ],
+    )
+
+    assert result.exit_code == 0
+    request = captured["request"]
+    assert captured["database"] is database
+    assert request.source_execution_id == "execution-source"
+    assert request.hypothesis_evidence_id == "evidence-hypotheses"
+    assert request.hypothesis_id == "hypothesis-test"
+    assert request.explicitly_approved is True
+    assert request.requested_requests == 2
+    assert captured["actor"] == "cli-hypothesis-routing-workflow"
+    assert captured["evidence_root"] == (
+        tmp_path / "evidence" / "controlled-validation-plans"
+    )
+
+    normalized = " ".join(result.stdout.split())
+    assert "Phase 6B linked validation plan persisted" in normalized
+    assert "execution-validation" in normalized
+    assert "input_handling_observation" in normalized
+    assert "Policy decision: allow" in normalized
+    assert "Existing validation execution reused: false" in normalized
+    assert "No validation request was sent" in normalized
+
+
+def test_route_hypothesis_reports_safe_failure(monkeypatch) -> None:
+    import saarthi_ai.cli as cli_module
+
+    def fake_route(*args, **kwargs):
+        raise cli_module.HypothesisRoutingWorkflowError(
+            "integrity verification failed"
+        )
+
+    monkeypatch.setattr(
+        cli_module,
+        "get_database",
+        lambda: object(),
+    )
+    monkeypatch.setattr(
+        cli_module,
+        "route_hypothesis_to_controlled_validation",
+        fake_route,
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "controlled",
+            "route-hypothesis",
+            "--execution",
+            "execution-source",
+            "--evidence",
+            "evidence-hypotheses",
+            "--hypothesis",
+            "hypothesis-test",
+            "--approved",
+        ],
+    )
+
+    assert result.exit_code == 1
+    normalized = " ".join(result.stdout.split())
+    assert "integrity verification failed" in normalized
+    assert "Executed: false" in normalized
+    assert "Network activity: false" in normalized

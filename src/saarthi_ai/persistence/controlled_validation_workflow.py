@@ -140,6 +140,11 @@ def _serialize_plan(
             "explicitly_approved": request.explicitly_approved,
             "reversible": request.reversible,
             "requested_requests": request.requested_requests,
+            "source_execution_id": request.source_execution_id,
+            "source_hypothesis_evidence_id": (
+                request.source_hypothesis_evidence_id
+            ),
+            "source_hypothesis_id": request.source_hypothesis_id,
         },
         "policy": {
             "decision": policy.decision.value,
@@ -175,6 +180,12 @@ def _find_matching_plan_evidence(
             and metadata.get("requested_requests")
             == request.requested_requests
             and metadata.get("reversible") is request.reversible
+            and metadata.get("source_execution_id")
+            == request.source_execution_id
+            and metadata.get("source_hypothesis_evidence_id")
+            == request.source_hypothesis_evidence_id
+            and metadata.get("source_hypothesis_id")
+            == request.source_hypothesis_id
             and metadata.get("executed") is False
             and metadata.get("network_activity") is False
         ):
@@ -384,6 +395,13 @@ def create_tracked_controlled_validation_plan(
                         request.requested_requests
                     ),
                     "reversible": request.reversible,
+                    "source_execution_id": request.source_execution_id,
+                    "source_hypothesis_evidence_id": (
+                        request.source_hypothesis_evidence_id
+                    ),
+                    "source_hypothesis_id": (
+                        request.source_hypothesis_id
+                    ),
                     "executed": False,
                     "network_activity": False,
                 },

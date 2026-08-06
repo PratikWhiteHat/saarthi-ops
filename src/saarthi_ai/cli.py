@@ -90,6 +90,11 @@ from saarthi_ai.persistence.http_intelligence_workflow import (
 from saarthi_ai.persistence.http_workflow import (
     run_tracked_http_collection,
 )
+from saarthi_ai.persistence.hypothesis_routing_workflow import (
+    HypothesisRoutingRequest,
+    HypothesisRoutingWorkflowError,
+    route_hypothesis_to_controlled_validation,
+)
 from saarthi_ai.persistence.javascript_workflow import (
     run_tracked_javascript_intelligence,
 )
@@ -1821,6 +1826,149 @@ def controlled_hypotheses(
         "[dim]Phase 6A generated candidate paths from redacted "
         "evidence metadata only. No validation or security test "
         "was executed.[/dim]"
+    )
+
+
+@controlled_app.command("route-hypothesis")
+def controlled_route_hypothesis(
+    source_execution_id: Annotated[
+        str,
+        typer.Option(
+            "--execution",
+            help="Execution containing the persisted Phase 6A evidence.",
+        ),
+    ],
+    hypothesis_evidence_id: Annotated[
+        str,
+        typer.Option(
+            "--evidence",
+            help="Phase 6A attack-hypothesis-set evidence identifier.",
+        ),
+    ],
+    hypothesis_id: Annotated[
+        str,
+        typer.Option(
+            "--hypothesis",
+            help="Low-risk hypothesis identifier selected for review.",
+        ),
+    ],
+    requests_count: Annotated[
+        int,
+        typer.Option(
+            "--requests",
+            min=1,
+            max=5,
+            help="Maximum request count recorded in the Phase 6B plan.",
+        ),
+    ] = 1,
+    approved: Annotated[
+        bool,
+        typer.Option(
+            "--approved",
+            help=(
+                "Record fresh approval for the integrity-checked "
+                "6A to 6B handoff."
+            ),
+        ),
+    ] = False,
+) -> None:
+    """Route one intact low-risk 6A hypothesis into a 6B plan."""
+
+    if not approved:
+        console.print(
+            "[bold yellow]Fresh approval required.[/bold yellow] "
+            "Review the source evidence, hypothesis, target, and request "
+            "bound, then rerun with --approved."
+        )
+        console.print("Executed: false")
+        console.print("Network activity: false")
+        console.print("Payload sent: false")
+        console.print("Subprocess started: false")
+        raise typer.Exit(code=1)
+
+    request = HypothesisRoutingRequest(
+        source_execution_id=source_execution_id,
+        hypothesis_evidence_id=hypothesis_evidence_id,
+        hypothesis_id=hypothesis_id,
+        explicitly_approved=True,
+        requested_requests=requests_count,
+    )
+
+    console.print(
+        "[bold]Routing integrity-checked Phase 6A hypothesis "
+        "through the Phase 6B approval gate...[/bold]"
+    )
+    console.print(f"Source execution: {source_execution_id}")
+    console.print(f"Source evidence: {hypothesis_evidence_id}")
+    console.print(f"Hypothesis: {hypothesis_id}")
+    console.print(f"Requested requests: {requests_count}")
+
+    try:
+        result = route_hypothesis_to_controlled_validation(
+            get_database(),
+            request,
+            actor="cli-hypothesis-routing-workflow",
+            evidence_root=(
+                Path.cwd()
+                / "evidence"
+                / "controlled-validation-plans"
+            ),
+        )
+    except (
+        ExecutionNotFoundError,
+        InvalidStateTransitionError,
+        HypothesisRoutingWorkflowError,
+        ControlledValidationWorkflowError,
+        OSError,
+        ValueError,
+    ) as exc:
+        console.print(
+            "[bold red]Hypothesis routing failed:[/bold red] "
+            f"{exc}"
+        )
+        console.print("Executed: false")
+        console.print("Network activity: false")
+        console.print("Payload sent: false")
+        console.print("Subprocess started: false")
+        raise typer.Exit(code=1) from exc
+
+    console.print()
+    console.print(
+        "[bold green]Phase 6B linked validation plan persisted."
+        "[/bold green]"
+    )
+    console.print(
+        "Validation execution: "
+        f"{result.validation_execution.execution_id}"
+    )
+    console.print(
+        "Validation execution state: "
+        f"{result.validation_execution.state.value}"
+    )
+    console.print(f"Action: {result.plan.evidence.metadata['action']}")
+    console.print(
+        f"Policy decision: {result.plan.policy.decision.value}"
+    )
+    console.print(f"Risk: {result.plan.policy.risk.value}")
+    console.print(
+        "Existing validation execution reused: "
+        f"{str(result.reused_validation_execution).lower()}"
+    )
+    console.print(
+        f"Plan evidence ID: {result.plan.evidence.evidence_id}"
+    )
+    console.print(f"Plan evidence path: {result.plan.evidence.path}")
+    console.print(
+        f"Plan evidence SHA-256: {result.plan.evidence.sha256}"
+    )
+    console.print("Executed: false")
+    console.print("Network activity: false")
+    console.print("Payload sent: false")
+    console.print("Subprocess started: false")
+    console.print(
+        "[dim]The source evidence was integrity-checked and a separate "
+        "approval-gated execution was planned. No validation request "
+        "was sent.[/dim]"
     )
 
 

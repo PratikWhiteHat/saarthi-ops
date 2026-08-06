@@ -52,6 +52,9 @@ class ControlledValidationRequest:
     explicitly_approved: bool = False
     reversible: bool = True
     requested_requests: int = 1
+    source_execution_id: str | None = None
+    source_hypothesis_evidence_id: str | None = None
+    source_hypothesis_id: str | None = None
 
 
 @dataclass(frozen=True)
