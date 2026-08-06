@@ -385,3 +385,6 @@ async def test_nuclei_timeout_is_optional_and_chain_continues(
     assert snapshot.phase6_chain_status["nuclei"] == "TIMED OUT"
     assert snapshot.phase6_chain_status["sqlmap"] == "AWAITING RESULT"
     assert snapshot.phase6_chain_status["validator_completed"] == "9"
+    assert snapshot.orchestration_status == "partial"
+    assert snapshot.outcome_counts["failed"] == 1
+    assert snapshot.evidence_count > 0

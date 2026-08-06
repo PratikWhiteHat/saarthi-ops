@@ -20,6 +20,7 @@ from saarthi_ai.persistence.models import (
 from saarthi_ai.persistence.sqlmap_handoff_workflow import (
     NORMALIZED_RESULT_SCHEMA,
     SqlmapHandoffWorkflowError,
+    analyze_imported_sqlmap_result,
     create_sqlmap_handoff,
     import_sqlmap_external_result,
 )
@@ -229,6 +230,70 @@ def test_registers_strict_normalized_findings_for_review(
     assert len(findings) == 1
     assert findings[0].details["parameter"] == "id"
     assert findings[0].details["confirmed_by_saarthi"] is False
+
+
+def test_sanitizes_raw_log_findings_and_is_idempotent(
+    database: SaarthiDatabase,
+    tmp_path: Path,
+) -> None:
+    preview = create_preview(database, tmp_path)
+    create_sqlmap_handoff(
+        database,
+        preview,
+        evidence_root=tmp_path / "handoff",
+    )
+    result_file = tmp_path / "operator-result.log"
+    result_file.write_text(
+        "\n".join(
+            (
+                "Parameter: id (GET)",
+                "    Type: boolean-based blind",
+                "    Title: ignored external title",
+                "    Payload: ignored and never parsed",
+                "back-end DBMS: MySQL",
+                "",
+            )
+        )
+    )
+
+    imported = import_sqlmap_external_result(
+        database,
+        preview.execution.execution_id,
+        result_file,
+        evidence_root=tmp_path / "imports",
+    )
+    analyzed = analyze_imported_sqlmap_result(
+        database,
+        preview.execution.execution_id,
+    )
+
+    assert (
+        imported.result_evidence.metadata["normalized_finding_count"]
+        == 1
+    )
+    assert analyzed.finding_count == 1
+    assert analyzed.reused_existing_findings is True
+    findings = [
+        event
+        for event in database.list_audit_events(
+            preview.execution.execution_id
+        )
+        if event.event_type.value == "finding_created"
+    ]
+    assert len(findings) == 1
+    assert findings[0].details == {
+        "phase_code": "6C.1",
+        "tool": "sqlmap",
+        "result_evidence_id": imported.result_evidence.evidence_id,
+        "parameter": "id",
+        "method": "GET",
+        "technique": "boolean-based blind",
+        "dbms": "MySQL",
+        "confidence": "medium",
+        "source": "operator_supplied_external_result",
+        "confirmed_by_saarthi": False,
+        "payload_stored_in_finding": False,
+    }
 
 
 def test_rejects_tampered_handoff_manifest(

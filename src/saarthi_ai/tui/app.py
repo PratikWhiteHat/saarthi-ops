@@ -216,6 +216,17 @@ class ReadOnlySaarthiRepository:
                 row,
                 metadata_column,
             )
+            row_evidence_count = self._count_related(
+                connection,
+                tables,
+                ("evidence", "evidence_items"),
+                row_execution_id,
+            )
+            row_finding_count = self._count_findings(
+                connection,
+                tables,
+                row_execution_id,
+            )
 
             recent_executions.append(
                 {
@@ -235,31 +246,33 @@ class ReadOnlySaarthiRepository:
                     ).upper(),
                     "started": compact_timestamp(started),
                     "duration": calculate_duration(started, completed),
-                    "evidence": "—",
-                    "findings": "—",
+                    "evidence": str(row_evidence_count),
+                    "findings": str(row_finding_count),
                 }
             )
 
-        evidence_count = self._count_related(
-            connection,
-            tables,
-            ("evidence", "evidence_items"),
-            execution_id,
+        evidence_count = sum(
+            self._count_related(
+                connection,
+                tables,
+                ("evidence", "evidence_items"),
+                related_execution_id,
+            )
+            for related_execution_id in orchestration_execution_ids
         )
         evidence_types = self._evidence_types(
             connection,
             tables,
             execution_id,
         )
-        finding_count = self._count_related(
-            connection,
-            tables,
-            ("findings", "finding"),
-            execution_id,
+        finding_count = sum(
+            self._count_findings(
+                connection,
+                tables,
+                related_execution_id,
+            )
+            for related_execution_id in orchestration_execution_ids
         )
-
-        recent_executions[0]["evidence"] = str(evidence_count)
-        recent_executions[0]["findings"] = str(finding_count)
 
         (
             orchestration_status,
@@ -359,6 +372,21 @@ class ReadOnlySaarthiRepository:
                 phase6_chain_status["nuclei"] = "TIMED OUT"
             elif phase6_chain_status.get("nuclei") != "FAILED":
                 phase6_chain_status["nuclei"] = "EXECUTED"
+
+        if phase6_chain_status.get("nuclei") in {
+            "FAILED",
+            "TIMED OUT",
+        }:
+            orchestration_status = "partial"
+            outcome_counts = dict(outcome_counts)
+            outcome_counts["failed"] = max(
+                outcome_counts.get("failed", 0),
+                1,
+            )
+            optional_failure_summary = (
+                optional_failure_summary
+                or "6C Nuclei: optional bounded execution did not complete."
+            )
 
         controlled_nuclei_preparation = (
             self._load_controlled_nuclei_preparation(
@@ -2245,6 +2273,56 @@ class ReadOnlySaarthiRepository:
                 (execution_id,),
             ).fetchone()
         return int(row["total"])
+
+    def _count_findings(
+        self,
+        connection: sqlite3.Connection,
+        tables: set[str],
+        execution_id: str,
+    ) -> int:
+        persisted = self._count_related(
+            connection,
+            tables,
+            ("findings", "finding"),
+            execution_id,
+        )
+        table = next(
+            (
+                name
+                for name in ("audit_events", "audit_log", "events")
+                if name in tables
+            ),
+            None,
+        )
+        if table is None:
+            return persisted
+
+        columns = self._columns(connection, table)
+        execution_column = self._pick(
+            columns,
+            "execution_id",
+            "execution",
+        )
+        event_type_column = self._pick(
+            columns,
+            "event_type",
+            "type",
+            "kind",
+        )
+        if execution_column is None or event_type_column is None:
+            return persisted
+
+        row = connection.execute(
+            f"""
+            SELECT COUNT(*) AS total
+            FROM "{table}"
+            WHERE "{execution_column}" = ?
+              AND LOWER("{event_type_column}") = 'finding_created'
+            """,
+            (execution_id,),
+        ).fetchone()
+        audited = int(row["total"]) if row is not None else 0
+        return max(persisted, audited)
 
     def _load_orchestration_outcome(
         self,

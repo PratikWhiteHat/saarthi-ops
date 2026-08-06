@@ -145,6 +145,7 @@ from saarthi_ai.persistence.projects import (
 )
 from saarthi_ai.persistence.sqlmap_handoff_workflow import (
     SqlmapHandoffWorkflowError,
+    analyze_imported_sqlmap_result,
     import_sqlmap_external_result,
 )
 from saarthi_ai.persistence.sqlmap_preview_workflow import (
@@ -2882,6 +2883,53 @@ def controlled_sqlmap_import(
     )
     console.print(
         f"12 final state: {result.execution.state.value}"
+    )
+
+
+@controlled_app.command("sqlmap-analyze")
+def controlled_sqlmap_analyze(
+    execution_id: Annotated[
+        str,
+        typer.Option(
+            "--execution",
+            help="Completed SQLmap handoff execution to analyze offline.",
+        ),
+    ],
+) -> None:
+    """Backfill sanitized findings from imported SQLmap evidence."""
+
+    console.print("[bold]6C.1 SQLmap offline result analysis[/bold]")
+    console.print(f"01 execution: {execution_id}")
+    console.print("02 network activity: false")
+    console.print("03 SQLmap process launched: false")
+    console.print("04 payload extraction: disabled")
+    console.print("05 database-content extraction: disabled")
+
+    try:
+        result = analyze_imported_sqlmap_result(
+            get_database(),
+            execution_id,
+            actor="cli-sqlmap-offline-result-analyzer",
+        )
+    except (
+        ExecutionNotFoundError,
+        SqlmapHandoffWorkflowError,
+        ValueError,
+    ) as exc:
+        console.print(
+            "[bold red]SQLmap result analysis failed:[/bold red] "
+            f"{exc}"
+        )
+        raise typer.Exit(code=1) from exc
+
+    console.print("06 evidence hash: verified")
+    console.print(
+        f"07 result evidence ID: {result.result_evidence.evidence_id}"
+    )
+    console.print(f"08 findings registered: {result.finding_count}")
+    console.print(
+        "09 existing findings reused: "
+        f"{str(result.reused_existing_findings).lower()}"
     )
 
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shutil
 import tempfile
 from dataclasses import dataclass
@@ -61,6 +62,17 @@ class ImportedSqlmapResult:
     manifest_evidence: EvidenceRecord
     result_evidence: EvidenceRecord
     reused_existing_evidence: bool = False
+
+
+@dataclass(frozen=True)
+class AnalyzedSqlmapResult:
+    """Sanitized offline analysis of one imported result."""
+
+    execution: ExecutionRecord
+    manifest_evidence: EvidenceRecord
+    result_evidence: EvidenceRecord
+    finding_count: int
+    reused_existing_findings: bool = False
 
 
 def _canonical_json(payload: dict[str, Any]) -> bytes:
@@ -433,6 +445,167 @@ def _load_normalized_findings(
     return tuple(findings)
 
 
+_LOG_PARAMETER = re.compile(
+    r"^Parameter:\s+([A-Za-z0-9_.\[\]-]{1,128})\s+\((GET|POST)\)\s*$"
+)
+_LOG_TECHNIQUE = re.compile(r"^\s+Type:\s+(.{1,80})\s*$")
+_LOG_DBMS = re.compile(r"^back-end DBMS:\s+(.{1,80})\s*$")
+
+
+def _allowed_manifest_parameters(
+    manifest: dict[str, Any],
+) -> set[str]:
+    candidate = manifest.get("candidate")
+    if not isinstance(candidate, dict):
+        raise SqlmapHandoffWorkflowError(
+            "SQLmap handoff candidate metadata is invalid."
+        )
+    allowed = {str(candidate.get("parameter_name") or "")}
+    post_names = candidate.get("post_parameter_names")
+    if isinstance(post_names, list):
+        allowed.update(str(item) for item in post_names)
+    return {item for item in allowed if item}
+
+
+def _load_sanitized_log_findings(
+    result_path: Path,
+    *,
+    manifest: dict[str, Any],
+) -> tuple[dict[str, str], ...]:
+    if result_path.suffix.lower() not in {".log", ".txt"}:
+        return ()
+    try:
+        lines = result_path.read_text(
+            "utf-8",
+            errors="replace",
+        ).splitlines()
+    except OSError as exc:
+        raise SqlmapHandoffWorkflowError(
+            "Imported SQLmap text result could not be analyzed."
+        ) from exc
+
+    allowed_parameters = _allowed_manifest_parameters(manifest)
+    current_parameter: str | None = None
+    current_method: str | None = None
+    pending: list[dict[str, str]] = []
+    dbms = "unknown"
+
+    for line in lines:
+        parameter_match = _LOG_PARAMETER.match(line)
+        if parameter_match is not None:
+            parameter = parameter_match.group(1)
+            if parameter in allowed_parameters:
+                current_parameter = parameter
+                current_method = parameter_match.group(2)
+            else:
+                current_parameter = None
+                current_method = None
+            continue
+
+        technique_match = _LOG_TECHNIQUE.match(line)
+        if (
+            technique_match is not None
+            and current_parameter is not None
+            and current_method is not None
+        ):
+            pending.append(
+                {
+                    "parameter": current_parameter,
+                    "method": current_method,
+                    "technique": _bounded_result_text(
+                        technique_match.group(1),
+                        field="technique",
+                        maximum=80,
+                    ),
+                    "dbms": "unknown",
+                    "confidence": "medium",
+                }
+            )
+            continue
+
+        dbms_match = _LOG_DBMS.match(line)
+        if dbms_match is not None:
+            dbms = _bounded_result_text(
+                dbms_match.group(1),
+                field="dbms",
+                maximum=80,
+            )
+
+    unique: dict[tuple[str, str, str], dict[str, str]] = {}
+    for finding in pending[:MAX_NORMALIZED_FINDINGS]:
+        finding["dbms"] = dbms
+        key = (
+            finding["parameter"],
+            finding["method"],
+            finding["technique"],
+        )
+        unique[key] = finding
+    return tuple(unique.values())
+
+
+def _external_findings(
+    result_path: Path,
+    *,
+    execution_id: str,
+    manifest: dict[str, Any],
+    manifest_evidence: EvidenceRecord,
+) -> tuple[dict[str, str], ...]:
+    normalized = _load_normalized_findings(
+        result_path,
+        execution_id=execution_id,
+        manifest=manifest,
+        manifest_evidence=manifest_evidence,
+    )
+    if normalized:
+        return tuple(
+            {
+                **finding,
+                "method": str(
+                    manifest["candidate"].get("method") or "unknown"
+                ),
+            }
+            for finding in normalized
+        )
+    return _load_sanitized_log_findings(
+        result_path,
+        manifest=manifest,
+    )
+
+
+def _register_external_findings(
+    database: SaarthiDatabase,
+    execution_id: str,
+    *,
+    actor: str,
+    result_evidence: EvidenceRecord,
+    findings: tuple[dict[str, str], ...],
+) -> int:
+    for finding in findings:
+        database.add_audit_event(
+            execution_id,
+            event_type=AuditEventType.FINDING_CREATED,
+            actor=actor,
+            message=(
+                "[6C.1][sqlmap] Sanitized external finding "
+                "registered for review."
+            ),
+            details={
+                "phase_code": "6C.1",
+                "tool": "sqlmap",
+                "result_evidence_id": result_evidence.evidence_id,
+                "parameter": finding["parameter"],
+                "method": finding.get("method", "unknown"),
+                "technique": finding["technique"],
+                "dbms": finding["dbms"],
+                "confidence": finding["confidence"],
+                "source": "operator_supplied_external_result",
+                "confirmed_by_saarthi": False,
+                "payload_stored_in_finding": False,
+            },
+        )
+    return len(findings)
+
+
 def import_sqlmap_external_result(
     database: SaarthiDatabase,
     execution_id: str,
@@ -456,7 +629,7 @@ def import_sqlmap_external_result(
         )
 
     resolved, size, digest = _validate_result_path(result_path)
-    normalized_findings = _load_normalized_findings(
+    normalized_findings = _external_findings(
         resolved,
         execution_id=execution_id,
         manifest=manifest,
@@ -574,27 +747,13 @@ def import_sqlmap_external_result(
                 "network_activity_by_saarthi": False,
             },
         )
-        for finding in normalized_findings:
-            database.add_audit_event(
-                execution_id,
-                event_type=AuditEventType.FINDING_CREATED,
-                actor=actor,
-                message=(
-                    "[6C.1][sqlmap] Normalized external finding "
-                    "registered for review."
-                ),
-                details={
-                    "phase_code": "6C.1",
-                    "tool": "sqlmap",
-                    "result_evidence_id": result_evidence.evidence_id,
-                    "parameter": finding["parameter"],
-                    "technique": finding["technique"],
-                    "dbms": finding["dbms"],
-                    "confidence": finding["confidence"],
-                    "source": "operator_supplied_external_result",
-                    "confirmed_by_saarthi": False,
-                },
-            )
+        _register_external_findings(
+            database,
+            execution_id,
+            actor=actor,
+            result_evidence=result_evidence,
+            findings=normalized_findings,
+        )
         execution = database.transition_execution(
             execution_id,
             ExecutionState.ANALYZING,
@@ -644,4 +803,99 @@ def import_sqlmap_external_result(
         execution=execution,
         manifest_evidence=manifest_evidence,
         result_evidence=result_evidence,
+    )
+
+
+def analyze_imported_sqlmap_result(
+    database: SaarthiDatabase,
+    execution_id: str,
+    *,
+    actor: str = "sqlmap-offline-result-analyzer",
+) -> AnalyzedSqlmapResult:
+    """Backfill sanitized findings from already-imported evidence."""
+
+    execution = database.get_execution(execution_id)
+    manifest_evidence = _existing_handoff(database, execution_id)
+    if manifest_evidence is None:
+        raise SqlmapHandoffWorkflowError(
+            "No SQLmap handoff manifest exists for this execution."
+        )
+    manifest = _load_manifest(manifest_evidence)
+    if manifest.get("execution_id") != execution_id:
+        raise SqlmapHandoffWorkflowError(
+            "SQLmap handoff manifest belongs to another execution."
+        )
+
+    results = database.list_evidence(
+        execution_id,
+        evidence_type=EvidenceType.SQLMAP_EXTERNAL_RESULT,
+    )
+    if not results:
+        raise SqlmapHandoffWorkflowError(
+            "No imported SQLmap result exists for this execution."
+        )
+    result_evidence = results[-1]
+    result_path = Path(result_evidence.path)
+    if (
+        result_evidence.sha256 is None
+        or not result_path.is_file()
+        or _sha256_path(result_path) != result_evidence.sha256
+    ):
+        raise SqlmapHandoffWorkflowError(
+            "Imported SQLmap result evidence hash does not match."
+        )
+
+    existing = [
+        event
+        for event in database.list_audit_events(execution_id)
+        if (
+            event.event_type is AuditEventType.FINDING_CREATED
+            and event.details.get("result_evidence_id")
+            == result_evidence.evidence_id
+        )
+    ]
+    if existing:
+        return AnalyzedSqlmapResult(
+            execution=execution,
+            manifest_evidence=manifest_evidence,
+            result_evidence=result_evidence,
+            finding_count=len(existing),
+            reused_existing_findings=True,
+        )
+
+    findings = _external_findings(
+        result_path,
+        execution_id=execution_id,
+        manifest=manifest,
+        manifest_evidence=manifest_evidence,
+    )
+    finding_count = _register_external_findings(
+        database,
+        execution_id,
+        actor=actor,
+        result_evidence=result_evidence,
+        findings=findings,
+    )
+    database.add_audit_event(
+        execution_id,
+        event_type=AuditEventType.TOOL_COMPLETED,
+        actor=actor,
+        message=(
+            "[6C.1][sqlmap] Offline sanitized result analysis completed."
+        ),
+        details={
+            "phase_code": "6C.1",
+            "tool": "sqlmap",
+            "result_evidence_id": result_evidence.evidence_id,
+            "finding_count": finding_count,
+            "payloads_parsed": False,
+            "database_contents_parsed": False,
+            "network_activity": False,
+        },
+    )
+    return AnalyzedSqlmapResult(
+        execution=execution,
+        manifest_evidence=manifest_evidence,
+        result_evidence=result_evidence,
+        finding_count=finding_count,
     )
