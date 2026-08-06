@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 
 import httpx
 import pytest
 
+from saarthi_ai.execution.tool_runner import ToolRunResult
 from saarthi_ai.orchestration.models import (
     OrchestrationPhase,
     OrchestrationPhaseOutcome,
@@ -78,7 +80,40 @@ async def test_safe_chain_runs_every_surface_validator(
         for item in validator_results
     } == {action.value for action in SAFE_VALIDATOR_ACTIONS}
 
-    preview_results = result.phase_results[:2]
+    prerequisite_gates = {
+        item.phase: item
+        for item in result.phase_results
+        if item.phase
+        in {
+            OrchestrationPhase.BLIND_VALIDATION,
+            OrchestrationPhase.OAST_MANAGER,
+            OrchestrationPhase.CONFIRMATION,
+        }
+    }
+    assert set(prerequisite_gates) == {
+        OrchestrationPhase.BLIND_VALIDATION,
+        OrchestrationPhase.OAST_MANAGER,
+        OrchestrationPhase.CONFIRMATION,
+    }
+    assert all(
+        item.outcome
+        is OrchestrationPhaseOutcome.NOT_APPLICABLE
+        for item in prerequisite_gates.values()
+    )
+    assert all(
+        item.metrics["gate_evaluated"] is True
+        for item in prerequisite_gates.values()
+    )
+
+    preview_results = [
+        item
+        for item in result.phase_results
+        if item.phase
+        in {
+            OrchestrationPhase.NUCLEI_PREVIEW,
+            OrchestrationPhase.SQLMAP_PREVIEW,
+        }
+    ]
     assert all(
         item.outcome is OrchestrationPhaseOutcome.SKIPPED
         for item in preview_results
@@ -111,7 +146,16 @@ async def test_approved_previews_are_persisted_but_not_executed(
         transport=httpx.MockTransport(handler),
     )
 
-    nuclei, sqlmap = result.phase_results[:2]
+    nuclei = next(
+        item
+        for item in result.phase_results
+        if item.phase is OrchestrationPhase.NUCLEI_PREVIEW
+    )
+    sqlmap = next(
+        item
+        for item in result.phase_results
+        if item.phase is OrchestrationPhase.SQLMAP_PREVIEW
+    )
     assert nuclei.phase is OrchestrationPhase.NUCLEI_PREVIEW
     assert sqlmap.phase is OrchestrationPhase.SQLMAP_PREVIEW
     assert nuclei.completed is True
@@ -121,6 +165,7 @@ async def test_approved_previews_are_persisted_but_not_executed(
     assert nuclei.metrics["network_activity"] is False
     assert sqlmap.metrics["network_activity"] is False
     assert sqlmap.metrics["parameter"] == "id"
+    assert result.calculated_status.value == "completed"
 
     snapshot = ReadOnlySaarthiRepository(
         database.database_path
@@ -169,9 +214,92 @@ async def test_sqlmap_preview_reports_missing_permission_and_parameter(
         transport=httpx.MockTransport(handler),
     )
 
-    sqlmap = result.phase_results[1]
+    sqlmap = next(
+        item
+        for item in result.phase_results
+        if item.phase is OrchestrationPhase.SQLMAP_PREVIEW
+    )
     assert sqlmap.outcome is OrchestrationPhaseOutcome.SKIPPED
     assert "intrusive-testing permission is disabled" in (
         sqlmap.reason or ""
     )
     assert "target URL has no query parameter" in (sqlmap.reason or "")
+
+
+@pytest.mark.asyncio
+async def test_nuclei_execution_requires_distinct_approval_and_is_bounded(
+    database: SaarthiDatabase,
+    tmp_path: Path,
+) -> None:
+    def http_handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text="<html></html>")
+
+    runner_calls: list[tuple[str, tuple[str, ...]]] = []
+
+    def nuclei_runner(profile, arguments, *, on_output=None):
+        argument_tuple = tuple(arguments)
+        runner_calls.append((profile.name, argument_tuple))
+        stdout = '{"template-id":"safe-example"}\n'
+        stderr = ""
+        return ToolRunResult(
+            tool_name=profile.name,
+            executable="/test/bin/nuclei",
+            arguments=argument_tuple,
+            exit_code=0,
+            stdout=stdout,
+            stderr=stderr,
+            stdout_sha256=hashlib.sha256(
+                stdout.encode("utf-8")
+            ).hexdigest(),
+            stderr_sha256=hashlib.sha256(
+                stderr.encode("utf-8")
+            ).hexdigest(),
+            timed_out=False,
+        )
+
+    context = create_orchestration(
+        database,
+        assessment_name="Approved Nuclei Execution Chain",
+        target_url="https://example.com/",
+        active_testing_allowed=True,
+    )
+
+    result = await run_phase6_safe_chain(
+        database,
+        context,
+        evidence_root=tmp_path / "evidence",
+        explicitly_approved=True,
+        nuclei_preview_approved=True,
+        nuclei_execute_approved=True,
+        sqlmap_preview_approved=False,
+        transport=httpx.MockTransport(http_handler),
+        nuclei_runner=nuclei_runner,
+    )
+
+    nuclei = next(
+        item
+        for item in result.phase_results
+        if item.phase is OrchestrationPhase.NUCLEI
+    )
+    assert nuclei.phase is OrchestrationPhase.NUCLEI
+    assert nuclei.metrics["executed"] is True
+    assert nuclei.metrics["network_activity"] is True
+    assert nuclei.metrics["exit_code"] == 0
+    assert len(runner_calls) == 1
+    tool_name, arguments = runner_calls[0]
+    assert tool_name == "nuclei"
+    assert "-tags" in arguments
+    assert "exposure,misconfig,tech" in arguments
+    assert "-exclude-tags" in arguments
+    assert "bruteforce,dos,fuzz,headless,intrusive,token-spray" in (
+        arguments
+    )
+    assert arguments[arguments.index("-retries") + 1] == "0"
+
+    snapshot = ReadOnlySaarthiRepository(
+        database.database_path
+    ).load()
+    assert snapshot.phase6_chain_status["nuclei"] == "EXECUTED"
+    assert snapshot.current_phase == (
+        "6C — LOW-RISK ATTACK VALIDATORS"
+    )

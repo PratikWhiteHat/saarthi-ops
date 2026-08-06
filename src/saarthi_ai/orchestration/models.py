@@ -21,6 +21,7 @@ class OrchestrationPhaseOutcome(StrEnum):
     """Outcome recorded for one orchestration phase."""
 
     COMPLETED = "completed"
+    NOT_APPLICABLE = "not_applicable"
     SKIPPED = "skipped"
     FAILED = "failed"
 
@@ -35,6 +36,11 @@ class OrchestrationPhase(StrEnum):
     JAVASCRIPT = "3E"
     SECURITY_HEADERS = "4A-security-headers"
     CORS = "4A-cors"
+    BLIND_VALIDATION = "4B"
+    OAST_MANAGER = "4C"
+    CONFIRMATION = "4D"
+    ATTACK_HYPOTHESIS = "6A"
+    NUCLEI = "6C-nuclei"
     NUCLEI_PREVIEW = "6C-nuclei-preview"
     SQLMAP_PREVIEW = "6C-sqlmap-preview"
     SAFE_VALIDATOR = "6C-safe-validator"
@@ -88,6 +94,15 @@ class OrchestrationPhaseResult(BaseModel):
         """Return whether this phase was intentionally skipped."""
 
         return self.outcome is OrchestrationPhaseOutcome.SKIPPED
+
+    @property
+    def not_applicable(self) -> bool:
+        """Return whether prerequisites made this phase inapplicable."""
+
+        return (
+            self.outcome
+            is OrchestrationPhaseOutcome.NOT_APPLICABLE
+        )
 
     @property
     def failed(self) -> bool:

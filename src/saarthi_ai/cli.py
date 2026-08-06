@@ -52,7 +52,7 @@ from saarthi_ai.execution.sqlmap_adapter import (
     SqlmapPostContentType,
     SqlmapPreviewRequest,
 )
-from saarthi_ai.execution.tool_runner import run_tool
+from saarthi_ai.execution.tool_runner import ToolRunnerError, run_tool
 from saarthi_ai.llm import (
     OllamaUnavailableError,
     SaarthiOllamaClient,
@@ -3578,8 +3578,18 @@ def workflow_run(
         typer.Option(
             "--approve-nuclei-preview",
             help=(
-                "Approve a redacted Nuclei preview after 4A. No Nuclei "
-                "process or scanner request is started."
+                "Approve the redacted Nuclei preview stage after 4A. "
+                "Combine with --execute-nuclei for one bounded run."
+            ),
+        ),
+    ] = False,
+    nuclei_execute_approved: Annotated[
+        bool,
+        typer.Option(
+            "--execute-nuclei",
+            help=(
+                "After an approved preview, execute one bounded Nuclei "
+                "run using only exposure, misconfig, and tech templates."
             ),
         ),
     ] = False,
@@ -3614,6 +3624,13 @@ def workflow_run(
         console.print(
             "[bold yellow]Explicit execution approval required.[/bold yellow] "
             "Review the target and rerun with --approved."
+        )
+        raise typer.Exit(code=1)
+    if nuclei_execute_approved and not nuclei_preview_approved:
+        console.print(
+            "[bold yellow]Nuclei preview approval required.[/bold yellow] "
+            "Use --approve-nuclei-preview together with "
+            "--execute-nuclei."
         )
         raise typer.Exit(code=1)
 
@@ -3663,6 +3680,7 @@ def workflow_run(
                 explicitly_approved=True,
                 nuclei_preview_approved=nuclei_preview_approved,
                 sqlmap_preview_approved=sqlmap_preview_approved,
+                nuclei_execute_approved=nuclei_execute_approved,
                 actor="cli-phase6-orchestrator",
             )
         )
@@ -3676,6 +3694,11 @@ def workflow_run(
         CrawlCollectionError,
         JavaScriptCollectionError,
         DirectCheckWorkflowError,
+        AttackHypothesisWorkflowError,
+        NucleiPreviewWorkflowError,
+        NucleiPreparationWorkflowError,
+        NucleiExecutionWorkflowError,
+        ToolRunnerError,
         ValueError,
     ) as exc:
         console.print(

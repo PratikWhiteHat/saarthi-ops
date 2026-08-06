@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 from urllib.parse import parse_qsl, urlsplit
 
 import httpx
 
+from saarthi_ai.attack_hypothesis import (
+    AttackHypothesisGenerationRequest,
+)
 from saarthi_ai.controlled_validation.executor import (
     ControlledValidationExecutionRequest,
 )
@@ -14,17 +18,24 @@ from saarthi_ai.controlled_validation.models import (
     ControlledValidationAction,
     ControlledValidationRequest,
 )
-from saarthi_ai.execution.nuclei_adapter import NucleiDryRunRequest
+from saarthi_ai.execution.nuclei_adapter import (
+    NucleiDryRunRequest,
+    NucleiExecutionRequest,
+)
 from saarthi_ai.execution.sqlmap_adapter import (
     SqlmapMethod,
     SqlmapPreviewRequest,
 )
+from saarthi_ai.execution.tool_runner import ToolRunResult, run_tool
 from saarthi_ai.orchestration.models import (
     OrchestrationContext,
     OrchestrationPhase,
     OrchestrationPhaseOutcome,
     OrchestrationPhaseResult,
     Phase6ChainResult,
+)
+from saarthi_ai.persistence.attack_hypothesis_workflow import (
+    create_tracked_attack_hypotheses,
 )
 from saarthi_ai.persistence.controlled_validation_observation_workflow import (
     run_tracked_controlled_validation_observation,
@@ -33,6 +44,16 @@ from saarthi_ai.persistence.controlled_validation_workflow import (
     create_tracked_controlled_validation_plan,
 )
 from saarthi_ai.persistence.database import SaarthiDatabase
+from saarthi_ai.persistence.models import AuditEventType, ExecutionState
+from saarthi_ai.persistence.nuclei_execution_verification import (
+    NucleiExecutionVerificationRequest,
+)
+from saarthi_ai.persistence.nuclei_execution_workflow import (
+    run_tracked_nuclei_execution,
+)
+from saarthi_ai.persistence.nuclei_preparation_workflow import (
+    create_tracked_nuclei_preparation,
+)
 from saarthi_ai.persistence.nuclei_preview_workflow import (
     create_tracked_nuclei_preview,
 )
@@ -64,29 +85,179 @@ async def run_phase6_safe_chain(
     explicitly_approved: bool,
     nuclei_preview_approved: bool,
     sqlmap_preview_approved: bool,
+    nuclei_execute_approved: bool = False,
     actor: str = "saarthi-phase6-orchestrator",
     transport: httpx.AsyncBaseTransport | None = None,
+    nuclei_runner: Callable[..., ToolRunResult] | None = None,
 ) -> Phase6ChainResult:
     """Run previews and one-request GET validators after Phase 4A.
 
-    Nuclei and SQLmap are preview-only here. No subprocess is started and
-    no scanner payload is sent by this workflow.
+    SQLmap is preview-only. Nuclei execution is separately gated and uses
+    the fixed conservative template profile when explicitly approved.
     """
 
     if not explicitly_approved:
         raise ValueError(
             "Explicit approval is required for Phase 6C observations."
         )
+    if nuclei_execute_approved and not nuclei_preview_approved:
+        raise ValueError(
+            "Nuclei execution requires Nuclei preview approval."
+        )
 
     parent = database.get_execution(context.parent_execution_id)
     results: list[OrchestrationPhaseResult] = []
-    previous_execution_id: str | None = None
+    results.extend(
+        (
+            OrchestrationPhaseResult(
+                phase=OrchestrationPhase.BLIND_VALIDATION,
+                outcome=OrchestrationPhaseOutcome.NOT_APPLICABLE,
+                required=False,
+                reason=(
+                    "No approved blind-validation candidate was selected; "
+                    "no callback token or request was created."
+                ),
+                metrics={"gate_evaluated": True},
+            ),
+            OrchestrationPhaseResult(
+                phase=OrchestrationPhase.OAST_MANAGER,
+                outcome=OrchestrationPhaseOutcome.NOT_APPLICABLE,
+                required=False,
+                reason=(
+                    "No active OAST correlation exists for this target."
+                ),
+                metrics={"gate_evaluated": True},
+            ),
+            OrchestrationPhaseResult(
+                phase=OrchestrationPhase.CONFIRMATION,
+                outcome=OrchestrationPhaseOutcome.NOT_APPLICABLE,
+                required=False,
+                reason=(
+                    "No confirmation candidate with supporting evidence "
+                    "was available."
+                ),
+                metrics={"gate_evaluated": True},
+            ),
+        )
+    )
+    for gate in results:
+        database.add_audit_event(
+            context.parent_execution_id,
+            event_type=AuditEventType.TOOL_COMPLETED,
+            actor=actor,
+            message=(
+                f"[{gate.phase.value}][orchestrator] "
+                "Prerequisite gate evaluated: not applicable."
+            ),
+            details={
+                "phase_code": gate.phase.value,
+                "outcome": gate.outcome.value,
+                "reason": gate.reason,
+                "gate_evaluated": True,
+                "executed": False,
+                "network_activity": False,
+            },
+        )
+    prior_execution_ids = tuple(
+        execution.execution_id
+        for execution in database.list_executions(limit=1_000)
+        if (
+            execution.metadata.get("orchestration_id")
+            == context.orchestration_id
+            and execution.metadata.get("execution_role")
+            == "orchestration_child"
+            and execution.metadata.get("phase_code")
+            in {
+                "3A",
+                "3B",
+                "3C",
+                "3D",
+                "3E",
+                "4A-security-headers",
+                "4A-cors",
+            }
+        )
+    )
+    previous_execution_id: str | None = (
+        prior_execution_ids[0] if prior_execution_ids else None
+    )
+
+    hypothesis_child = create_phase_execution(
+        database,
+        context,
+        phase=OrchestrationPhase.ATTACK_HYPOTHESIS,
+        phase_name="Attack Hypothesis Engine",
+        active_testing_allowed=False,
+        previous_execution_id=previous_execution_id,
+    )
+    database.transition_execution(
+        hypothesis_child.execution_id,
+        ExecutionState.VALIDATED,
+        actor=actor,
+        reason="Phase 6A evidence sources validated.",
+    )
+    database.transition_execution(
+        hypothesis_child.execution_id,
+        ExecutionState.PLANNED,
+        actor=actor,
+        reason="Phase 6A non-executing hypothesis generation planned.",
+    )
+    database.transition_execution(
+        hypothesis_child.execution_id,
+        ExecutionState.RUNNING,
+        actor=actor,
+        reason="Phase 6A evidence analysis started.",
+    )
+    hypotheses = create_tracked_attack_hypotheses(
+        database,
+        AttackHypothesisGenerationRequest(
+            execution_id=hypothesis_child.execution_id,
+            target_url=context.target_url,
+            authorized=True,
+            max_hypotheses=20,
+        ),
+        actor=actor,
+        evidence_root=evidence_root / "attack-hypotheses",
+        source_execution_ids=prior_execution_ids,
+    )
+    database.transition_execution(
+        hypothesis_child.execution_id,
+        ExecutionState.ANALYZING,
+        actor=actor,
+        reason="Phase 6A hypotheses are ready for review.",
+    )
+    database.transition_execution(
+        hypothesis_child.execution_id,
+        ExecutionState.COMPLETED,
+        actor=actor,
+        reason="Phase 6A non-executing hypothesis generation completed.",
+    )
+    results.append(
+        OrchestrationPhaseResult(
+            phase=OrchestrationPhase.ATTACK_HYPOTHESIS,
+            execution_id=hypothesis_child.execution_id,
+            evidence_id=hypotheses.evidence.evidence_id,
+            evidence_path=hypotheses.evidence.path,
+            metrics={
+                "hypothesis_count": len(
+                    hypotheses.hypothesis_set.hypotheses
+                ),
+                "executed": False,
+                "network_activity": False,
+            },
+        )
+    )
+    previous_execution_id = hypothesis_child.execution_id
 
     if nuclei_preview_approved:
         child = create_phase_execution(
             database,
             context,
-            phase=OrchestrationPhase.NUCLEI_PREVIEW,
+            phase=(
+                OrchestrationPhase.NUCLEI
+                if nuclei_execute_approved
+                else OrchestrationPhase.NUCLEI_PREVIEW
+            ),
             phase_name="Nuclei Non-Executed Preview",
             active_testing_allowed=True,
             previous_execution_id=previous_execution_id,
@@ -110,19 +281,65 @@ async def run_phase6_safe_chain(
             actor=actor,
             evidence_root=evidence_root / "nuclei-preview",
         )
-        results.append(
-            OrchestrationPhaseResult(
-                phase=OrchestrationPhase.NUCLEI_PREVIEW,
-                execution_id=child.execution_id,
-                evidence_id=preview.evidence.evidence_id,
-                evidence_path=preview.evidence.path,
-                metrics={
-                    "executed": False,
-                    "network_activity": False,
-                },
-                reason="Approved preview persisted; scanner not executed.",
+        if nuclei_execute_approved:
+            preparation = create_tracked_nuclei_preparation(
+                database,
+                child.execution_id,
+                NucleiExecutionRequest(
+                    preview=preview.preview,
+                    authorization_confirmed=True,
+                    active_testing_allowed=True,
+                    explicitly_approved=True,
+                ),
+                actor=actor,
+                evidence_root=evidence_root / "nuclei-preparation",
             )
-        )
+            execution = run_tracked_nuclei_execution(
+                database,
+                child.execution_id,
+                NucleiExecutionVerificationRequest(
+                    target_url=preparation.plan.target_url,
+                    arguments=preparation.plan.arguments,
+                    authorization_confirmed=True,
+                    active_testing_allowed=True,
+                    explicitly_approved=True,
+                ),
+                runner=nuclei_runner or run_tool,
+                actor=actor,
+                evidence_root=evidence_root / "nuclei-execution",
+            )
+            results.append(
+                OrchestrationPhaseResult(
+                    phase=OrchestrationPhase.NUCLEI,
+                    execution_id=child.execution_id,
+                    evidence_id=execution.evidence.evidence_id,
+                    evidence_path=execution.evidence.path,
+                    metrics={
+                        "executed": True,
+                        "network_activity": True,
+                        "exit_code": execution.result.exit_code,
+                    },
+                    reason=(
+                        "Approved conservative Nuclei profile executed."
+                    ),
+                )
+            )
+        else:
+            results.append(
+                OrchestrationPhaseResult(
+                    phase=OrchestrationPhase.NUCLEI_PREVIEW,
+                    execution_id=child.execution_id,
+                    evidence_id=preview.evidence.evidence_id,
+                    evidence_path=preview.evidence.path,
+                    metrics={
+                        "executed": False,
+                        "network_activity": False,
+                    },
+                    reason=(
+                        "Approved preview persisted; scanner not executed."
+                    ),
+                )
+            )
         previous_execution_id = child.execution_id
     else:
         results.append(

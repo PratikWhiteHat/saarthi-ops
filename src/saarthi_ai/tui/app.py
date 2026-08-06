@@ -270,13 +270,26 @@ class ReadOnlySaarthiRepository:
             tables,
             execution_id,
         )
+        phase6_chain_status = build_phase6_chain_status(
+            related_rows,
+            metadata_column,
+            state_column,
+        )
 
-        attack_hypothesis_set = (
-            self._load_attack_hypothesis_set(
-                connection,
-                tables,
-                execution_id,
-            )
+        attack_hypothesis_set = next(
+            (
+                summary
+                for related_execution_id in orchestration_execution_ids
+                if (
+                    summary
+                    := self._load_attack_hypothesis_set(
+                        connection,
+                        tables,
+                        related_execution_id,
+                    )
+                )
+            ),
+            None,
         )
 
         controlled_validation_plan = next(
@@ -323,13 +336,23 @@ class ReadOnlySaarthiRepository:
             )
             controlled_observation.update(reuse)
 
-        controlled_nuclei_execution = (
-            self._load_controlled_nuclei_execution(
-                connection,
-                tables,
-                execution_id,
-            )
+        controlled_nuclei_execution = next(
+            (
+                summary
+                for related_execution_id in orchestration_execution_ids
+                if (
+                    summary
+                    := self._load_controlled_nuclei_execution(
+                        connection,
+                        tables,
+                        related_execution_id,
+                    )
+                )
+            ),
+            None,
         )
+        if controlled_nuclei_execution is not None:
+            phase6_chain_status["nuclei"] = "EXECUTED"
 
         controlled_nuclei_preparation = (
             self._load_controlled_nuclei_preparation(
@@ -388,9 +411,11 @@ class ReadOnlySaarthiRepository:
             target_scope=value(latest, target_column, "Authorized scope"),
             authorization="CONFIRMED",
             mode="LOCAL / SAFE + SMART",
-            current_phase=infer_phase(
+            current_phase=current_phase_for_dashboard(
                 execution_state,
                 evidence_types,
+                completed_phases,
+                phase6_chain_status,
             ),
             phase_progress=progress_for_state(execution_state),
             evidence_count=evidence_count,
@@ -414,11 +439,7 @@ class ReadOnlySaarthiRepository:
                 controlled_nuclei_preparation
             ),
             controlled_nuclei_preview=controlled_nuclei_preview,
-            phase6_chain_status=build_phase6_chain_status(
-                related_rows,
-                metadata_column,
-                state_column,
-            ),
+            phase6_chain_status=phase6_chain_status,
         )
 
     def _evidence_types(
@@ -2699,7 +2720,7 @@ def phase_execution_label(metadata: dict[str, Any]) -> str:
     phase_code = str(metadata.get("phase_code") or "")
     phase_name = str(metadata.get("phase_name") or "")
 
-    if phase_code == "6C-nuclei-preview":
+    if phase_code in {"6C-nuclei", "6C-nuclei-preview"}:
         return "6C Nuclei"
     if phase_code == "6C-sqlmap-preview":
         return "6C SQLmap"
@@ -2744,7 +2765,7 @@ def build_phase6_chain_status(
             child_states[phase_name] = state
             if state == "completed":
                 completed_actions.add(phase_name)
-        elif phase_code == "6C-nuclei-preview":
+        elif phase_code in {"6C-nuclei", "6C-nuclei-preview"}:
             child_states["nuclei"] = state
         elif phase_code == "6C-sqlmap-preview":
             child_states["sqlmap"] = state
@@ -3087,6 +3108,33 @@ def infer_phase_short(
     return "—"
 
 
+def current_phase_for_dashboard(
+    state: str,
+    evidence_types: Iterable[str],
+    completed_phases: Iterable[str],
+    phase6_chain_status: dict[str, str],
+) -> str:
+    """Prefer explicit orchestration progress over parent evidence fallback."""
+
+    if (
+        int(phase6_chain_status.get("validator_completed", "0")) > 0
+        or phase6_chain_status.get("nuclei")
+        in {"PREVIEW READY", "EXECUTED"}
+        or phase6_chain_status.get("sqlmap") == "PREVIEW READY"
+    ):
+        return "6C — LOW-RISK ATTACK VALIDATORS"
+
+    normalized_completed = {
+        normalize_phase_code(code)
+        for code in completed_phases
+    }
+    for code, name in reversed(BASE_PHASES):
+        if code in normalized_completed:
+            return f"{code} — {name.upper()}"
+
+    return infer_phase(state, evidence_types)
+
+
 def progress_for_state(state: str) -> int:
     return {
         "created": 10,
@@ -3208,7 +3256,11 @@ def phase_rows(
                 status = "DONE"
             elif index < latest_completed_index:
                 marker = "!"
-                status = "SKIPPED"
+                status = (
+                    "NO CAND."
+                    if code in {"4B", "4C", "4D"}
+                    else "NOT RUN"
+                )
             elif index == latest_completed_index + 1:
                 marker = "→"
                 status = "NEXT"
@@ -3363,9 +3415,14 @@ def build_orchestration_summary_lines(
     implemented = sum(item.implemented for item in summaries)
     partial = sum(item.partial for item in summaries)
     total = sum(item.total for item in summaries)
-    completed = snapshot.outcome_counts.get(
-        "completed",
-        len(snapshot.completed_phases),
+    completed = max(
+        snapshot.outcome_counts.get("completed", 0),
+        len(
+            {
+                normalize_phase_code(code)
+                for code in snapshot.completed_phases
+            }
+        ),
     )
     optional_failures = snapshot.outcome_counts.get("failed", 0)
     overall = (

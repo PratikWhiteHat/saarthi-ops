@@ -80,6 +80,25 @@ def test_workflow_run_requires_explicit_approval() -> None:
     assert "Explicit execution approval required" in result.stdout
 
 
+def test_workflow_nuclei_execution_requires_preview_approval() -> None:
+    result = runner.invoke(
+        app,
+        [
+            "workflow",
+            "run",
+            "--url",
+            "https://example.com/",
+            "--authorized",
+            "--active",
+            "--approved",
+            "--execute-nuclei",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "Nuclei preview approval required" in result.stdout
+
+
 def test_workflow_run_forwards_scope_and_prints_results(
     tmp_path,
     monkeypatch,
@@ -190,6 +209,7 @@ def test_workflow_run_forwards_scope_and_prints_results(
         explicitly_approved,
         nuclei_preview_approved,
         sqlmap_preview_approved,
+        nuclei_execute_approved,
         actor,
     ):
         captured["phase6_database"] = database_argument
@@ -201,6 +221,9 @@ def test_workflow_run_forwards_scope_and_prints_results(
         )
         captured["sqlmap_preview_approved"] = (
             sqlmap_preview_approved
+        )
+        captured["nuclei_execute_approved"] = (
+            nuclei_execute_approved
         )
         captured["phase6_actor"] = actor
         return SimpleNamespace(
@@ -246,6 +269,7 @@ def test_workflow_run_forwards_scope_and_prints_results(
             "4",
             "--intrusive",
             "--approve-nuclei-preview",
+            "--execute-nuclei",
             "--approve-sqlmap-preview",
         ],
     )
@@ -277,6 +301,7 @@ def test_workflow_run_forwards_scope_and_prints_results(
     assert captured["phase6_approved"] is True
     assert captured["nuclei_preview_approved"] is True
     assert captured["sqlmap_preview_approved"] is True
+    assert captured["nuclei_execute_approved"] is True
     assert captured["phase6_evidence_root"] == (
         tmp_path
         / "evidence"

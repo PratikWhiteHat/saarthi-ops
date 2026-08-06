@@ -246,3 +246,45 @@ def test_empty_supported_evidence_persists_empty_safe_set(
     assert result.evidence.metadata["hypothesis_count"] == 0
     assert result.evidence.metadata["executed"] is False
     assert result.evidence.metadata["network_activity"] is False
+
+
+def test_hypotheses_can_use_authorized_same_orchestration_sources(
+    database: SaarthiDatabase,
+    tmp_path: Path,
+) -> None:
+    orchestration_id = "orchestration-phase6"
+    target_execution = database.create_execution(
+        ExecutionCreate(
+            assessment_name="Phase 6A Aggregate",
+            asset_types=["web"],
+            targets=["example.com"],
+            authorization_confirmed=True,
+            metadata={
+                "orchestration_id": orchestration_id,
+                "execution_role": "orchestration_child",
+            },
+        )
+    )
+    source_execution = database.create_execution(
+        ExecutionCreate(
+            assessment_name="Phase 3 Evidence",
+            asset_types=["web"],
+            targets=["example.com"],
+            authorization_confirmed=True,
+            metadata={
+                "orchestration_id": orchestration_id,
+                "execution_role": "orchestration_child",
+            },
+        )
+    )
+    add_source_evidence(database, source_execution.execution_id)
+
+    result = create_tracked_attack_hypotheses(
+        database,
+        make_request(target_execution.execution_id),
+        evidence_root=tmp_path / "aggregate",
+        source_execution_ids=(source_execution.execution_id,),
+    )
+
+    assert len(result.hypothesis_set.hypotheses) == 3
+    assert len(result.hypothesis_set.considered_evidence_ids) == 2

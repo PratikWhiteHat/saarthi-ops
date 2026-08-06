@@ -345,6 +345,7 @@ def create_tracked_attack_hypotheses(
     *,
     actor: str = "attack-hypothesis-engine",
     evidence_root: Path | None = None,
+    source_execution_ids: tuple[str, ...] = (),
 ) -> TrackedAttackHypothesisSet:
     """Generate and persist one non-executed Phase 6A hypothesis set."""
 
@@ -361,9 +362,27 @@ def create_tracked_attack_hypotheses(
         )
 
     _validate_target_scope(request.target_url, execution)
-    evidence_records = database.list_evidence(
-        request.execution_id,
-    )
+    evidence_records = database.list_evidence(request.execution_id)
+    orchestration_id = execution.metadata.get("orchestration_id")
+
+    for source_execution_id in dict.fromkeys(source_execution_ids):
+        source = database.get_execution(source_execution_id)
+        if not source.authorization_confirmed:
+            raise InvalidStateTransitionError(
+                "Hypothesis source execution is not authorized."
+            )
+        if (
+            not isinstance(orchestration_id, str)
+            or not orchestration_id
+            or source.metadata.get("orchestration_id")
+            != orchestration_id
+        ):
+            raise InvalidStateTransitionError(
+                "Hypothesis source execution is outside this orchestration."
+            )
+        evidence_records.extend(
+            database.list_evidence(source_execution_id)
+        )
 
     try:
         hypothesis_set = generate_attack_hypotheses(
@@ -545,4 +564,3 @@ def create_tracked_attack_hypotheses(
         evidence=evidence,
         reused_existing_evidence=False,
     )
-
