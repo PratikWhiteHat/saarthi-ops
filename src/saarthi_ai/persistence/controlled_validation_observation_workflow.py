@@ -31,6 +31,11 @@ from saarthi_ai.controlled_validation.observation import (
     ControlledValidationObservationResult,
     execute_bounded_observation,
 )
+from saarthi_ai.controlled_validation.parameter_surface import (
+    ParameterSurfaceClassification,
+    ParameterSurfaceValidationResult,
+    analyze_parameter_surface,
+)
 from saarthi_ai.persistence.database import (
     InvalidStateTransitionError,
     SaarthiDatabase,
@@ -52,6 +57,11 @@ DEFAULT_EVIDENCE_ROOT = (
     Path("evidence") / "controlled-validation-observations"
 )
 
+ValidatorAnalysis = (
+    ClickjackingValidationResult
+    | ParameterSurfaceValidationResult
+)
+
 
 class ControlledValidationObservationWorkflowError(RuntimeError):
     """Raised when a tracked Phase 6C observation cannot complete."""
@@ -64,7 +74,7 @@ class TrackedControlledValidationObservation:
     execution: ExecutionRecord
     observation: ControlledValidationObservationResult
     evidence: EvidenceRecord
-    validator_analysis: ClickjackingValidationResult | None = None
+    validator_analysis: ValidatorAnalysis | None = None
     reused_existing_evidence: bool = False
 
 
@@ -203,60 +213,112 @@ def _observation_from_evidence(
     )
 
 
-def _clickjacking_analysis_from_evidence(
+def _validator_analysis_from_evidence(
     evidence: EvidenceRecord,
-) -> ClickjackingValidationResult | None:
-    """Rebuild the persisted header-only validator summary."""
+) -> ValidatorAnalysis | None:
+    """Rebuild a persisted bounded validator summary."""
 
     metadata = evidence.metadata
-    if (
-        metadata.get("validator_id")
-        != "6C.2-clickjacking-header-validation"
-    ):
-        return None
+    validator_id = metadata.get("validator_id")
 
-    try:
-        classification = ClickjackingClassification(
-            str(metadata["validator_classification"])
-        )
-    except (KeyError, ValueError):
-        return None
+    if validator_id == "6C.2-clickjacking-header-validation":
+        try:
+            classification = ClickjackingClassification(
+                str(metadata["validator_classification"])
+            )
+        except (KeyError, ValueError):
+            return None
 
-    protection_sources = metadata.get("protection_sources")
-    csp_sources = metadata.get("csp_frame_ancestors")
+        protection_sources = metadata.get("protection_sources")
+        csp_sources = metadata.get("csp_frame_ancestors")
 
-    return ClickjackingValidationResult(
-        validator_id="6C.2-clickjacking-header-validation",
-        classification=classification,
-        reason=str(metadata.get("validator_reason") or ""),
-        protection_sources=tuple(
-            item
-            for item in protection_sources
-            if isinstance(item, str)
+        return ClickjackingValidationResult(
+            validator_id=validator_id,
+            classification=classification,
+            reason=str(metadata.get("validator_reason") or ""),
+            protection_sources=tuple(
+                item
+                for item in protection_sources
+                if isinstance(item, str)
+            )
+            if isinstance(protection_sources, list)
+            else (),
+            csp_frame_ancestors=tuple(
+                item
+                for item in csp_sources
+                if isinstance(item, str)
+            )
+            if isinstance(csp_sources, list)
+            else (),
+            x_frame_options=(
+                str(metadata["x_frame_options"])
+                if metadata.get("x_frame_options") is not None
+                else None
+            ),
+            response_status_code=int(
+                metadata.get("status_code") or 0
+            ),
+            content_type=(
+                str(metadata["content_type"])
+                if metadata.get("content_type") is not None
+                else None
+            ),
         )
-        if isinstance(protection_sources, list)
-        else (),
-        csp_frame_ancestors=tuple(
-            item
-            for item in csp_sources
-            if isinstance(item, str)
+
+    if validator_id == "6C.3-http-parameter-surface-validation":
+        try:
+            classification = ParameterSurfaceClassification(
+                str(metadata["validator_classification"])
+            )
+        except (KeyError, ValueError):
+            return None
+
+        def string_tuple(key: str) -> tuple[str, ...]:
+            value = metadata.get(key)
+            return (
+                tuple(
+                    item
+                    for item in value
+                    if isinstance(item, str)
+                )
+                if isinstance(value, list)
+                else ()
+            )
+
+        return ParameterSurfaceValidationResult(
+            validator_id=validator_id,
+            classification=classification,
+            reason=str(metadata.get("validator_reason") or ""),
+            parameter_count=int(
+                metadata.get("parameter_count") or 0
+            ),
+            unique_parameter_count=int(
+                metadata.get("unique_parameter_count") or 0
+            ),
+            duplicate_parameter_names=string_tuple(
+                "duplicate_parameter_names"
+            ),
+            variant_parameter_groups=string_tuple(
+                "variant_parameter_groups"
+            ),
+            blank_parameter_name_count=int(
+                metadata.get("blank_parameter_name_count") or 0
+            ),
+            blank_value_parameter_names=string_tuple(
+                "blank_value_parameter_names"
+            ),
+            malformed_percent_encoding=bool(
+                metadata.get("malformed_percent_encoding")
+            ),
+            semicolon_delimiter_observed=bool(
+                metadata.get("semicolon_delimiter_observed")
+            ),
+            analysis_truncated=bool(
+                metadata.get("analysis_truncated")
+            ),
         )
-        if isinstance(csp_sources, list)
-        else (),
-        x_frame_options=(
-            str(metadata["x_frame_options"])
-            if metadata.get("x_frame_options") is not None
-            else None
-        ),
-        response_status_code=int(
-            metadata.get("status_code") or 0
-        ),
-        content_type=(
-            str(metadata["content_type"])
-            if metadata.get("content_type") is not None
-            else None
-        ),
-    )
+
+    return None
 
 
 def _audit_failure_safely(
@@ -314,7 +376,7 @@ def _serialize_observation(
     observation: ControlledValidationObservationResult,
     *,
     plan_evidence: EvidenceRecord,
-    validator_analysis: ClickjackingValidationResult | None = None,
+    validator_analysis: ValidatorAnalysis | None = None,
 ) -> dict[str, object]:
     validation = request.validation
 
@@ -367,28 +429,156 @@ def _serialize_observation(
     }
 
     if validator_analysis is not None:
-        payload["validator_analysis"] = {
+        serialized_analysis: dict[str, object] = {
             "validator_id": validator_analysis.validator_id,
             "classification": (
                 validator_analysis.classification.value
             ),
             "reason": validator_analysis.reason,
-            "protection_sources": list(
-                validator_analysis.protection_sources
-            ),
-            "csp_frame_ancestors": list(
-                validator_analysis.csp_frame_ancestors
-            ),
-            "x_frame_options": validator_analysis.x_frame_options,
-            "header_only": validator_analysis.header_only,
-            "exploit_page_generated": (
-                validator_analysis.exploit_page_generated
-            ),
-            "browser_launched": validator_analysis.browser_launched,
             "payload_generated": validator_analysis.payload_generated,
         }
 
+        if isinstance(
+            validator_analysis,
+            ClickjackingValidationResult,
+        ):
+            serialized_analysis.update(
+                {
+                    "protection_sources": list(
+                        validator_analysis.protection_sources
+                    ),
+                    "csp_frame_ancestors": list(
+                        validator_analysis.csp_frame_ancestors
+                    ),
+                    "x_frame_options": (
+                        validator_analysis.x_frame_options
+                    ),
+                    "header_only": validator_analysis.header_only,
+                    "exploit_page_generated": (
+                        validator_analysis.exploit_page_generated
+                    ),
+                    "browser_launched": (
+                        validator_analysis.browser_launched
+                    ),
+                }
+            )
+        else:
+            serialized_analysis.update(
+                {
+                    "parameter_count": (
+                        validator_analysis.parameter_count
+                    ),
+                    "unique_parameter_count": (
+                        validator_analysis.unique_parameter_count
+                    ),
+                    "duplicate_parameter_names": list(
+                        validator_analysis.duplicate_parameter_names
+                    ),
+                    "variant_parameter_groups": list(
+                        validator_analysis.variant_parameter_groups
+                    ),
+                    "blank_parameter_name_count": (
+                        validator_analysis.blank_parameter_name_count
+                    ),
+                    "blank_value_parameter_names": list(
+                        validator_analysis.blank_value_parameter_names
+                    ),
+                    "malformed_percent_encoding": (
+                        validator_analysis.malformed_percent_encoding
+                    ),
+                    "semicolon_delimiter_observed": (
+                        validator_analysis.semicolon_delimiter_observed
+                    ),
+                    "analysis_truncated": (
+                        validator_analysis.analysis_truncated
+                    ),
+                    "target_unchanged": (
+                        validator_analysis.target_unchanged
+                    ),
+                    "parameters_mutated": (
+                        validator_analysis.parameters_mutated
+                    ),
+                    "parser_attack_sent": (
+                        validator_analysis.parser_attack_sent
+                    ),
+                }
+            )
+
+        payload["validator_analysis"] = serialized_analysis
+
     return payload
+
+
+def _validator_metadata(
+    analysis: ValidatorAnalysis | None,
+) -> dict[str, object]:
+    """Return catalog-safe metadata for one optional validator."""
+
+    if analysis is None:
+        return {
+            "validator_id": None,
+            "validator_classification": None,
+            "validator_reason": None,
+            "payload_generated": False,
+        }
+
+    metadata: dict[str, object] = {
+        "validator_id": analysis.validator_id,
+        "validator_classification": analysis.classification.value,
+        "validator_reason": analysis.reason,
+        "payload_generated": analysis.payload_generated,
+    }
+
+    if isinstance(analysis, ClickjackingValidationResult):
+        metadata.update(
+            {
+                "protection_sources": list(
+                    analysis.protection_sources
+                ),
+                "csp_frame_ancestors": list(
+                    analysis.csp_frame_ancestors
+                ),
+                "x_frame_options": analysis.x_frame_options,
+                "header_only": analysis.header_only,
+                "exploit_page_generated": (
+                    analysis.exploit_page_generated
+                ),
+                "browser_launched": analysis.browser_launched,
+            }
+        )
+    else:
+        metadata.update(
+            {
+                "parameter_count": analysis.parameter_count,
+                "unique_parameter_count": (
+                    analysis.unique_parameter_count
+                ),
+                "duplicate_parameter_names": list(
+                    analysis.duplicate_parameter_names
+                ),
+                "variant_parameter_groups": list(
+                    analysis.variant_parameter_groups
+                ),
+                "blank_parameter_name_count": (
+                    analysis.blank_parameter_name_count
+                ),
+                "blank_value_parameter_names": list(
+                    analysis.blank_value_parameter_names
+                ),
+                "malformed_percent_encoding": (
+                    analysis.malformed_percent_encoding
+                ),
+                "semicolon_delimiter_observed": (
+                    analysis.semicolon_delimiter_observed
+                ),
+                "analysis_truncated": analysis.analysis_truncated,
+                "target_unchanged": analysis.target_unchanged,
+                "parameters_mutated": analysis.parameters_mutated,
+                "parser_attack_sent": analysis.parser_attack_sent,
+            }
+        )
+
+    return metadata
 
 
 def _write_evidence_atomically(
@@ -516,7 +706,7 @@ async def run_tracked_controlled_validation_observation(
             request,
             existing_evidence,
         )
-        validator_analysis = _clickjacking_analysis_from_evidence(
+        validator_analysis = _validator_analysis_from_evidence(
             existing_evidence
         )
 
@@ -556,7 +746,7 @@ async def run_tracked_controlled_validation_observation(
     evidence_path: str | None = None
     evidence_registered = False
     observation: ControlledValidationObservationResult | None = None
-    validator_analysis: ClickjackingValidationResult | None = None
+    validator_analysis: ValidatorAnalysis | None = None
 
     execution = database.transition_execution(
         validation.execution_id,
@@ -604,6 +794,14 @@ async def run_tracked_controlled_validation_observation(
                 status_code=observation.status_code,
                 content_type=observation.content_type,
                 headers=observation.response_headers,
+            )
+        elif (
+            validation.action
+            is ControlledValidationAction
+            .HTTP_PARAMETER_SURFACE_VALIDATION
+        ):
+            validator_analysis = analyze_parameter_surface(
+                validation.target_url
             )
 
         database.add_audit_event(
@@ -694,56 +892,7 @@ async def run_tracked_controlled_validation_observation(
                     ),
                     "request_attempted": True,
                     "network_activity": True,
-                    "validator_id": (
-                        validator_analysis.validator_id
-                        if validator_analysis is not None
-                        else None
-                    ),
-                    "validator_classification": (
-                        validator_analysis.classification.value
-                        if validator_analysis is not None
-                        else None
-                    ),
-                    "validator_reason": (
-                        validator_analysis.reason
-                        if validator_analysis is not None
-                        else None
-                    ),
-                    "protection_sources": (
-                        list(validator_analysis.protection_sources)
-                        if validator_analysis is not None
-                        else []
-                    ),
-                    "csp_frame_ancestors": (
-                        list(validator_analysis.csp_frame_ancestors)
-                        if validator_analysis is not None
-                        else []
-                    ),
-                    "x_frame_options": (
-                        validator_analysis.x_frame_options
-                        if validator_analysis is not None
-                        else None
-                    ),
-                    "header_only": (
-                        validator_analysis.header_only
-                        if validator_analysis is not None
-                        else None
-                    ),
-                    "exploit_page_generated": (
-                        validator_analysis.exploit_page_generated
-                        if validator_analysis is not None
-                        else False
-                    ),
-                    "browser_launched": (
-                        validator_analysis.browser_launched
-                        if validator_analysis is not None
-                        else False
-                    ),
-                    "payload_generated": (
-                        validator_analysis.payload_generated
-                        if validator_analysis is not None
-                        else False
-                    ),
+                    **_validator_metadata(validator_analysis),
                 },
             ),
             actor=actor,

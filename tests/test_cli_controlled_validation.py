@@ -1634,3 +1634,104 @@ def test_controlled_observe_renders_clickjacking_analysis(
     assert "Exploit page generated: false" in normalized
     assert "Browser launched: false" in normalized
     assert "Payload generated: false" in normalized
+
+
+def test_controlled_observe_renders_parameter_surface_analysis(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    import saarthi_ai.cli as cli_module
+
+    captured: dict[str, object] = {}
+
+    async def fake_workflow(
+        database,
+        request,
+        *,
+        transport=None,
+        actor,
+        evidence_root,
+    ):
+        captured["request"] = request
+        return SimpleNamespace(
+            execution=SimpleNamespace(
+                state=SimpleNamespace(value="completed"),
+            ),
+            observation=SimpleNamespace(
+                policy=SimpleNamespace(
+                    decision=SimpleNamespace(value="allow"),
+                ),
+                method=request.method,
+                request_attempted=True,
+                response_received=True,
+                status_code=200,
+                final_url=request.validation.target_url,
+                body_bytes_captured=0,
+                body_truncated=False,
+                body_sha256="b" * 64,
+            ),
+            validator_analysis=SimpleNamespace(
+                validator_id=(
+                    "6C.3-http-parameter-surface-validation"
+                ),
+                classification=SimpleNamespace(
+                    value="ambiguous_surface_observed"
+                ),
+                reason="Duplicate parameter name observed.",
+                parameter_count=2,
+                duplicate_parameter_names=("id",),
+                variant_parameter_groups=(),
+            ),
+            evidence=SimpleNamespace(
+                evidence_id="evidence-parameter-surface",
+                path=str(evidence_root / "parameters.json"),
+                sha256="a" * 64,
+            ),
+            reused_existing_evidence=False,
+        )
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        cli_module,
+        "get_database",
+        lambda: object(),
+    )
+    monkeypatch.setattr(
+        cli_module,
+        "run_tracked_controlled_validation_observation",
+        fake_workflow,
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "controlled",
+            "observe",
+            "--execution",
+            "execution-test",
+            "--url",
+            "https://example.com/?id=1&id=2",
+            "--action",
+            "http_parameter_surface_validation",
+            "--approved",
+        ],
+    )
+
+    assert result.exit_code == 0
+    request = captured["request"]
+    assert (
+        request.validation.action
+        is (
+            ControlledValidationAction
+            .HTTP_PARAMETER_SURFACE_VALIDATION
+        )
+    )
+    normalized = " ".join(result.stdout.split())
+    assert "6C.3 HTTP Parameter Surface Validation" in normalized
+    assert "Classification: ambiguous_surface_observed" in normalized
+    assert "Parameters: 2" in normalized
+    assert "Duplicate names: id" in normalized
+    assert "Target unchanged: true" in normalized
+    assert "Parameters mutated: false" in normalized
+    assert "Parser attack sent: false" in normalized
+    assert "Payload generated: false" in normalized

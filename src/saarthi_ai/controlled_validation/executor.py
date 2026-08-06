@@ -27,6 +27,7 @@ EXECUTABLE_ACTIONS = frozenset(
         ControlledValidationAction.RESPONSE_DIFFERENTIAL,
         ControlledValidationAction.INPUT_HANDLING_OBSERVATION,
         ControlledValidationAction.CLICKJACKING_HEADER_VALIDATION,
+        ControlledValidationAction.HTTP_PARAMETER_SURFACE_VALIDATION,
     }
 )
 
@@ -121,7 +122,8 @@ def evaluate_controlled_validation_execution(
             request,
             ControlledValidationExecutionDecision.DENY,
             "Only registered low-risk response, input-handling, and "
-            "clickjacking header observations are executable.",
+            "clickjacking header, and HTTP parameter-surface "
+            "observations are executable.",
         )
 
     if method not in ALLOWED_METHODS:

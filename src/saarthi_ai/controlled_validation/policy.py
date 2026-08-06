@@ -27,6 +27,9 @@ ACTION_RISK: dict[
     ControlledValidationAction.CLICKJACKING_HEADER_VALIDATION: (
         ControlledValidationRisk.LOW
     ),
+    ControlledValidationAction.HTTP_PARAMETER_SURFACE_VALIDATION: (
+        ControlledValidationRisk.LOW
+    ),
     ControlledValidationAction.AUTHORIZATION_BOUNDARY: (
         ControlledValidationRisk.MODERATE
     ),

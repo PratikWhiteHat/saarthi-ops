@@ -36,6 +36,9 @@ class ControlledValidationAction(StrEnum):
     CLICKJACKING_HEADER_VALIDATION = (
         "clickjacking_header_validation"
     )
+    HTTP_PARAMETER_SURFACE_VALIDATION = (
+        "http_parameter_surface_validation"
+    )
     AUTHORIZATION_BOUNDARY = "authorization_boundary"
     STATE_CHANGE_VALIDATION = "state_change_validation"
     FILE_PROCESSING_VALIDATION = "file_processing_validation"

@@ -61,10 +61,11 @@ def make_request(
     action: ControlledValidationAction = (
         ControlledValidationAction.RESPONSE_DIFFERENTIAL
     ),
+    target_url: str = "https://example.com/account",
 ) -> ControlledValidationExecutionRequest:
     validation = ControlledValidationRequest(
         execution_id=execution_id,
-        target_url="https://example.com/account",
+        target_url=target_url,
         action=action,
         authorized=True,
         active_testing=True,
@@ -81,6 +82,125 @@ def make_request(
         follow_redirects=False,
     )
 
+
+@pytest.mark.asyncio
+async def test_parameter_surface_validator_preserves_approved_target(
+    database: SaarthiDatabase,
+    tmp_path: Path,
+) -> None:
+    execution_id = create_execution(database)
+    target_url = "https://example.com/search?id=1&id=2"
+    request = make_request(
+        execution_id,
+        action=(
+            ControlledValidationAction
+            .HTTP_PARAMETER_SURFACE_VALIDATION
+        ),
+        target_url=target_url,
+    )
+    create_tracked_controlled_validation_plan(
+        database,
+        request.validation,
+        evidence_root=tmp_path / "plans",
+    )
+    requested_urls: list[str] = []
+
+    def handler(request_object: httpx.Request) -> httpx.Response:
+        requested_urls.append(str(request_object.url))
+        return httpx.Response(
+            200,
+            headers={"Content-Type": "text/html"},
+            request=request_object,
+        )
+
+    result = await run_tracked_controlled_validation_observation(
+        database,
+        request,
+        transport=httpx.MockTransport(handler),
+        evidence_root=tmp_path / "observations",
+    )
+
+    assert requested_urls == [target_url]
+    assert result.validator_analysis is not None
+    assert (
+        result.validator_analysis.validator_id
+        == "6C.3-http-parameter-surface-validation"
+    )
+    assert (
+        result.validator_analysis.classification.value
+        == "ambiguous_surface_observed"
+    )
+    assert result.validator_analysis.duplicate_parameter_names == (
+        "id",
+    )
+    assert result.validator_analysis.target_unchanged is True
+    assert result.validator_analysis.parameters_mutated is False
+    assert result.validator_analysis.parser_attack_sent is False
+    assert result.validator_analysis.payload_generated is False
+
+    payload = json.loads(Path(result.evidence.path).read_text())
+    analysis = payload["validator_analysis"]
+    assert analysis["target_unchanged"] is True
+    assert analysis["parameters_mutated"] is False
+    assert analysis["parser_attack_sent"] is False
+    assert analysis["payload_generated"] is False
+    assert analysis["duplicate_parameter_names"] == ["id"]
+
+    metadata = result.evidence.metadata
+    assert metadata["target_url"] == target_url
+    assert metadata["target_unchanged"] is True
+    assert metadata["parameters_mutated"] is False
+    assert metadata["parser_attack_sent"] is False
+
+
+@pytest.mark.asyncio
+async def test_parameter_surface_reuse_sends_no_second_request(
+    database: SaarthiDatabase,
+    tmp_path: Path,
+) -> None:
+    execution_id = create_execution(database)
+    request = make_request(
+        execution_id,
+        action=(
+            ControlledValidationAction
+            .HTTP_PARAMETER_SURFACE_VALIDATION
+        ),
+        target_url="https://example.com/search?q=saarthi",
+    )
+    create_tracked_controlled_validation_plan(
+        database,
+        request.validation,
+        evidence_root=tmp_path / "plans",
+    )
+    request_count = 0
+
+    def handler(request_object: httpx.Request) -> httpx.Response:
+        nonlocal request_count
+        request_count += 1
+        return httpx.Response(200, request=request_object)
+
+    transport = httpx.MockTransport(handler)
+    first = await run_tracked_controlled_validation_observation(
+        database,
+        request,
+        transport=transport,
+        evidence_root=tmp_path / "observations",
+    )
+    second = await run_tracked_controlled_validation_observation(
+        database,
+        request,
+        transport=transport,
+        evidence_root=tmp_path / "observations",
+    )
+
+    assert request_count == 1
+    assert first.validator_analysis is not None
+    assert second.validator_analysis is not None
+    assert (
+        second.validator_analysis.classification.value
+        == "no_ambiguity_observed"
+    )
+    assert second.reused_existing_evidence is True
 
 @pytest.mark.asyncio
 async def test_clickjacking_validator_persists_header_only_analysis(

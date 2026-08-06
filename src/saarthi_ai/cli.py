@@ -2652,7 +2652,8 @@ def controlled_observe(
             help=(
                 "Low-risk executable action: response_differential "
                 "input_handling_observation, or "
-                "clickjacking_header_validation."
+                "clickjacking_header_validation, or "
+                "http_parameter_surface_validation."
             ),
         ),
     ] = ControlledValidationAction.RESPONSE_DIFFERENTIAL,
@@ -2715,11 +2716,12 @@ def controlled_observe(
         ControlledValidationAction.RESPONSE_DIFFERENTIAL,
         ControlledValidationAction.INPUT_HANDLING_OBSERVATION,
         ControlledValidationAction.CLICKJACKING_HEADER_VALIDATION,
+        ControlledValidationAction.HTTP_PARAMETER_SURFACE_VALIDATION,
     }:
         console.print(
             "[bold red]Unsupported executable action.[/bold red] "
             "Only registered low-risk response, input-handling, and "
-            "clickjacking header observations are allowed."
+            "clickjacking or parameter-surface observations are allowed."
         )
         raise typer.Exit(code=1)
 
@@ -2843,38 +2845,80 @@ def controlled_observe(
             )
         ) is not None:
             console.print()
-            console.print(
-                "[bold cyan]6C.2 Clickjacking Header Validation"
-                "[/bold cyan]"
-            )
-            console.print(
-                f"Classification: {analysis.classification.value}"
-            )
-            console.print(f"Reason: {analysis.reason}")
-            console.print(
-                "Protection sources: "
-                + (
-                    ", ".join(analysis.protection_sources)
-                    if analysis.protection_sources
-                    else "none"
+            if (
+                getattr(analysis, "validator_id", None)
+                == "6C.3-http-parameter-surface-validation"
+            ):
+                console.print(
+                    "[bold cyan]6C.3 HTTP Parameter Surface "
+                    "Validation[/bold cyan]"
                 )
-            )
-            console.print(
-                "CSP frame-ancestors: "
-                + (
-                    " ".join(analysis.csp_frame_ancestors)
-                    if analysis.csp_frame_ancestors
-                    else "not observed"
+                console.print(
+                    "Classification: "
+                    f"{analysis.classification.value}"
                 )
-            )
-            console.print(
-                "X-Frame-Options: "
-                f"{analysis.x_frame_options or 'not observed'}"
-            )
-            console.print("Header-only analysis: true")
-            console.print("Exploit page generated: false")
-            console.print("Browser launched: false")
-            console.print("Payload generated: false")
+                console.print(f"Reason: {analysis.reason}")
+                console.print(
+                    f"Parameters: {analysis.parameter_count}"
+                )
+                console.print(
+                    "Duplicate names: "
+                    + (
+                        ", ".join(
+                            analysis.duplicate_parameter_names
+                        )
+                        if analysis.duplicate_parameter_names
+                        else "none"
+                    )
+                )
+                console.print(
+                    "Variant groups: "
+                    + (
+                        ", ".join(
+                            analysis.variant_parameter_groups
+                        )
+                        if analysis.variant_parameter_groups
+                        else "none"
+                    )
+                )
+                console.print("Target unchanged: true")
+                console.print("Parameters mutated: false")
+                console.print("Parser attack sent: false")
+                console.print("Payload generated: false")
+            else:
+                console.print(
+                    "[bold cyan]6C.2 Clickjacking Header Validation"
+                    "[/bold cyan]"
+                )
+                console.print(
+                    "Classification: "
+                    f"{analysis.classification.value}"
+                )
+                console.print(f"Reason: {analysis.reason}")
+                console.print(
+                    "Protection sources: "
+                    + (
+                        ", ".join(analysis.protection_sources)
+                        if analysis.protection_sources
+                        else "none"
+                    )
+                )
+                console.print(
+                    "CSP frame-ancestors: "
+                    + (
+                        " ".join(analysis.csp_frame_ancestors)
+                        if analysis.csp_frame_ancestors
+                        else "not observed"
+                    )
+                )
+                console.print(
+                    "X-Frame-Options: "
+                    f"{analysis.x_frame_options or 'not observed'}"
+                )
+                console.print("Header-only analysis: true")
+                console.print("Exploit page generated: false")
+                console.print("Browser launched: false")
+                console.print("Payload generated: false")
 
         if result.reused_existing_evidence:
             console.print(

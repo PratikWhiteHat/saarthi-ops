@@ -580,6 +580,52 @@ class ReadOnlySaarthiRepository:
                     metadata.get("payload_generated"),
                     "false",
                 ),
+                "parameter_count": display(
+                    metadata.get("parameter_count"),
+                    "0",
+                ),
+                "duplicate_parameter_names": (
+                    ", ".join(
+                        item
+                        for item in metadata.get(
+                            "duplicate_parameter_names",
+                            [],
+                        )
+                        if isinstance(item, str)
+                    )
+                    if isinstance(
+                        metadata.get("duplicate_parameter_names"),
+                        list,
+                    )
+                    else "—"
+                ),
+                "variant_parameter_groups": (
+                    ", ".join(
+                        item
+                        for item in metadata.get(
+                            "variant_parameter_groups",
+                            [],
+                        )
+                        if isinstance(item, str)
+                    )
+                    if isinstance(
+                        metadata.get("variant_parameter_groups"),
+                        list,
+                    )
+                    else "—"
+                ),
+                "target_unchanged": display(
+                    metadata.get("target_unchanged"),
+                    "false",
+                ),
+                "parameters_mutated": display(
+                    metadata.get("parameters_mutated"),
+                    "false",
+                ),
+                "parser_attack_sent": display(
+                    metadata.get("parser_attack_sent"),
+                    "false",
+                ),
                 "subprocess_started": display(
                     metadata.get("subprocess_started"),
                     "false",
@@ -2621,6 +2667,7 @@ TOOLS = [
     ("Saarthi 6A", "Attack Hypothesis Engine", "ENABLED"),
     ("Saarthi 6B", "Policy & Approval Gate", "APPROVAL"),
     ("Saarthi 6C.2", "Clickjacking Header Validator", "APPROVAL"),
+    ("Saarthi 6C.3", "HTTP Parameter Surface Validator", "APPROVAL"),
     ("nuclei", "Controlled Preview / Execution", "APPROVAL"),
     ("sqlmap", "SQL Injection Testing", "PHASE 4A"),
     ("ghauri", "Blind SQLi Cross-check", "PHASE 4B"),
@@ -2935,6 +2982,55 @@ def build_scope_lines(
                     (
                         "Browser Launched   : "
                         f"{observation_value('browser_launched', max_length=12)}"
+                    ),
+                    (
+                        "Payload Generated  : "
+                        f"{observation_value('payload_generated', max_length=12)}"
+                    ),
+                ]
+            )
+        elif (
+            observation.get("validator_id")
+            == "6C.3-http-parameter-surface-validation"
+        ):
+            scope_lines.extend(
+                [
+                    "",
+                    (
+                        "[bold cyan]6C.3 — HTTP PARAMETER SURFACE "
+                        "VALIDATION[/bold cyan]"
+                    ),
+                    (
+                        "Classification     : "
+                        f"{observation_value('validator_classification', max_length=40)}"
+                    ),
+                    (
+                        "Reason             : "
+                        f"{observation_value('validator_reason', max_length=120)}"
+                    ),
+                    (
+                        "Parameter Count    : "
+                        f"{observation_value('parameter_count', max_length=12)}"
+                    ),
+                    (
+                        "Duplicate Names    : "
+                        f"{observation_value('duplicate_parameter_names', max_length=72)}"
+                    ),
+                    (
+                        "Variant Groups     : "
+                        f"{observation_value('variant_parameter_groups', max_length=72)}"
+                    ),
+                    (
+                        "Target Unchanged   : "
+                        f"{observation_value('target_unchanged', max_length=12)}"
+                    ),
+                    (
+                        "Parameters Mutated : "
+                        f"{observation_value('parameters_mutated', max_length=12)}"
+                    ),
+                    (
+                        "Parser Attack Sent : "
+                        f"{observation_value('parser_attack_sent', max_length=12)}"
                     ),
                     (
                         "Payload Generated  : "

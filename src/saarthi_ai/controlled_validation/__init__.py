@@ -29,6 +29,11 @@ from saarthi_ai.controlled_validation.observation import (
     ControlledValidationObservationResult,
     execute_bounded_observation,
 )
+from saarthi_ai.controlled_validation.parameter_surface import (
+    ParameterSurfaceClassification,
+    ParameterSurfaceValidationResult,
+    analyze_parameter_surface,
+)
 from saarthi_ai.controlled_validation.policy import (
     MAX_CONTROLLED_REQUESTS,
     evaluate_controlled_validation,
@@ -43,6 +48,8 @@ __all__ = [
     "MAX_CONTROLLED_REQUESTS",
     "MAX_RESPONSE_BYTES",
     "MAX_TIMEOUT_SECONDS",
+    "ParameterSurfaceClassification",
+    "ParameterSurfaceValidationResult",
     "ControlledValidationAction",
     "ClickjackingClassification",
     "ClickjackingValidationResult",
@@ -58,4 +65,5 @@ __all__ = [
     "evaluate_controlled_validation_execution",
     "execute_bounded_observation",
     "analyze_clickjacking_protection",
+    "analyze_parameter_surface",
 ]

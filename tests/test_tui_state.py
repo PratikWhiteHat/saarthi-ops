@@ -2720,3 +2720,62 @@ def test_clickjacking_validator_tool_row_requires_approval() -> None:
         "Clickjacking Header Validator",
         "APPROVAL",
     ) in TOOLS
+
+
+def test_scope_lines_render_parameter_surface_summary() -> None:
+    from dataclasses import replace
+
+    from saarthi_ai.tui.app import (
+        build_scope_lines,
+        demo_snapshot,
+    )
+
+    snapshot = replace(
+        demo_snapshot(),
+        attack_hypothesis_set=None,
+        controlled_validation_plan=None,
+        controlled_observation={
+            "evidence_id": "evidence-parameter-surface",
+            "target_url": "https://example.com/?id=1&id=2",
+            "action": "http_parameter_surface_validation",
+            "method": "GET",
+            "status_code": "200",
+            "validator_id": (
+                "6C.3-http-parameter-surface-validation"
+            ),
+            "validator_classification": (
+                "ambiguous_surface_observed"
+            ),
+            "validator_reason": (
+                "Duplicate parameter name observed."
+            ),
+            "parameter_count": "2",
+            "duplicate_parameter_names": "id",
+            "variant_parameter_groups": "—",
+            "target_unchanged": "true",
+            "parameters_mutated": "false",
+            "parser_attack_sent": "false",
+            "payload_generated": "false",
+        },
+    )
+
+    rendered = "\n".join(build_scope_lines(snapshot))
+
+    assert "6C.3 — HTTP PARAMETER SURFACE VALIDATION" in rendered
+    assert "ambiguous_surface_observed" in rendered
+    assert "Parameter Count    : 2" in rendered
+    assert "Duplicate Names    : id" in rendered
+    assert "Target Unchanged   : true" in rendered
+    assert "Parameters Mutated : false" in rendered
+    assert "Parser Attack Sent : false" in rendered
+    assert "Payload Generated  : false" in rendered
+
+
+def test_parameter_surface_validator_tool_row_requires_approval() -> None:
+    from saarthi_ai.tui.app import TOOLS
+
+    assert (
+        "Saarthi 6C.3",
+        "HTTP Parameter Surface Validator",
+        "APPROVAL",
+    ) in TOOLS
