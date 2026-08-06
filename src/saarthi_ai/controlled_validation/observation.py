@@ -13,6 +13,13 @@ from saarthi_ai.controlled_validation.executor import (
     ControlledValidationExecutionRequest,
     evaluate_controlled_validation_execution,
 )
+from saarthi_ai.controlled_validation.models import (
+    ControlledValidationAction,
+)
+from saarthi_ai.controlled_validation.session_cookie import (
+    SessionCookieValidationResult,
+    analyze_session_cookie_attributes,
+)
 from saarthi_ai.execution.http_collector import (
     read_limited_body,
     sanitize_headers,
@@ -38,6 +45,9 @@ class ControlledValidationObservationResult:
     body_bytes_captured: int = 0
     body_truncated: bool = False
     body_sha256: str | None = None
+    session_cookie_analysis: (
+        SessionCookieValidationResult | None
+    ) = None
     error_type: str | None = None
     error: str | None = None
 
@@ -160,6 +170,21 @@ async def execute_bounded_observation(
                     body_bytes_captured=len(body),
                     body_truncated=truncated,
                     body_sha256=sha256(body).hexdigest(),
+                    session_cookie_analysis=(
+                        analyze_session_cookie_attributes(
+                            tuple(
+                                response.headers.get_list(
+                                    "set-cookie"
+                                )
+                            )
+                        )
+                        if (
+                            request.validation.action
+                            is ControlledValidationAction
+                            .SESSION_COOKIE_ATTRIBUTE_VALIDATION
+                        )
+                        else None
+                    ),
                 )
     except (
         httpx.TimeoutException,

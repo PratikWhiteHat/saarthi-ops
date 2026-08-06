@@ -626,6 +626,46 @@ class ReadOnlySaarthiRepository:
                     metadata.get("parser_attack_sent"),
                     "false",
                 ),
+                "cookie_count": display(
+                    metadata.get("cookie_count"),
+                    "0",
+                ),
+                "cookies_with_issues": display(
+                    metadata.get("cookies_with_issues"),
+                    "0",
+                ),
+                "issue_counts": (
+                    ", ".join(
+                        f"{key}={value}"
+                        for key, value in sorted(
+                            metadata.get("issue_counts", {}).items()
+                        )
+                        if isinstance(key, str)
+                        and isinstance(value, int)
+                        and not isinstance(value, bool)
+                    )
+                    if isinstance(
+                        metadata.get("issue_counts"),
+                        dict,
+                    )
+                    else "—"
+                ),
+                "cookie_values_discarded": display(
+                    metadata.get("cookie_values_discarded"),
+                    "false",
+                ),
+                "raw_set_cookie_stored": display(
+                    metadata.get("raw_set_cookie_stored"),
+                    "false",
+                ),
+                "cookie_replayed": display(
+                    metadata.get("cookie_replayed"),
+                    "false",
+                ),
+                "credential_header_sent": display(
+                    metadata.get("credential_header_sent"),
+                    "false",
+                ),
                 "subprocess_started": display(
                     metadata.get("subprocess_started"),
                     "false",
@@ -2668,6 +2708,7 @@ TOOLS = [
     ("Saarthi 6B", "Policy & Approval Gate", "APPROVAL"),
     ("Saarthi 6C.2", "Clickjacking Header Validator", "APPROVAL"),
     ("Saarthi 6C.3", "HTTP Parameter Surface Validator", "APPROVAL"),
+    ("Saarthi 6C.4", "Session Cookie Attribute Validator", "APPROVAL"),
     ("nuclei", "Controlled Preview / Execution", "APPROVAL"),
     ("sqlmap", "SQL Injection Testing", "PHASE 4A"),
     ("ghauri", "Blind SQLi Cross-check", "PHASE 4B"),
@@ -3031,6 +3072,56 @@ def build_scope_lines(
                     (
                         "Parser Attack Sent : "
                         f"{observation_value('parser_attack_sent', max_length=12)}"
+                    ),
+                    (
+                        "Payload Generated  : "
+                        f"{observation_value('payload_generated', max_length=12)}"
+                    ),
+                ]
+            )
+        elif (
+            observation.get("validator_id")
+            == "6C.4-session-cookie-attribute-validation"
+        ):
+            scope_lines.extend(
+                [
+                    "",
+                    (
+                        "[bold cyan]6C.4 — SESSION COOKIE ATTRIBUTE "
+                        "VALIDATION[/bold cyan]"
+                    ),
+                    (
+                        "Classification     : "
+                        f"{observation_value('validator_classification', max_length=40)}"
+                    ),
+                    (
+                        "Reason             : "
+                        f"{observation_value('validator_reason', max_length=120)}"
+                    ),
+                    (
+                        "Cookies / Issues   : "
+                        f"{observation_value('cookie_count', max_length=12)} / "
+                        f"{observation_value('cookies_with_issues', max_length=12)}"
+                    ),
+                    (
+                        "Issue Counts       : "
+                        f"{observation_value('issue_counts', max_length=120)}"
+                    ),
+                    (
+                        "Values Discarded   : "
+                        f"{observation_value('cookie_values_discarded', max_length=12)}"
+                    ),
+                    (
+                        "Raw Header Stored  : "
+                        f"{observation_value('raw_set_cookie_stored', max_length=12)}"
+                    ),
+                    (
+                        "Cookie Replayed    : "
+                        f"{observation_value('cookie_replayed', max_length=12)}"
+                    ),
+                    (
+                        "Credential Sent    : "
+                        f"{observation_value('credential_header_sent', max_length=12)}"
                     ),
                     (
                         "Payload Generated  : "

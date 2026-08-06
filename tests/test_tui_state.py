@@ -2779,3 +2779,62 @@ def test_parameter_surface_validator_tool_row_requires_approval() -> None:
         "HTTP Parameter Surface Validator",
         "APPROVAL",
     ) in TOOLS
+
+
+def test_scope_lines_render_session_cookie_summary() -> None:
+    from dataclasses import replace
+
+    from saarthi_ai.tui.app import (
+        build_scope_lines,
+        demo_snapshot,
+    )
+
+    snapshot = replace(
+        demo_snapshot(),
+        attack_hypothesis_set=None,
+        controlled_validation_plan=None,
+        controlled_observation={
+            "evidence_id": "evidence-session-cookie",
+            "target_url": "https://example.com/",
+            "action": "session_cookie_attribute_validation",
+            "method": "GET",
+            "status_code": "200",
+            "validator_id": (
+                "6C.4-session-cookie-attribute-validation"
+            ),
+            "validator_classification": "review_recommended",
+            "validator_reason": (
+                "Cookie attributes require manual review."
+            ),
+            "cookie_count": "2",
+            "cookies_with_issues": "1",
+            "issue_counts": "missing_http_only=1",
+            "cookie_values_discarded": "true",
+            "raw_set_cookie_stored": "false",
+            "cookie_replayed": "false",
+            "credential_header_sent": "false",
+            "payload_generated": "false",
+        },
+    )
+
+    rendered = "\n".join(build_scope_lines(snapshot))
+
+    assert "6C.4 — SESSION COOKIE ATTRIBUTE VALIDATION" in rendered
+    assert "Classification     : review_recommended" in rendered
+    assert "Cookies / Issues   : 2 / 1" in rendered
+    assert "missing_http_only=1" in rendered
+    assert "Values Discarded   : true" in rendered
+    assert "Raw Header Stored  : false" in rendered
+    assert "Cookie Replayed    : false" in rendered
+    assert "Credential Sent    : false" in rendered
+    assert "Payload Generated  : false" in rendered
+
+
+def test_session_cookie_validator_tool_row_requires_approval() -> None:
+    from saarthi_ai.tui.app import TOOLS
+
+    assert (
+        "Saarthi 6C.4",
+        "Session Cookie Attribute Validator",
+        "APPROVAL",
+    ) in TOOLS

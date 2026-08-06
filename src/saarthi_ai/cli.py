@@ -2653,7 +2653,8 @@ def controlled_observe(
                 "Low-risk executable action: response_differential "
                 "input_handling_observation, or "
                 "clickjacking_header_validation, or "
-                "http_parameter_surface_validation."
+                "http_parameter_surface_validation, or "
+                "session_cookie_attribute_validation."
             ),
         ),
     ] = ControlledValidationAction.RESPONSE_DIFFERENTIAL,
@@ -2717,11 +2718,24 @@ def controlled_observe(
         ControlledValidationAction.INPUT_HANDLING_OBSERVATION,
         ControlledValidationAction.CLICKJACKING_HEADER_VALIDATION,
         ControlledValidationAction.HTTP_PARAMETER_SURFACE_VALIDATION,
+        ControlledValidationAction.SESSION_COOKIE_ATTRIBUTE_VALIDATION,
     }:
         console.print(
             "[bold red]Unsupported executable action.[/bold red] "
             "Only registered low-risk response, input-handling, and "
-            "clickjacking or parameter-surface observations are allowed."
+            "clickjacking, parameter-surface, or session-cookie "
+            "observations are allowed."
+        )
+        raise typer.Exit(code=1)
+
+    if (
+        action
+        is ControlledValidationAction.SESSION_COOKIE_ATTRIBUTE_VALIDATION
+        and normalized_method != "GET"
+    ):
+        console.print(
+            "[bold red]Invalid method.[/bold red] "
+            "Session-cookie attribute validation requires GET."
         )
         raise typer.Exit(code=1)
 
@@ -2846,6 +2860,42 @@ def controlled_observe(
         ) is not None:
             console.print()
             if (
+                getattr(analysis, "validator_id", None)
+                == "6C.4-session-cookie-attribute-validation"
+            ):
+                console.print(
+                    "[bold cyan]6C.4 Session Cookie Attribute "
+                    "Validation[/bold cyan]"
+                )
+                console.print(
+                    "Classification: "
+                    f"{analysis.classification.value}"
+                )
+                console.print(f"Reason: {analysis.reason}")
+                console.print(
+                    f"Cookies observed: {analysis.cookie_count}"
+                )
+                console.print(
+                    "Cookies with issues: "
+                    f"{analysis.cookies_with_issues}"
+                )
+                console.print(
+                    "Issue counts: "
+                    + (
+                        ", ".join(
+                            f"{name}={count}"
+                            for name, count in analysis.issue_counts
+                        )
+                        if analysis.issue_counts
+                        else "none"
+                    )
+                )
+                console.print("Cookie values discarded: true")
+                console.print("Raw Set-Cookie stored: false")
+                console.print("Cookie replayed: false")
+                console.print("Credential header sent: false")
+                console.print("Payload generated: false")
+            elif (
                 getattr(analysis, "validator_id", None)
                 == "6C.3-http-parameter-surface-validation"
             ):

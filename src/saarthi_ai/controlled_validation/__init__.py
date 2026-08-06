@@ -38,6 +38,12 @@ from saarthi_ai.controlled_validation.policy import (
     MAX_CONTROLLED_REQUESTS,
     evaluate_controlled_validation,
 )
+from saarthi_ai.controlled_validation.session_cookie import (
+    CookieAttributeObservation,
+    SessionCookieClassification,
+    SessionCookieValidationResult,
+    analyze_session_cookie_attributes,
+)
 
 __all__ = [
     "ALLOWED_METHODS",
@@ -61,9 +67,13 @@ __all__ = [
     "ControlledValidationPolicyResult",
     "ControlledValidationRequest",
     "ControlledValidationRisk",
+    "CookieAttributeObservation",
+    "SessionCookieClassification",
+    "SessionCookieValidationResult",
     "evaluate_controlled_validation",
     "evaluate_controlled_validation_execution",
     "execute_bounded_observation",
     "analyze_clickjacking_protection",
     "analyze_parameter_surface",
+    "analyze_session_cookie_attributes",
 ]

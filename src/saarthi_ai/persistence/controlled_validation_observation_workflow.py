@@ -36,6 +36,11 @@ from saarthi_ai.controlled_validation.parameter_surface import (
     ParameterSurfaceValidationResult,
     analyze_parameter_surface,
 )
+from saarthi_ai.controlled_validation.session_cookie import (
+    CookieAttributeObservation,
+    SessionCookieClassification,
+    SessionCookieValidationResult,
+)
 from saarthi_ai.persistence.database import (
     InvalidStateTransitionError,
     SaarthiDatabase,
@@ -60,6 +65,7 @@ DEFAULT_EVIDENCE_ROOT = (
 ValidatorAnalysis = (
     ClickjackingValidationResult
     | ParameterSurfaceValidationResult
+    | SessionCookieValidationResult
 )
 
 
@@ -318,6 +324,90 @@ def _validator_analysis_from_evidence(
             ),
         )
 
+    if validator_id == "6C.4-session-cookie-attribute-validation":
+        try:
+            classification = SessionCookieClassification(
+                str(metadata["validator_classification"])
+            )
+        except (KeyError, ValueError):
+            return None
+
+        raw_observations = metadata.get("cookie_observations")
+        observations: list[CookieAttributeObservation] = []
+        if isinstance(raw_observations, list):
+            for item in raw_observations:
+                if not isinstance(item, dict):
+                    continue
+                fingerprint = item.get("cookie_name_sha256")
+                issues = item.get("issues")
+                if (
+                    not isinstance(fingerprint, str)
+                    or len(fingerprint) != 64
+                ):
+                    continue
+                observations.append(
+                    CookieAttributeObservation(
+                        cookie_name_sha256=fingerprint,
+                        secure=bool(item.get("secure")),
+                        http_only=bool(item.get("http_only")),
+                        same_site=(
+                            str(item["same_site"])
+                            if item.get("same_site") is not None
+                            else None
+                        ),
+                        path_is_root=bool(
+                            item.get("path_is_root")
+                        ),
+                        domain_present=bool(
+                            item.get("domain_present")
+                        ),
+                        host_prefix=bool(
+                            item.get("host_prefix")
+                        ),
+                        secure_prefix=bool(
+                            item.get("secure_prefix")
+                        ),
+                        issues=tuple(
+                            issue
+                            for issue in issues
+                            if isinstance(issue, str)
+                        )
+                        if isinstance(issues, list)
+                        else (),
+                    )
+                )
+
+        raw_issue_counts = metadata.get("issue_counts")
+        issue_counts = (
+            tuple(
+                (str(key), int(value))
+                for key, value in raw_issue_counts.items()
+                if isinstance(value, int)
+                and not isinstance(value, bool)
+                and value >= 0
+            )
+            if isinstance(raw_issue_counts, dict)
+            else ()
+        )
+
+        return SessionCookieValidationResult(
+            validator_id=validator_id,
+            classification=classification,
+            reason=str(metadata.get("validator_reason") or ""),
+            cookie_count=int(metadata.get("cookie_count") or 0),
+            cookies_with_issues=int(
+                metadata.get("cookies_with_issues") or 0
+            ),
+            issue_counts=tuple(sorted(issue_counts)),
+            cookie_observations=tuple(observations),
+            analysis_truncated=bool(
+                metadata.get("analysis_truncated")
+            ),
+            malformed_header_count=int(
+                metadata.get("malformed_header_count") or 0
+            ),
+        )
+
     return None
 
 
@@ -462,7 +552,10 @@ def _serialize_observation(
                     ),
                 }
             )
-        else:
+        elif isinstance(
+            validator_analysis,
+            ParameterSurfaceValidationResult,
+        ):
             serialized_analysis.update(
                 {
                     "parameter_count": (
@@ -500,6 +593,54 @@ def _serialize_observation(
                     ),
                     "parser_attack_sent": (
                         validator_analysis.parser_attack_sent
+                    ),
+                }
+            )
+        else:
+            serialized_analysis.update(
+                {
+                    "cookie_count": validator_analysis.cookie_count,
+                    "cookies_with_issues": (
+                        validator_analysis.cookies_with_issues
+                    ),
+                    "issue_counts": dict(
+                        validator_analysis.issue_counts
+                    ),
+                    "cookie_observations": [
+                        {
+                            "cookie_name_sha256": (
+                                item.cookie_name_sha256
+                            ),
+                            "secure": item.secure,
+                            "http_only": item.http_only,
+                            "same_site": item.same_site,
+                            "path_is_root": item.path_is_root,
+                            "domain_present": item.domain_present,
+                            "host_prefix": item.host_prefix,
+                            "secure_prefix": item.secure_prefix,
+                            "issues": list(item.issues),
+                        }
+                        for item in (
+                            validator_analysis.cookie_observations
+                        )
+                    ],
+                    "analysis_truncated": (
+                        validator_analysis.analysis_truncated
+                    ),
+                    "malformed_header_count": (
+                        validator_analysis.malformed_header_count
+                    ),
+                    "cookie_values_discarded": (
+                        validator_analysis.cookie_values_discarded
+                    ),
+                    "raw_set_cookie_stored": (
+                        validator_analysis.raw_set_cookie_stored
+                    ),
+                    "cookie_replayed": (
+                        validator_analysis.cookie_replayed
+                    ),
+                    "credential_header_sent": (
+                        validator_analysis.credential_header_sent
                     ),
                 }
             )
@@ -546,7 +687,7 @@ def _validator_metadata(
                 "browser_launched": analysis.browser_launched,
             }
         )
-    else:
+    elif isinstance(analysis, ParameterSurfaceValidationResult):
         metadata.update(
             {
                 "parameter_count": analysis.parameter_count,
@@ -575,6 +716,44 @@ def _validator_metadata(
                 "target_unchanged": analysis.target_unchanged,
                 "parameters_mutated": analysis.parameters_mutated,
                 "parser_attack_sent": analysis.parser_attack_sent,
+            }
+        )
+    else:
+        metadata.update(
+            {
+                "cookie_count": analysis.cookie_count,
+                "cookies_with_issues": analysis.cookies_with_issues,
+                "issue_counts": dict(analysis.issue_counts),
+                "cookie_observations": [
+                    {
+                        "cookie_name_sha256": (
+                            item.cookie_name_sha256
+                        ),
+                        "secure": item.secure,
+                        "http_only": item.http_only,
+                        "same_site": item.same_site,
+                        "path_is_root": item.path_is_root,
+                        "domain_present": item.domain_present,
+                        "host_prefix": item.host_prefix,
+                        "secure_prefix": item.secure_prefix,
+                        "issues": list(item.issues),
+                    }
+                    for item in analysis.cookie_observations
+                ],
+                "analysis_truncated": analysis.analysis_truncated,
+                "malformed_header_count": (
+                    analysis.malformed_header_count
+                ),
+                "cookie_values_discarded": (
+                    analysis.cookie_values_discarded
+                ),
+                "raw_set_cookie_stored": (
+                    analysis.raw_set_cookie_stored
+                ),
+                "cookie_replayed": analysis.cookie_replayed,
+                "credential_header_sent": (
+                    analysis.credential_header_sent
+                ),
             }
         )
 
@@ -803,6 +982,18 @@ async def run_tracked_controlled_validation_observation(
             validator_analysis = analyze_parameter_surface(
                 validation.target_url
             )
+        elif (
+            validation.action
+            is ControlledValidationAction
+            .SESSION_COOKIE_ATTRIBUTE_VALIDATION
+        ):
+            validator_analysis = (
+                observation.session_cookie_analysis
+            )
+            if validator_analysis is None:
+                raise ControlledValidationObservationWorkflowError(
+                    "Session-cookie analysis was not produced safely."
+                )
 
         database.add_audit_event(
             validation.execution_id,

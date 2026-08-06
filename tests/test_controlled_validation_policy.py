@@ -69,6 +69,20 @@ def test_parameter_surface_validation_is_low_risk() -> None:
     assert result.risk is ControlledValidationRisk.LOW
 
 
+def test_session_cookie_validation_is_low_risk() -> None:
+    result = evaluate_controlled_validation(
+        make_request(
+            action=(
+                ControlledValidationAction
+                .SESSION_COOKIE_ATTRIBUTE_VALIDATION
+            )
+        )
+    )
+
+    assert result.decision is ControlledValidationDecision.ALLOW
+    assert result.risk is ControlledValidationRisk.LOW
+
+
 def test_authorization_is_required() -> None:
     result = evaluate_controlled_validation(
         make_request(authorized=False)

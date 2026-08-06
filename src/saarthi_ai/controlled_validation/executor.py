@@ -28,6 +28,7 @@ EXECUTABLE_ACTIONS = frozenset(
         ControlledValidationAction.INPUT_HANDLING_OBSERVATION,
         ControlledValidationAction.CLICKJACKING_HEADER_VALIDATION,
         ControlledValidationAction.HTTP_PARAMETER_SURFACE_VALIDATION,
+        ControlledValidationAction.SESSION_COOKIE_ATTRIBUTE_VALIDATION,
     }
 )
 
@@ -131,6 +132,17 @@ def evaluate_controlled_validation_execution(
             request,
             ControlledValidationExecutionDecision.DENY,
             "Only GET and HEAD requests are allowed.",
+        )
+
+    if (
+        validation.action
+        is ControlledValidationAction.SESSION_COOKIE_ATTRIBUTE_VALIDATION
+        and method != "GET"
+    ):
+        return _result(
+            request,
+            ControlledValidationExecutionDecision.DENY,
+            "Session-cookie attribute validation requires exactly one GET.",
         )
 
     if (

@@ -1735,3 +1735,133 @@ def test_controlled_observe_renders_parameter_surface_analysis(
     assert "Parameters mutated: false" in normalized
     assert "Parser attack sent: false" in normalized
     assert "Payload generated: false" in normalized
+
+
+def test_controlled_observe_renders_session_cookie_analysis(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    import saarthi_ai.cli as cli_module
+
+    captured: dict[str, object] = {}
+
+    async def fake_workflow(
+        database,
+        request,
+        *,
+        transport=None,
+        actor,
+        evidence_root,
+    ):
+        captured["request"] = request
+        return SimpleNamespace(
+            execution=SimpleNamespace(
+                state=SimpleNamespace(value="completed"),
+            ),
+            observation=SimpleNamespace(
+                policy=SimpleNamespace(
+                    decision=SimpleNamespace(value="allow"),
+                ),
+                method=request.method,
+                request_attempted=True,
+                response_received=True,
+                status_code=200,
+                final_url=request.validation.target_url,
+                body_bytes_captured=0,
+                body_truncated=False,
+                body_sha256="b" * 64,
+            ),
+            validator_analysis=SimpleNamespace(
+                validator_id=(
+                    "6C.4-session-cookie-attribute-validation"
+                ),
+                classification=SimpleNamespace(
+                    value="review_recommended"
+                ),
+                reason="Cookie attributes require review.",
+                cookie_count=2,
+                cookies_with_issues=1,
+                issue_counts=(("missing_http_only", 1),),
+            ),
+            evidence=SimpleNamespace(
+                evidence_id="evidence-session-cookie",
+                path=str(evidence_root / "cookies.json"),
+                sha256="a" * 64,
+            ),
+            reused_existing_evidence=False,
+        )
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        cli_module,
+        "get_database",
+        lambda: object(),
+    )
+    monkeypatch.setattr(
+        cli_module,
+        "run_tracked_controlled_validation_observation",
+        fake_workflow,
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "controlled",
+            "observe",
+            "--execution",
+            "execution-test",
+            "--url",
+            "https://example.com/",
+            "--action",
+            "session_cookie_attribute_validation",
+            "--method",
+            "GET",
+            "--approved",
+        ],
+    )
+
+    assert result.exit_code == 0
+    request = captured["request"]
+    assert (
+        request.validation.action
+        is (
+            ControlledValidationAction
+            .SESSION_COOKIE_ATTRIBUTE_VALIDATION
+        )
+    )
+    normalized = " ".join(result.stdout.split())
+    assert "6C.4 Session Cookie Attribute Validation" in normalized
+    assert "Classification: review_recommended" in normalized
+    assert "Cookies observed: 2" in normalized
+    assert "Cookies with issues: 1" in normalized
+    assert "missing_http_only=1" in normalized
+    assert "Cookie values discarded: true" in normalized
+    assert "Raw Set-Cookie stored: false" in normalized
+    assert "Cookie replayed: false" in normalized
+    assert "Credential header sent: false" in normalized
+    assert "Payload generated: false" in normalized
+
+
+def test_controlled_observe_rejects_head_for_session_cookie() -> None:
+    result = runner.invoke(
+        app,
+        [
+            "controlled",
+            "observe",
+            "--execution",
+            "execution-test",
+            "--url",
+            "https://example.com/",
+            "--action",
+            "session_cookie_attribute_validation",
+            "--method",
+            "HEAD",
+            "--approved",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert (
+        "Session-cookie attribute validation requires GET"
+        in result.stdout
+    )

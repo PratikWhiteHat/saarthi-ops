@@ -39,6 +39,9 @@ class ControlledValidationAction(StrEnum):
     HTTP_PARAMETER_SURFACE_VALIDATION = (
         "http_parameter_surface_validation"
     )
+    SESSION_COOKIE_ATTRIBUTE_VALIDATION = (
+        "session_cookie_attribute_validation"
+    )
     AUTHORIZATION_BOUNDARY = "authorization_boundary"
     STATE_CHANGE_VALIDATION = "state_change_validation"
     FILE_PROCESSING_VALIDATION = "file_processing_validation"

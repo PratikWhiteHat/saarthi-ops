@@ -30,6 +30,9 @@ ACTION_RISK: dict[
     ControlledValidationAction.HTTP_PARAMETER_SURFACE_VALIDATION: (
         ControlledValidationRisk.LOW
     ),
+    ControlledValidationAction.SESSION_COOKIE_ATTRIBUTE_VALIDATION: (
+        ControlledValidationRisk.LOW
+    ),
     ControlledValidationAction.AUTHORIZATION_BOUNDARY: (
         ControlledValidationRisk.MODERATE
     ),

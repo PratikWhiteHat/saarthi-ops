@@ -278,3 +278,40 @@ async def test_input_handling_observation_uses_same_bounded_adapter() -> None:
 
     assert len(requests) == 1
     assert result.succeeded is True
+
+
+@pytest.mark.asyncio
+async def test_cookie_analysis_discards_secret_values() -> None:
+    secret = "never-persist-this-cookie-value"
+    captured: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.append(request)
+        return httpx.Response(
+            200,
+            headers=[
+                (
+                    "Set-Cookie",
+                    "session="
+                    f"{secret}; Secure; HttpOnly; SameSite=Lax",
+                ),
+            ],
+            request=request,
+        )
+
+    result = await execute_bounded_observation(
+        make_request(
+            action=(
+                ControlledValidationAction
+                .SESSION_COOKIE_ATTRIBUTE_VALIDATION
+            )
+        ),
+        transport=httpx.MockTransport(handler),
+    )
+
+    assert len(captured) == 1
+    assert "cookie" not in captured[0].headers
+    assert result.session_cookie_analysis is not None
+    assert secret not in repr(result.session_cookie_analysis)
+    assert result.response_headers is not None
+    assert result.response_headers["set-cookie"] == "<redacted>"

@@ -202,6 +202,142 @@ async def test_parameter_surface_reuse_sends_no_second_request(
     )
     assert second.reused_existing_evidence is True
 
+
+@pytest.mark.asyncio
+async def test_session_cookie_validator_persists_no_cookie_secrets(
+    database: SaarthiDatabase,
+    tmp_path: Path,
+) -> None:
+    execution_id = create_execution(database)
+    request = make_request(
+        execution_id,
+        action=(
+            ControlledValidationAction
+            .SESSION_COOKIE_ATTRIBUTE_VALIDATION
+        ),
+    )
+    create_tracked_controlled_validation_plan(
+        database,
+        request.validation,
+        evidence_root=tmp_path / "plans",
+    )
+    secret = "sensitive-cookie-value-never-store"
+    captured_requests: list[httpx.Request] = []
+
+    def handler(request_object: httpx.Request) -> httpx.Response:
+        captured_requests.append(request_object)
+        return httpx.Response(
+            200,
+            headers=[
+                (
+                    "Set-Cookie",
+                    "session="
+                    f"{secret}; Secure; HttpOnly; "
+                    "SameSite=Lax; Path=/",
+                ),
+                (
+                    "Set-Cookie",
+                    "preferences=also-secret; SameSite=Lax",
+                ),
+            ],
+            request=request_object,
+        )
+
+    result = await run_tracked_controlled_validation_observation(
+        database,
+        request,
+        transport=httpx.MockTransport(handler),
+        evidence_root=tmp_path / "observations",
+    )
+
+    assert len(captured_requests) == 1
+    assert "cookie" not in captured_requests[0].headers
+    assert result.validator_analysis is not None
+    assert (
+        result.validator_analysis.validator_id
+        == "6C.4-session-cookie-attribute-validation"
+    )
+    assert result.validator_analysis.cookie_count == 2
+    assert result.validator_analysis.cookies_with_issues == 1
+    assert result.validator_analysis.cookie_values_discarded is True
+    assert result.validator_analysis.raw_set_cookie_stored is False
+    assert result.validator_analysis.cookie_replayed is False
+    assert result.validator_analysis.credential_header_sent is False
+
+    evidence_text = Path(result.evidence.path).read_text()
+    assert secret not in evidence_text
+    assert "also-secret" not in evidence_text
+    assert '"session"' not in evidence_text
+    assert '"preferences"' not in evidence_text
+
+    payload = json.loads(evidence_text)
+    analysis = payload["validator_analysis"]
+    assert analysis["cookie_values_discarded"] is True
+    assert analysis["raw_set_cookie_stored"] is False
+    assert analysis["cookie_replayed"] is False
+    assert analysis["credential_header_sent"] is False
+    assert len(
+        analysis["cookie_observations"][0][
+            "cookie_name_sha256"
+        ]
+    ) == 64
+
+    metadata_text = json.dumps(result.evidence.metadata)
+    assert secret not in metadata_text
+    assert "also-secret" not in metadata_text
+    assert result.evidence.metadata["cookie_values_discarded"] is True
+    assert result.evidence.metadata["raw_set_cookie_stored"] is False
+
+
+@pytest.mark.asyncio
+async def test_session_cookie_reuse_sends_no_second_request(
+    database: SaarthiDatabase,
+    tmp_path: Path,
+) -> None:
+    execution_id = create_execution(database)
+    request = make_request(
+        execution_id,
+        action=(
+            ControlledValidationAction
+            .SESSION_COOKIE_ATTRIBUTE_VALIDATION
+        ),
+    )
+    create_tracked_controlled_validation_plan(
+        database,
+        request.validation,
+        evidence_root=tmp_path / "plans",
+    )
+    request_count = 0
+
+    def handler(request_object: httpx.Request) -> httpx.Response:
+        nonlocal request_count
+        request_count += 1
+        return httpx.Response(200, request=request_object)
+
+    transport = httpx.MockTransport(handler)
+    first = await run_tracked_controlled_validation_observation(
+        database,
+        request,
+        transport=transport,
+        evidence_root=tmp_path / "observations",
+    )
+    second = await run_tracked_controlled_validation_observation(
+        database,
+        request,
+        transport=transport,
+        evidence_root=tmp_path / "observations",
+    )
+
+    assert request_count == 1
+    assert first.validator_analysis is not None
+    assert second.validator_analysis is not None
+    assert (
+        second.validator_analysis.classification.value
+        == "no_cookies_observed"
+    )
+    assert second.reused_existing_evidence is True
+
+
 @pytest.mark.asyncio
 async def test_clickjacking_validator_persists_header_only_analysis(
     database: SaarthiDatabase,
