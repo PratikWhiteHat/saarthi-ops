@@ -47,6 +47,11 @@ from saarthi_ai.execution.nuclei_adapter import (
     NucleiExecutionRequest,
     build_nuclei_invocation_preview,
 )
+from saarthi_ai.execution.sqlmap_adapter import (
+    SqlmapMethod,
+    SqlmapPostContentType,
+    SqlmapPreviewRequest,
+)
 from saarthi_ai.execution.tool_runner import run_tool
 from saarthi_ai.llm import (
     OllamaUnavailableError,
@@ -133,6 +138,10 @@ from saarthi_ai.persistence.projects import (
     ProjectError,
     ProjectNotFoundError,
     ProjectRepository,
+)
+from saarthi_ai.persistence.sqlmap_preview_workflow import (
+    SqlmapPreviewWorkflowError,
+    create_tracked_sqlmap_preview,
 )
 from saarthi_ai.persistence.subdomain_workflow import (
     run_tracked_subdomain_collection,
@@ -2631,6 +2640,165 @@ def controlled_nuclei_execute(
     console.print(f"Evidence path: {result.evidence.path}")
     console.print(f"Evidence SHA-256: {result.evidence.sha256}")
 
+
+
+@controlled_app.command("sqlmap-preview")
+def controlled_sqlmap_preview(
+    execution_id: Annotated[
+        str,
+        typer.Option(
+            "--execution",
+            help="Authorized execution with intrusive testing enabled.",
+        ),
+    ],
+    target_url: Annotated[
+        str,
+        typer.Option(
+            "--url",
+            help="Approved in-scope target; query values are redacted.",
+        ),
+    ],
+    parameter_name: Annotated[
+        str,
+        typer.Option(
+            "--parameter",
+            help="Exactly one approved parameter to test later.",
+        ),
+    ],
+    method: Annotated[
+        SqlmapMethod,
+        typer.Option(
+            "--method",
+            help="Candidate request method: GET or POST.",
+        ),
+    ] = SqlmapMethod.GET,
+    post_parameters: Annotated[
+        str,
+        typer.Option(
+            "--post-parameters",
+            help=(
+                "Comma-separated POST parameter names only; values are "
+                "never accepted or stored."
+            ),
+        ),
+    ] = "",
+    post_content_type: Annotated[
+        SqlmapPostContentType | None,
+        typer.Option(
+            "--content-type",
+            help="POST body shape: form-encoded or JSON.",
+        ),
+    ] = None,
+    timeout_seconds: Annotated[
+        int,
+        typer.Option(
+            "--timeout",
+            min=1,
+            max=10,
+            help="Previewed SQLmap request timeout, capped at 10.",
+        ),
+    ] = 5,
+) -> None:
+    """Persist a redacted GET/POST SQLmap preview without execution."""
+
+    parameter_names = tuple(
+        item.strip()
+        for item in post_parameters.split(",")
+        if item.strip()
+    )
+    request = SqlmapPreviewRequest(
+        target_url=target_url,
+        parameter_name=parameter_name,
+        method=method,
+        authorized=True,
+        active_testing=True,
+        intrusive_testing=True,
+        approval_granted=True,
+        post_parameter_names=parameter_names,
+        post_content_type=post_content_type,
+        timeout_seconds=timeout_seconds,
+        dry_run=True,
+    )
+
+    console.print(
+        "[bold]6C.1 SQLmap preview activity[/bold]"
+    )
+    console.print("01 stored permission gate: requested")
+    console.print(f"02 execution: {execution_id}")
+    console.print(f"03 method: {method.value}")
+    console.print(f"04 selected parameter: {parameter_name}")
+    console.print("05 request values: not accepted")
+    console.print("06 SQLmap process: not started")
+
+    try:
+        result = create_tracked_sqlmap_preview(
+            get_database(),
+            execution_id,
+            request,
+            actor="cli-controlled-sqlmap-preview",
+            evidence_root=(
+                Path.cwd()
+                / "evidence"
+                / "controlled-sqlmap-previews"
+            ),
+        )
+    except (
+        ExecutionNotFoundError,
+        InvalidStateTransitionError,
+        SqlmapPreviewWorkflowError,
+        ValueError,
+    ) as exc:
+        console.print(
+            "[bold red]SQLmap preview failed:[/bold red] "
+            f"{exc}"
+        )
+        console.print(
+            "executed=false network_activity=false "
+            "subprocess_started=false"
+        )
+        raise typer.Exit(code=1) from exc
+
+    preview = result.preview
+    console.print("07 permission and scope gates: passed")
+    console.print(
+        f"08 target (redacted): {preview.target_display_url}"
+    )
+    console.print(
+        "09 body shape: "
+        + (
+            preview.post_content_type.value
+            if preview.post_content_type is not None
+            else "none"
+        )
+    )
+    console.print(
+        "10 bounded policy: "
+        f"level={preview.level} risk={preview.risk} "
+        f"threads={preview.threads} retries={preview.retries} "
+        f"timeout={preview.timeout_seconds} "
+        f"techniques={preview.techniques}"
+    )
+    console.print(
+        "11 redacted arguments: "
+        + " ".join(preview.redacted_arguments)
+    )
+    console.print(
+        "12 prohibited capabilities: "
+        + ", ".join(preview.prohibited_capabilities)
+    )
+    console.print("13 evidence persisted: true")
+    console.print(
+        "14 existing evidence reused: "
+        f"{str(result.reused_existing_evidence).lower()}"
+    )
+    console.print(f"15 evidence ID: {result.evidence.evidence_id}")
+    console.print(f"16 evidence path: {result.evidence.path}")
+    console.print(f"17 evidence SHA-256: {result.evidence.sha256}")
+    console.print("18 request values stored: false")
+    console.print("19 executable arguments built: false")
+    console.print("20 executed: false")
+    console.print("21 network activity: false")
+    console.print("22 subprocess started: false")
 
 
 @controlled_app.command("validators")

@@ -64,6 +64,7 @@ class EvidenceType(StrEnum):
     CONTROLLED_NUCLEI_EXECUTION = (
         "controlled_nuclei_execution"
     )
+    CONTROLLED_SQLMAP_PREVIEW = "controlled_sqlmap_preview"
     TLS_RESULT = "tls_result"
     TOOL_OUTPUT = "tool_output"
     SCREENSHOT = "screenshot"

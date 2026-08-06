@@ -193,6 +193,12 @@ _IMPLEMENTATION_OVERRIDES: dict[
         str | None,
     ],
 ] = {
+    ("6C.1", "SQL Injection"): (
+        ValidatorStatus.PARTIAL,
+        ValidationLevel.L1_SAFE_DETECTION,
+        "sqlmap_preview",
+        "GET/POST detection-only previews are available; execution is pending.",
+    ),
     ("6C.2", "Clickjacking Validation"): (
         ValidatorStatus.IMPLEMENTED,
         ValidationLevel.L1_SAFE_DETECTION,

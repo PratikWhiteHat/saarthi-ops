@@ -10,6 +10,11 @@ from saarthi_ai.cli import app
 from saarthi_ai.controlled_validation.models import (
     ControlledValidationAction,
 )
+from saarthi_ai.execution.sqlmap_adapter import (
+    PROHIBITED_SQLMAP_CAPABILITIES,
+    SqlmapMethod,
+    SqlmapPostContentType,
+)
 from saarthi_ai.persistence.controlled_validation_observation_workflow import (
     ControlledValidationObservationWorkflowError,
 )
@@ -68,6 +73,119 @@ def test_controlled_validators_rejects_unknown_module() -> None:
 
     assert result.exit_code == 1
     assert "Unknown validator module" in result.stdout
+
+
+def test_controlled_sqlmap_preview_supports_verbose_post(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    import saarthi_ai.cli as cli_module
+
+    captured: dict[str, object] = {}
+
+    def fake_workflow(
+        database,
+        execution_id,
+        request,
+        *,
+        actor,
+        evidence_root,
+    ):
+        captured["request"] = request
+        captured["actor"] = actor
+        captured["evidence_root"] = evidence_root
+        return SimpleNamespace(
+            execution=SimpleNamespace(
+                state=SimpleNamespace(value="planned"),
+            ),
+            preview=SimpleNamespace(
+                tool_name="sqlmap",
+                method=SqlmapMethod.POST,
+                target_display_url="https://example.com/login",
+                parameter_name="username",
+                post_parameter_names=("username", "password"),
+                post_content_type=SqlmapPostContentType.JSON,
+                redacted_arguments=(
+                    "-u",
+                    "https://example.com/login",
+                    "-p",
+                    "username",
+                    "--method=POST",
+                    '--data={"password":"<redacted>",'
+                    '"username":"<redacted>"}',
+                    "--level=1",
+                    "--risk=1",
+                ),
+                timeout_seconds=5,
+                level=1,
+                risk=1,
+                threads=1,
+                retries=0,
+                techniques="BE",
+                prohibited_capabilities=(
+                    PROHIBITED_SQLMAP_CAPABILITIES
+                ),
+            ),
+            evidence=SimpleNamespace(
+                evidence_id="evidence-sqlmap-preview",
+                path=str(evidence_root / "sqlmap-preview.json"),
+                sha256="a" * 64,
+            ),
+            reused_existing_evidence=False,
+        )
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        cli_module,
+        "get_database",
+        lambda: object(),
+    )
+    monkeypatch.setattr(
+        cli_module,
+        "create_tracked_sqlmap_preview",
+        fake_workflow,
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "controlled",
+            "sqlmap-preview",
+            "--execution",
+            "execution-test",
+            "--url",
+            "https://example.com/login",
+            "--parameter",
+            "username",
+            "--method",
+            "POST",
+            "--post-parameters",
+            "username,password",
+            "--content-type",
+            "application/json",
+        ],
+    )
+
+    assert result.exit_code == 0
+    request = captured["request"]
+    assert request.method is SqlmapMethod.POST
+    assert request.post_parameter_names == ("username", "password")
+    assert request.post_content_type is SqlmapPostContentType.JSON
+    assert request.intrusive_testing is True
+    normalized = " ".join(result.stdout.split())
+    assert "6C.1 SQLmap preview activity" in normalized
+    assert "03 method: POST" in normalized
+    assert "request values: not accepted" in normalized
+    assert "permission and scope gates: passed" in normalized
+    assert "level=1 risk=1 threads=1 retries=0" in normalized
+    assert "techniques=BE" in normalized
+    assert "prohibited capabilities" in normalized
+    assert "evidence persisted: true" in normalized
+    assert "request values stored: false" in normalized
+    assert "executable arguments built: false" in normalized
+    assert "executed: false" in normalized
+    assert "network activity: false" in normalized
+    assert "subprocess started: false" in normalized
 
 
 def test_controlled_plan_requires_explicit_approval() -> None:

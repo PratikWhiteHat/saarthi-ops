@@ -3054,3 +3054,13 @@ def test_tui_lists_all_official_validator_families() -> None:
         "Authorization & Access Control (0 ready, 0 partial, 9 total)",
         "PLANNED",
     ) in family_rows
+
+
+def test_sqlmap_tui_row_shows_preview_and_verbose_audit() -> None:
+    from saarthi_ai.tui.app import TOOLS
+
+    assert (
+        "sqlmap",
+        "SQLi GET/POST Preview (Verbose Audit)",
+        "6C.1 PREVIEW",
+    ) in TOOLS

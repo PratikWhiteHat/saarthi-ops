@@ -119,6 +119,19 @@ NUCLEI_PROFILE = ToolProfile(
     timeout_seconds=600,
 )
 
+SQLMAP_PROFILE = ToolProfile(
+    name="sqlmap",
+    executable_candidates=(
+        "/opt/homebrew/bin/sqlmap",
+        "/usr/local/bin/sqlmap",
+        "sqlmap",
+    ),
+    timeout_seconds=300,
+    max_output_bytes=1_000_000,
+    max_arguments=64,
+    max_argument_length=4_096,
+)
+
 
 def validate_tool_arguments(
     profile: ToolProfile,

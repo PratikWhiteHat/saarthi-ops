@@ -2825,7 +2825,7 @@ TOOLS = [
     ("Saarthi 6C.6", "File Upload Surface Validator", "APPROVAL"),
     ("Saarthi 6C.7", "API Data-Exposure Surface Validator", "APPROVAL"),
     ("nuclei", "Controlled Preview / Execution", "APPROVAL"),
-    ("sqlmap", "SQL Injection Testing", "PHASE 4A"),
+    ("sqlmap", "SQLi GET/POST Preview (Verbose Audit)", "6C.1 PREVIEW"),
     ("ghauri", "Blind SQLi Cross-check", "PHASE 4B"),
     ("Saarthi JS", "JavaScript Intelligence", "ENABLED"),
     ("OAST Manager", "Out-of-band Correlation", "PHASE 4C"),
