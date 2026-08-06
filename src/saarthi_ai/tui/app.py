@@ -2772,6 +2772,11 @@ def build_phase6_chain_status(
 
     def preview_status(tool: str) -> str:
         state = child_states.get(tool)
+        if tool == "sqlmap":
+            if state == "planned":
+                return "AWAITING RESULT"
+            if state == "completed":
+                return "IMPORTED"
         if state in {"planned", "completed"}:
             return "PREVIEW READY"
         if state in {"created", "validated"}:
@@ -3133,7 +3138,14 @@ def current_phase_for_dashboard(
             "EXECUTED",
         }
         or phase6_chain_status.get("sqlmap")
-        in {"PREPARING", "RUNNING", "ANALYZING", "PREVIEW READY"}
+        in {
+            "PREPARING",
+            "RUNNING",
+            "ANALYZING",
+            "PREVIEW READY",
+            "AWAITING RESULT",
+            "IMPORTED",
+        }
     ):
         return "6C — LOW-RISK ATTACK VALIDATORS"
 
@@ -3355,7 +3367,7 @@ TOOLS = [
     ("katana", "Web Crawler", "ENABLED"),
     ("Saarthi JS", "JavaScript Intelligence", "ENABLED"),
     ("nuclei", "Controlled Preview / Execution", "APPROVAL"),
-    ("sqlmap", "SQLi GET/POST Validation", "6C.1 PREVIEW"),
+    ("sqlmap", "External Result Handoff / Import", "6C.1 HANDOFF"),
     ("ghauri", "Blind SQLi Cross-check", "PHASE 6"),
     ("OAST Manager", "Out-of-band Correlation", "PHASE 6"),
     ("Saarthi 6A", "Attack Hypothesis Engine", "ENABLED"),

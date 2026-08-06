@@ -653,7 +653,7 @@ def test_tui_uses_dynamic_phase6_tool_labels() -> None:
     ) in rows
     assert (
         "sqlmap",
-        "SQLi GET/POST Validation",
+        "External Result Handoff / Import",
         "APPROVAL REQUIRED",
     ) in rows
     assert (
@@ -3558,11 +3558,11 @@ def test_tui_lists_all_official_validator_families() -> None:
     ) in family_rows
 
 
-def test_sqlmap_tui_row_shows_preview_and_verbose_audit() -> None:
+def test_sqlmap_tui_row_shows_handoff_and_import() -> None:
     from saarthi_ai.tui.app import TOOLS
 
     assert (
         "sqlmap",
-        "SQLi GET/POST Validation",
-        "6C.1 PREVIEW",
+        "External Result Handoff / Import",
+        "6C.1 HANDOFF",
     ) in TOOLS

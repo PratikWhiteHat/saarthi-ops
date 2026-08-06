@@ -60,6 +60,9 @@ from saarthi_ai.persistence.nuclei_preview_workflow import (
 from saarthi_ai.persistence.orchestration_workflow import (
     create_phase_execution,
 )
+from saarthi_ai.persistence.sqlmap_handoff_workflow import (
+    create_sqlmap_handoff,
+)
 from saarthi_ai.persistence.sqlmap_preview_workflow import (
     create_tracked_sqlmap_preview,
 )
@@ -92,8 +95,9 @@ async def run_phase6_safe_chain(
 ) -> Phase6ChainResult:
     """Run previews and one-request GET validators after Phase 4A.
 
-    SQLmap is preview-only. Nuclei execution is separately gated and uses
-    the fixed conservative template profile when explicitly approved.
+    SQLmap creates a non-executable asynchronous result handoff. Nuclei
+    execution is separately gated and uses the fixed conservative
+    template profile when explicitly approved.
     """
 
     if not explicitly_approved:
@@ -392,18 +396,30 @@ async def run_phase6_safe_chain(
             actor=actor,
             evidence_root=evidence_root / "sqlmap-preview",
         )
+        handoff = create_sqlmap_handoff(
+            database,
+            preview,
+            actor=actor,
+            evidence_root=evidence_root / "sqlmap-handoff",
+        )
         results.append(
             OrchestrationPhaseResult(
                 phase=OrchestrationPhase.SQLMAP_PREVIEW,
                 execution_id=child.execution_id,
-                evidence_id=preview.evidence.evidence_id,
-                evidence_path=preview.evidence.path,
+                evidence_id=handoff.manifest_evidence.evidence_id,
+                evidence_path=handoff.manifest_evidence.path,
                 metrics={
                     "executed": False,
                     "network_activity": False,
                     "parameter": query_names[0],
+                    "handoff_id": handoff.handoff_id,
+                    "result_inbox": handoff.result_inbox,
+                    "status": "awaiting_external_result",
                 },
-                reason="Approved preview persisted; SQLmap not executed.",
+                reason=(
+                    "Approved asynchronous handoff persisted; "
+                    "SQLmap was not executed by Saarthi."
+                ),
             )
         )
         previous_execution_id = child.execution_id

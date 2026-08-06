@@ -65,6 +65,8 @@ class EvidenceType(StrEnum):
         "controlled_nuclei_execution"
     )
     CONTROLLED_SQLMAP_PREVIEW = "controlled_sqlmap_preview"
+    SQLMAP_HANDOFF_MANIFEST = "sqlmap_handoff_manifest"
+    SQLMAP_EXTERNAL_RESULT = "sqlmap_external_result"
     TLS_RESULT = "tls_result"
     TOOL_OUTPUT = "tool_output"
     SCREENSHOT = "screenshot"

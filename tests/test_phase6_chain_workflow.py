@@ -172,7 +172,9 @@ async def test_approved_previews_are_persisted_but_not_executed(
     ).load()
     assert snapshot.phase6_chain_status["validator_completed"] == "9"
     assert snapshot.phase6_chain_status["nuclei"] == "PREVIEW READY"
-    assert snapshot.phase6_chain_status["sqlmap"] == "PREVIEW READY"
+    assert snapshot.phase6_chain_status["sqlmap"] == "AWAITING RESULT"
+    assert sqlmap.metrics["status"] == "awaiting_external_result"
+    assert Path(sqlmap.evidence_path or "").is_file()
     assert (
         snapshot.phase6_chain_status[
             "browser_attack_surface_validation"

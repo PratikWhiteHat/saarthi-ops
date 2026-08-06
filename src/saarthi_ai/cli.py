@@ -143,6 +143,10 @@ from saarthi_ai.persistence.projects import (
     ProjectNotFoundError,
     ProjectRepository,
 )
+from saarthi_ai.persistence.sqlmap_handoff_workflow import (
+    SqlmapHandoffWorkflowError,
+    import_sqlmap_external_result,
+)
 from saarthi_ai.persistence.sqlmap_preview_workflow import (
     SqlmapPreviewWorkflowError,
     create_tracked_sqlmap_preview,
@@ -2805,6 +2809,82 @@ def controlled_sqlmap_preview(
     console.print("22 subprocess started: false")
 
 
+@controlled_app.command("sqlmap-import")
+def controlled_sqlmap_import(
+    execution_id: Annotated[
+        str,
+        typer.Option(
+            "--execution",
+            help="SQLmap handoff execution awaiting an external result.",
+        ),
+    ],
+    result_path: Annotated[
+        Path,
+        typer.Option(
+            "--result",
+            help=(
+                "Operator-supplied JSON, JSONL, log, text, or CSV result "
+                "file to import locally."
+            ),
+        ),
+    ],
+) -> None:
+    """Import external SQLmap evidence without launching the tool."""
+
+    console.print("[bold]6C.1 SQLmap external-result import[/bold]")
+    console.print(f"01 execution: {execution_id}")
+    console.print(f"02 supplied result: {result_path}")
+    console.print("03 SQLmap process launched by Saarthi: false")
+    console.print("04 network activity by Saarthi: false")
+
+    try:
+        result = import_sqlmap_external_result(
+            get_database(),
+            execution_id,
+            result_path,
+            actor="cli-sqlmap-external-result-importer",
+            evidence_root=(
+                Path.cwd()
+                / "evidence"
+                / "sqlmap-external-results"
+            ),
+        )
+    except (
+        ExecutionNotFoundError,
+        InvalidStateTransitionError,
+        SqlmapHandoffWorkflowError,
+        ValueError,
+    ) as exc:
+        console.print(
+            "[bold red]SQLmap result import failed:[/bold red] "
+            f"{exc}"
+        )
+        raise typer.Exit(code=1) from exc
+
+    console.print("05 manifest association: verified")
+    console.print("06 evidence hashing: completed")
+    console.print(
+        "07 existing evidence reused: "
+        f"{str(result.reused_existing_evidence).lower()}"
+    )
+    console.print(
+        f"08 manifest evidence ID: "
+        f"{result.manifest_evidence.evidence_id}"
+    )
+    console.print(
+        f"09 result evidence ID: {result.result_evidence.evidence_id}"
+    )
+    console.print(
+        f"10 result evidence path: {result.result_evidence.path}"
+    )
+    console.print(
+        f"11 result SHA-256: {result.result_evidence.sha256}"
+    )
+    console.print(
+        f"12 final state: {result.execution.state.value}"
+    )
+
+
 @controlled_app.command("validators")
 def controlled_validators(
     module_code: Annotated[
@@ -3698,6 +3778,7 @@ def workflow_run(
         NucleiPreviewWorkflowError,
         NucleiPreparationWorkflowError,
         NucleiExecutionWorkflowError,
+        SqlmapHandoffWorkflowError,
         ToolRunnerError,
         ValueError,
     ) as exc:
