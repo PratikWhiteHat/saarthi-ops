@@ -212,6 +212,7 @@ def test_phase_rows_marks_4a_done_and_4b_next() -> None:
 
     assert row_map["4A"][0] == "✓"
     assert row_map["4A"][3] == "DONE"
+    assert row_map["4A"][4] == "✓"
     assert row_map["4B"][0] == "→"
     assert row_map["4B"][3] == "NEXT"
 
@@ -367,7 +368,52 @@ def test_phase_rows_marks_4d_done() -> None:
 
     assert row_map["4C"][3] == "DONE"
     assert row_map["4D"][3] == "DONE"
-    assert not any(row[3] == "NEXT" for row in rows)
+    assert row_map["5A"][3] == "NEXT"
+
+
+def test_phase_rows_cover_complete_product_workflow() -> None:
+    from saarthi_ai.tui.app import phase_rows
+
+    rows = phase_rows("6C — LOW-RISK ATTACK VALIDATORS")
+    row_map = {row[1]: row for row in rows}
+
+    assert len(rows) == 23
+    assert row_map["5A"][2] == "Assessment Planner"
+    assert row_map["6A"][2] == "Attack Hypothesis Engine"
+    assert row_map["6C"][3] == "DONE"
+    assert row_map["6D"][3] == "NEXT"
+    assert row_map["6G"][2] == "Cleanup & Rollback"
+    assert row_map["8A"][2] == "Reporting & Remediation"
+
+
+def test_orchestration_summary_shows_validator_coverage() -> None:
+    from saarthi_ai.tui.app import (
+        build_orchestration_summary_lines,
+        demo_snapshot,
+    )
+
+    rendered = "\n".join(
+        build_orchestration_summary_lines(demo_snapshot())
+    )
+
+    assert "ORCHESTRATION SUMMARY" in rendered
+    assert "Overall Status" in rendered
+    assert "Completed Phases" in rendered
+    assert "Validator Coverage" in rendered
+    assert "81 total" in rendered
+
+
+def test_activity_text_styles_without_interpreting_markup() -> None:
+    from saarthi_ai.tui.app import build_activity_text
+
+    rendered = build_activity_text(
+        "2026-08-06 17:40:11 SQLMAP [red]forged[/red]"
+    )
+
+    assert rendered.plain == (
+        "2026-08-06 17:40:11 SQLMAP [red]forged[/red]"
+    )
+    assert rendered.spans
 
 
 def test_normalize_phase_code_collapses_phase_4a_children() -> None:
@@ -3061,6 +3107,6 @@ def test_sqlmap_tui_row_shows_preview_and_verbose_audit() -> None:
 
     assert (
         "sqlmap",
-        "SQLi GET/POST Preview (Verbose Audit)",
+        "SQLi GET/POST Validation",
         "6C.1 PREVIEW",
     ) in TOOLS

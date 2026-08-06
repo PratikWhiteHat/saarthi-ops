@@ -10,12 +10,21 @@ from pathlib import Path
 from typing import Any
 
 from rich.markup import escape as escape_markup
+from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.containers import Grid, Horizontal, Vertical
 from textual.reactive import reactive
-from textual.widgets import DataTable, Footer, Label, Log, ProgressBar, Static
+from textual.widgets import (
+    DataTable,
+    Footer,
+    Label,
+    ProgressBar,
+    RichLog,
+    Static,
+)
 
 from saarthi_ai.controlled_validation.validator_registry import (
+    summarize_phase6_validator_modules,
     validator_module_tool_rows,
 )
 
@@ -2346,6 +2355,23 @@ def safe_tui_display(
 ) -> str:
     """Return bounded, redacted, markup-safe display text."""
 
+    return escape_markup(
+        safe_tui_plain_text(
+            value,
+            max_length=max_length,
+            default=default,
+        )
+    )
+
+
+def safe_tui_plain_text(
+    value: Any,
+    *,
+    max_length: int = 96,
+    default: str = "—",
+) -> str:
+    """Return bounded, redacted plain text for Rich Text widgets."""
+
     if value is None:
         text = default
     elif isinstance(value, bool):
@@ -2373,7 +2399,7 @@ def safe_tui_display(
     if len(text) > max_length:
         text = f"{text[: max_length - 1]}…"
 
-    return escape_markup(text)
+    return text
 
 
 def parse_execution_metadata(
@@ -2724,6 +2750,20 @@ BASE_PHASES = [
     ("4B", "Blind Validation"),
     ("4C", "OAST Manager"),
     ("4D", "Confirmation Engine"),
+    ("5A", "Assessment Planner"),
+    ("5B", "Dependency Outcomes"),
+    ("5C", "Parent Outcome Handling"),
+    ("5D", "Optional Phase Handling"),
+    ("6A", "Attack Hypothesis Engine"),
+    ("6B", "Policy & Approval Gate"),
+    ("6C", "Low-Risk Attack Validators"),
+    ("6D", "Authenticated Workflows"),
+    ("6E", "Exploit Confirmation"),
+    ("6F", "Post-Exploitation Simulation"),
+    ("6G", "Cleanup & Rollback"),
+    ("6H", "Evidence & Findings"),
+    ("7A", "Post-Exploitation & Chaining"),
+    ("8A", "Reporting & Remediation"),
 ]
 
 
@@ -2775,7 +2815,15 @@ def phase_rows(
                 marker = "·"
                 status = "PLANNED"
 
-            rows.append((marker, code, name, status, "—"))
+            rows.append(
+                (
+                    marker,
+                    code,
+                    name,
+                    status,
+                    "✓" if status == "DONE" else "—",
+                )
+            )
 
         return rows
 
@@ -2803,7 +2851,15 @@ def phase_rows(
             marker = "·"
             status = "PLANNED"
 
-        rows.append((marker, code, name, status, "—"))
+        rows.append(
+            (
+                marker,
+                code,
+                name,
+                status,
+                "✓" if status == "DONE" else "—",
+            )
+        )
 
     return rows
 
@@ -2815,7 +2871,11 @@ TOOLS = [
     ("crt.sh", "Certificate Transparency", "ENABLED"),
     ("httpx", "Live Host & Service Probe", "ENABLED"),
     ("katana", "Web Crawler", "ENABLED"),
-    *validator_module_tool_rows(),
+    ("Saarthi JS", "JavaScript Intelligence", "ENABLED"),
+    ("nuclei", "Controlled Preview / Execution", "APPROVAL"),
+    ("sqlmap", "SQLi GET/POST Validation", "6C.1 PREVIEW"),
+    ("ghauri", "Blind SQLi Cross-check", "PHASE 6"),
+    ("OAST Manager", "Out-of-band Correlation", "PHASE 6"),
     ("Saarthi 6A", "Attack Hypothesis Engine", "ENABLED"),
     ("Saarthi 6B", "Policy & Approval Gate", "APPROVAL"),
     ("Saarthi 6C.2", "Clickjacking Header Validator", "APPROVAL"),
@@ -2824,12 +2884,71 @@ TOOLS = [
     ("Saarthi 6C.4", "Session Cookie Attribute Validator", "APPROVAL"),
     ("Saarthi 6C.6", "File Upload Surface Validator", "APPROVAL"),
     ("Saarthi 6C.7", "API Data-Exposure Surface Validator", "APPROVAL"),
-    ("nuclei", "Controlled Preview / Execution", "APPROVAL"),
-    ("sqlmap", "SQLi GET/POST Preview (Verbose Audit)", "6C.1 PREVIEW"),
-    ("ghauri", "Blind SQLi Cross-check", "PHASE 4B"),
-    ("Saarthi JS", "JavaScript Intelligence", "ENABLED"),
-    ("OAST Manager", "Out-of-band Correlation", "PHASE 4C"),
+    *validator_module_tool_rows(),
 ]
+
+
+def build_orchestration_summary_lines(
+    snapshot: DashboardSnapshot,
+) -> list[str]:
+    """Build compact project-level status lines for the scope panel."""
+
+    summaries = summarize_phase6_validator_modules()
+    implemented = sum(item.implemented for item in summaries)
+    partial = sum(item.partial for item in summaries)
+    total = sum(item.total for item in summaries)
+    completed = snapshot.outcome_counts.get(
+        "completed",
+        len(snapshot.completed_phases),
+    )
+    optional_failures = snapshot.outcome_counts.get("failed", 0)
+    overall = (
+        snapshot.orchestration_status.upper()
+        if snapshot.orchestration_status != "unknown"
+        else snapshot.execution_state.upper()
+    )
+
+    return [
+        "[bold cyan]ORCHESTRATION SUMMARY[/bold cyan]",
+        f"Overall Status       : {safe_tui_display(overall, max_length=24)}",
+        f"Optional Failures    : {optional_failures}",
+        f"Completed Phases     : {completed}",
+        (
+            "Validator Coverage   : "
+            f"{implemented} ready · {partial} partial · {total} total"
+        ),
+    ]
+
+
+def build_activity_text(line: str) -> Text:
+    """Color one sanitized audit line without interpreting Rich markup."""
+
+    value = safe_tui_plain_text(line, max_length=1_000)
+    rendered = Text(value)
+    if len(value) >= 19 and value[:4].isdigit():
+        rendered.stylize("bright_cyan", 0, 19)
+
+    styles = {
+        "ERROR": "bold red",
+        "FAILED": "bold red",
+        "WARNING": "yellow",
+        "WRN": "yellow",
+        "APPROVAL": "green",
+        "COMPLETED": "green",
+        "EVIDENCE": "magenta",
+        "FINDING": "bold yellow",
+        "SQLMAP": "bright_magenta",
+        "NUCLEI": "bright_magenta",
+        "INFO": "cyan",
+        "INF": "cyan",
+    }
+    upper = value.upper()
+    for token, style in styles.items():
+        start = 0
+        while (index := upper.find(token, start)) >= 0:
+            rendered.stylize(style, index, index + len(token))
+            start = index + len(token)
+    return rendered
 
 
 def build_scope_lines(
@@ -3751,6 +3870,7 @@ class SaarthiDashboard(App[None]):
                 yield Static(id="scope-content")
                 yield Label("PHASE PROGRESS", classes="section-label")
                 yield ProgressBar(total=100, show_eta=False, id="phase-progress")
+                yield Static(id="orchestration-summary")
 
             with Vertical(classes="panel", id="phase-panel"):
                 yield Label("[ 2. WORKFLOW STATUS ]", classes="panel-title")
@@ -3772,7 +3892,13 @@ class SaarthiDashboard(App[None]):
             with Horizontal(id="activity-heading"):
                 yield Label("[ 5. ACTIVITY LOG (LIVE) ]", classes="panel-title")
                 yield Label("LATEST 200 EVENTS", id="activity-caption")
-            yield Log(id="activity-log", highlight=True, max_lines=250)
+            yield RichLog(
+                id="activity-log",
+                highlight=False,
+                markup=False,
+                max_lines=250,
+                wrap=False,
+            )
 
         with Grid(id="system-status"):
             yield Label("LOCAL DB", classes="system-key")
@@ -3795,26 +3921,30 @@ class SaarthiDashboard(App[None]):
 
     def _configure_tables(self) -> None:
         phase_table = self.query_one("#phase-table", DataTable)
-        phase_table.add_columns("", "Phase", "Name", "Status", "Completed")
+        phase_table.add_column("", width=1)
+        phase_table.add_column("Phase", width=5)
+        phase_table.add_column("Name", width=27)
+        phase_table.add_column("Status", width=10)
+        phase_table.add_column("Completed", width=10)
         phase_table.cursor_type = "row"
         phase_table.zebra_stripes = True
 
         tools_table = self.query_one("#tools-table", DataTable)
-        tools_table.add_columns("Tool", "Purpose", "Status")
+        tools_table.add_column("Tool", width=14)
+        tools_table.add_column("Purpose", width=31)
+        tools_table.add_column("Status", width=12)
         tools_table.cursor_type = "row"
         tools_table.zebra_stripes = True
 
         executions = self.query_one("#executions-table", DataTable)
-        executions.add_columns(
-            "Execution ID",
-            "Phase",
-            "Started",
-            "Duration",
-            "Target",
-            "Evidence",
-            "Findings",
-            "Status",
-        )
+        executions.add_column("Execution ID", width=36)
+        executions.add_column("Phase", width=18)
+        executions.add_column("Started", width=20)
+        executions.add_column("Duration", width=10)
+        executions.add_column("Target", width=34)
+        executions.add_column("Evidence", width=9)
+        executions.add_column("Findings", width=9)
+        executions.add_column("Status", width=12)
         executions.cursor_type = "row"
         executions.zebra_stripes = True
 
@@ -3841,6 +3971,11 @@ class SaarthiDashboard(App[None]):
 
         self.query_one("#scope-content", Static).update(
             "\n".join(scope_lines)
+        )
+        self.query_one("#orchestration-summary", Static).update(
+            "\n".join(
+                build_orchestration_summary_lines(snapshot)
+            )
         )
         self.query_one("#phase-progress", ProgressBar).update(progress=snapshot.phase_progress)
 
@@ -3871,10 +4006,10 @@ class SaarthiDashboard(App[None]):
                 item["status"],
             )
 
-        activity = self.query_one("#activity-log", Log)
+        activity = self.query_one("#activity-log", RichLog)
         activity.clear()
         for line in snapshot.recent_activity:
-            activity.write_line(line)
+            activity.write(build_activity_text(line))
 
     def _refresh_snapshot_silently(self) -> None:
         """Reload local state without creating notification noise."""

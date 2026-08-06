@@ -13,7 +13,7 @@ Footer {
 #hero {
     grid-size: 3;
     grid-columns: 1fr 1.5fr 1fr;
-    height: 9;
+    height: 8;
     border: round #77c9d2;
     background: #020c14;
     padding: 0 1;
@@ -60,9 +60,9 @@ Footer {
 
 #top-grid {
     grid-size: 3;
-    grid-columns: 0.95fr 1.18fr 1.18fr;
+    grid-columns: 0.95fr 1.17fr 1.05fr;
     grid-gutter: 1;
-    height: 26;
+    height: 22;
     margin-bottom: 1;
 }
 
@@ -78,8 +78,8 @@ Footer {
 }
 
 #scope-content {
-    height: 17;
-    padding-top: 1;
+    height: 9;
+    padding-top: 0;
 }
 
 .section-label {
@@ -88,6 +88,14 @@ Footer {
 
 ProgressBar {
     height: 1;
+}
+
+#orchestration-summary {
+    height: 7;
+    border: solid #327d86;
+    padding: 0 1;
+    margin-top: 1;
+    color: #d6e9ec;
 }
 
 ProgressBar > .bar--bar {
@@ -120,25 +128,24 @@ DataTable > .datatable--odd-row {
 }
 
 #tools-note {
-    height: 2;
+    height: 1;
     color: #72d8e0;
-    padding-top: 1;
     text-align: center;
 }
 
 #executions-panel {
-    height: 11;
+    height: 8;
     margin-bottom: 1;
 }
 
 #activity-panel {
     height: 1fr;
-    min-height: 10;
+    min-height: 9;
     margin-bottom: 1;
 }
 
 #activity-heading {
-    height: 2;
+    height: 1;
 }
 
 #activity-caption {
@@ -183,6 +190,6 @@ DataTable > .datatable--odd-row {
     color: #d8b65f;
 }
 
-Log {
+RichLog {
     scrollbar-size: 1 1;
 }
