@@ -57,6 +57,9 @@ class ControlledValidationAction(StrEnum):
     BROWSER_ATTACK_SURFACE_VALIDATION = (
         "browser_attack_surface_validation"
     )
+    SERVER_PARSER_SURFACE_VALIDATION = (
+        "server_parser_surface_validation"
+    )
     AUTHORIZATION_BOUNDARY = "authorization_boundary"
     STATE_CHANGE_VALIDATION = "state_change_validation"
     FILE_PROCESSING_VALIDATION = "file_processing_validation"

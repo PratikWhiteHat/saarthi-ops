@@ -48,6 +48,9 @@ ACTION_RISK: dict[
     ControlledValidationAction.BROWSER_ATTACK_SURFACE_VALIDATION: (
         ControlledValidationRisk.LOW
     ),
+    ControlledValidationAction.SERVER_PARSER_SURFACE_VALIDATION: (
+        ControlledValidationRisk.LOW
+    ),
     ControlledValidationAction.AUTHORIZATION_BOUNDARY: (
         ControlledValidationRisk.MODERATE
     ),

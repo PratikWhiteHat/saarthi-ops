@@ -3115,6 +3115,58 @@ def test_scope_lines_render_browser_surface_summary() -> None:
     assert "Payload / Exploit  : false / false" in rendered
 
 
+def test_scope_lines_render_server_parser_surface_summary() -> None:
+    from dataclasses import replace
+
+    from saarthi_ai.tui.app import (
+        build_scope_lines,
+        demo_snapshot,
+    )
+
+    snapshot = replace(
+        demo_snapshot(),
+        attack_hypothesis_set=None,
+        controlled_validation_plan=None,
+        controlled_observation={
+            "evidence_id": "evidence-server-parser",
+            "target_url": "https://example.com/process?url=/resource",
+            "action": "server_parser_surface_validation",
+            "method": "GET",
+            "status_code": "200",
+            "validator_id": "6C.3-server-parser-surface-analysis",
+            "validator_classification": "review_recommended",
+            "validator_reason": "Parser surfaces require review.",
+            "server_parser_attack_types": "10",
+            "server_parser_observed_surfaces": (
+                "Blind SSRF=1, Unsafe URL Fetch=1"
+            ),
+            "server_query_parameter_count": "1",
+            "server_form_control_count": "2",
+            "absolute_url_value_count": "0",
+            "xml_content_type_observed": "false",
+            "serialized_content_type_observed": "false",
+            "archive_content_type_observed": "false",
+            "parser_payload_sent": "false",
+            "callback_generated": "false",
+            "parameters_mutated": "false",
+            "subprocess_started": "false",
+            "payload_generated": "false",
+            "exploit_executed": "false",
+        },
+    )
+
+    rendered = "\n".join(build_scope_lines(snapshot))
+
+    assert "6C.3 — SERVER/PARSER SURFACE VALIDATION" in rendered
+    assert "Attack Coverage    : 10 types" in rendered
+    assert "Blind SSRF=1" in rendered
+    assert "Query / Form / URLs: 1 / 2 / 0" in rendered
+    assert "XML / Serial / Arch: false / false / false" in rendered
+    assert "Parser / Callback  : false / false" in rendered
+    assert "Mutation / Process : false / false" in rendered
+    assert "Payload / Exploit  : false / false" in rendered
+
+
 def test_scope_lines_render_upload_surface_summary() -> None:
     from dataclasses import replace
 
@@ -3198,6 +3250,16 @@ def test_browser_surface_validator_tool_row_requires_approval() -> None:
     assert (
         "Saarthi 6C.2",
         "Browser Attack Surface Validator",
+        "APPROVAL",
+    ) in TOOLS
+
+
+def test_server_parser_surface_tool_row_requires_approval() -> None:
+    from saarthi_ai.tui.app import TOOLS
+
+    assert (
+        "Saarthi 6C.3",
+        "Server/Parser Surface Validator",
         "APPROVAL",
     ) in TOOLS
 

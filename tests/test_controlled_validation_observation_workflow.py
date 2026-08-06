@@ -232,6 +232,78 @@ async def test_browser_surface_persists_aggregates_and_reuses_evidence(
 
 
 @pytest.mark.asyncio
+async def test_server_parser_persists_aggregates_and_reuses_evidence(
+    database: SaarthiDatabase,
+    tmp_path: Path,
+) -> None:
+    execution_id = create_execution(database)
+    secret = "private-server-parser-value-must-not-be-stored"
+    request = make_request(
+        execution_id,
+        action=(
+            ControlledValidationAction
+            .SERVER_PARSER_SURFACE_VALIDATION
+        ),
+        target_url="https://example.com/process?url=https%3A%2F%2Fremote.example",
+    )
+    create_tracked_controlled_validation_plan(
+        database,
+        request.validation,
+        evidence_root=tmp_path / "plans",
+    )
+    request_count = 0
+
+    def handler(request_object: httpx.Request) -> httpx.Response:
+        nonlocal request_count
+        request_count += 1
+        return httpx.Response(
+            200,
+            headers={"Content-Type": "text/html"},
+            content=(
+                b"<form><input name='archive' value='"
+                + secret.encode()
+                + b"'></form>"
+            ),
+            request=request_object,
+        )
+
+    first = await run_tracked_controlled_validation_observation(
+        database,
+        request,
+        transport=httpx.MockTransport(handler),
+        evidence_root=tmp_path / "observations",
+    )
+    second = await run_tracked_controlled_validation_observation(
+        database,
+        request,
+        transport=httpx.MockTransport(handler),
+        evidence_root=tmp_path / "observations",
+    )
+
+    assert request_count == 1
+    assert first.validator_analysis is not None
+    assert (
+        first.validator_analysis.validator_id
+        == "6C.3-server-parser-surface-analysis"
+    )
+    assert second.reused_existing_evidence is True
+    assert second.validator_analysis == first.validator_analysis
+    evidence_text = Path(first.evidence.path).read_text()
+    assert secret not in evidence_text
+    analysis = json.loads(evidence_text)["validator_analysis"]
+    assert len(analysis["server_parser_attack_types"]) == 10
+    assert analysis["parameter_values_discarded"] is True
+    assert analysis["form_values_discarded"] is True
+    assert analysis["response_body_discarded"] is True
+    assert analysis["parameters_mutated"] is False
+    assert analysis["parser_payload_sent"] is False
+    assert analysis["callback_generated"] is False
+    assert analysis["subprocess_started"] is False
+    assert analysis["payload_generated"] is False
+    assert analysis["exploit_executed"] is False
+
+
+@pytest.mark.asyncio
 async def test_parameter_surface_validator_preserves_approved_target(
     database: SaarthiDatabase,
     tmp_path: Path,

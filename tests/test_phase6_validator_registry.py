@@ -118,6 +118,29 @@ def test_remaining_browser_types_have_safe_surface_analysis() -> None:
     )
 
 
+def test_server_parser_types_preserve_manual_only_boundaries() -> None:
+    items = list_phase6_validators("6C.3")
+
+    assert len(items) == 11
+    assert sum(
+        item.status is ValidatorStatus.PARTIAL
+        for item in items
+    ) == 9
+    assert sum(
+        item.status is ValidatorStatus.MANUAL_ONLY
+        for item in items
+    ) == 2
+    manual_names = {
+        item.name
+        for item in items
+        if item.status is ValidatorStatus.MANUAL_ONLY
+    }
+    assert manual_names == {
+        "Remote Code Execution",
+        "Remote File Inclusion",
+    }
+
+
 def test_module_summaries_are_deterministic() -> None:
     summaries = summarize_phase6_validator_modules()
 

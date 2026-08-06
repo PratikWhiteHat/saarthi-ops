@@ -272,6 +272,26 @@ for _browser_attack_name in _MODULES["6C.2"][1]:
         ),
     )
 
+for _server_parser_name in _MODULES["6C.3"][1]:
+    if _server_parser_name in {
+        "Remote Code Execution",
+        "Remote File Inclusion",
+        "HTTP Parameter Pollution",
+    }:
+        continue
+    _IMPLEMENTATION_OVERRIDES.setdefault(
+        ("6C.3", _server_parser_name),
+        (
+            ValidatorStatus.PARTIAL,
+            ValidationLevel.L1_SAFE_DETECTION,
+            "server_parser_surface_validation",
+            (
+                "Non-mutating request/parser surface analysis is "
+                "available; no payload or callback is generated."
+            ),
+        ),
+    )
+
 _AUTHENTICATED_MODULES = frozenset({"6C.4", "6C.5"})
 _AUTHENTICATED_API_VALIDATORS = frozenset(
     {

@@ -195,6 +195,41 @@ async def test_browser_surface_analysis_never_launches_browser_or_script() -> No
 
 
 @pytest.mark.asyncio
+async def test_server_parser_analysis_uses_one_unmodified_get() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            200,
+            headers={"Content-Type": "text/html"},
+            content=b"<form><input name='url'></form>",
+            request=request,
+        )
+
+    result = await execute_bounded_observation(
+        make_request(
+            action=(
+                ControlledValidationAction
+                .SERVER_PARSER_SURFACE_VALIDATION
+            )
+        ),
+        transport=httpx.MockTransport(handler),
+    )
+
+    assert len(requests) == 1
+    assert requests[0].method == "GET"
+    assert requests[0].content == b""
+    assert result.server_parser_surface_analysis is not None
+    analysis = result.server_parser_surface_analysis
+    assert analysis.parameters_mutated is False
+    assert analysis.parser_payload_sent is False
+    assert analysis.callback_generated is False
+    assert analysis.subprocess_started is False
+    assert analysis.exploit_executed is False
+
+
+@pytest.mark.asyncio
 async def test_sensitive_response_headers_are_redacted() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(

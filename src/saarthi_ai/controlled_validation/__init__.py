@@ -62,6 +62,13 @@ from saarthi_ai.controlled_validation.policy import (
     MAX_CONTROLLED_REQUESTS,
     evaluate_controlled_validation,
 )
+from saarthi_ai.controlled_validation.server_parser_surface import (
+    SERVER_PARSER_SURFACE_TYPES,
+    ServerParserSurfaceClassification,
+    ServerParserSurfaceSignal,
+    ServerParserSurfaceValidationResult,
+    analyze_server_parser_surface,
+)
 from saarthi_ai.controlled_validation.session_cookie import (
     CookieAttributeObservation,
     SessionCookieClassification,
@@ -121,6 +128,10 @@ __all__ = [
     "CsrfSurfaceValidationResult",
     "SessionCookieClassification",
     "SessionCookieValidationResult",
+    "SERVER_PARSER_SURFACE_TYPES",
+    "ServerParserSurfaceClassification",
+    "ServerParserSurfaceSignal",
+    "ServerParserSurfaceValidationResult",
     "UploadSurfaceClassification",
     "UploadSurfaceValidationResult",
     "ValidationLevel",
@@ -137,6 +148,7 @@ __all__ = [
     "analyze_injection_surface",
     "analyze_parameter_surface",
     "analyze_session_cookie_attributes",
+    "analyze_server_parser_surface",
     "analyze_upload_surface",
     "list_phase6_validators",
     "summarize_phase6_validator_modules",

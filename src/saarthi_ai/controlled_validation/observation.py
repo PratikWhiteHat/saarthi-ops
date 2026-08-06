@@ -32,6 +32,10 @@ from saarthi_ai.controlled_validation.injection_surface import (
 from saarthi_ai.controlled_validation.models import (
     ControlledValidationAction,
 )
+from saarthi_ai.controlled_validation.server_parser_surface import (
+    ServerParserSurfaceValidationResult,
+    analyze_server_parser_surface,
+)
 from saarthi_ai.controlled_validation.session_cookie import (
     SessionCookieValidationResult,
     analyze_session_cookie_attributes,
@@ -75,6 +79,9 @@ class ControlledValidationObservationResult:
         InjectionSurfaceValidationResult | None
     ) = None
     browser_surface_analysis: BrowserSurfaceValidationResult | None = None
+    server_parser_surface_analysis: (
+        ServerParserSurfaceValidationResult | None
+    ) = None
     error_type: str | None = None
     error: str | None = None
 
@@ -299,6 +306,23 @@ async def execute_bounded_observation(
                             request.validation.action
                             is ControlledValidationAction
                             .BROWSER_ATTACK_SURFACE_VALIDATION
+                        )
+                        else None
+                    ),
+                    server_parser_surface_analysis=(
+                        analyze_server_parser_surface(
+                            target_url=request.validation.target_url,
+                            status_code=response.status_code,
+                            content_type=response.headers.get(
+                                "content-type"
+                            ),
+                            body=body,
+                            body_truncated=truncated,
+                        )
+                        if (
+                            request.validation.action
+                            is ControlledValidationAction
+                            .SERVER_PARSER_SURFACE_VALIDATION
                         )
                         else None
                     ),

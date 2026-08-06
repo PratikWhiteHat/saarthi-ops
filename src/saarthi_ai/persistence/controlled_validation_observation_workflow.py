@@ -54,6 +54,11 @@ from saarthi_ai.controlled_validation.parameter_surface import (
     ParameterSurfaceValidationResult,
     analyze_parameter_surface,
 )
+from saarthi_ai.controlled_validation.server_parser_surface import (
+    ServerParserSurfaceClassification,
+    ServerParserSurfaceSignal,
+    ServerParserSurfaceValidationResult,
+)
 from saarthi_ai.controlled_validation.session_cookie import (
     CookieAttributeObservation,
     SessionCookieClassification,
@@ -93,6 +98,7 @@ ValidatorAnalysis = (
     | UploadSurfaceValidationResult
     | InjectionSurfaceValidationResult
     | BrowserSurfaceValidationResult
+    | ServerParserSurfaceValidationResult
 )
 
 
@@ -510,6 +516,84 @@ def _validator_analysis_from_evidence(
             ),
             websocket_auth_signal_observed=bool(
                 metadata.get("websocket_auth_signal_observed")
+            ),
+            body_truncated=bool(metadata.get("body_truncated")),
+            analysis_truncated=bool(
+                metadata.get("analysis_truncated")
+            ),
+        )
+
+    if validator_id == "6C.3-server-parser-surface-analysis":
+        try:
+            classification = ServerParserSurfaceClassification(
+                str(metadata["validator_classification"])
+            )
+        except (KeyError, ValueError):
+            return None
+
+        raw_types = metadata.get("server_parser_attack_types")
+        raw_surfaces = metadata.get("server_parser_observed_surfaces")
+        observed_surfaces: list[ServerParserSurfaceSignal] = []
+        if isinstance(raw_surfaces, list):
+            for item in raw_surfaces:
+                if not isinstance(item, dict):
+                    continue
+                attack_type = item.get("attack_type")
+                signal_count = item.get("signal_count")
+                item_sources = item.get("sources")
+                if (
+                    not isinstance(attack_type, str)
+                    or not isinstance(signal_count, int)
+                    or isinstance(signal_count, bool)
+                    or signal_count < 1
+                ):
+                    continue
+                observed_surfaces.append(
+                    ServerParserSurfaceSignal(
+                        attack_type=attack_type,
+                        signal_count=signal_count,
+                        sources=tuple(
+                            source
+                            for source in item_sources
+                            if isinstance(source, str)
+                        )
+                        if isinstance(item_sources, list)
+                        else (),
+                    )
+                )
+
+        return ServerParserSurfaceValidationResult(
+            validator_id=validator_id,
+            classification=classification,
+            reason=str(metadata.get("validator_reason") or ""),
+            attack_types_covered=tuple(
+                item
+                for item in raw_types
+                if isinstance(item, str)
+            )
+            if isinstance(raw_types, list)
+            else (),
+            observed_surfaces=tuple(observed_surfaces),
+            query_parameter_count=int(
+                metadata.get("server_query_parameter_count") or 0
+            ),
+            form_control_count=int(
+                metadata.get("server_form_control_count") or 0
+            ),
+            absolute_url_value_count=int(
+                metadata.get("absolute_url_value_count") or 0
+            ),
+            duplicate_parameter_count=int(
+                metadata.get("duplicate_parameter_count") or 0
+            ),
+            xml_content_type_observed=bool(
+                metadata.get("xml_content_type_observed")
+            ),
+            serialized_content_type_observed=bool(
+                metadata.get("serialized_content_type_observed")
+            ),
+            archive_content_type_observed=bool(
+                metadata.get("archive_content_type_observed")
             ),
             body_truncated=bool(metadata.get("body_truncated")),
             analysis_truncated=bool(
@@ -1050,6 +1134,67 @@ def _serialize_observation(
             )
         elif isinstance(
             validator_analysis,
+            ServerParserSurfaceValidationResult,
+        ):
+            serialized_analysis.update(
+                {
+                    "server_parser_attack_types": list(
+                        validator_analysis.attack_types_covered
+                    ),
+                    "server_parser_observed_surfaces": [
+                        {
+                            "attack_type": item.attack_type,
+                            "signal_count": item.signal_count,
+                            "sources": list(item.sources),
+                        }
+                        for item in (
+                            validator_analysis.observed_surfaces
+                        )
+                    ],
+                    "server_query_parameter_count": (
+                        validator_analysis.query_parameter_count
+                    ),
+                    "server_form_control_count": (
+                        validator_analysis.form_control_count
+                    ),
+                    "absolute_url_value_count": (
+                        validator_analysis.absolute_url_value_count
+                    ),
+                    "duplicate_parameter_count": (
+                        validator_analysis.duplicate_parameter_count
+                    ),
+                    "xml_content_type_observed": (
+                        validator_analysis.xml_content_type_observed
+                    ),
+                    "serialized_content_type_observed": (
+                        validator_analysis
+                        .serialized_content_type_observed
+                    ),
+                    "archive_content_type_observed": (
+                        validator_analysis
+                        .archive_content_type_observed
+                    ),
+                    "body_truncated": (
+                        validator_analysis.body_truncated
+                    ),
+                    "analysis_truncated": (
+                        validator_analysis.analysis_truncated
+                    ),
+                    "parameter_names_discarded": True,
+                    "parameter_values_discarded": True,
+                    "form_values_discarded": True,
+                    "response_body_discarded": True,
+                    "target_unchanged": True,
+                    "parameters_mutated": False,
+                    "request_body_sent": False,
+                    "parser_payload_sent": False,
+                    "callback_generated": False,
+                    "subprocess_started": False,
+                    "exploit_executed": False,
+                }
+            )
+        elif isinstance(
+            validator_analysis,
             SessionCookieValidationResult,
         ):
             serialized_analysis.update(
@@ -1403,6 +1548,56 @@ def _validator_metadata(
                 "script_executed": False,
                 "parameters_mutated": False,
                 "request_body_sent": False,
+                "exploit_executed": False,
+            }
+        )
+    elif isinstance(analysis, ServerParserSurfaceValidationResult):
+        metadata.update(
+            {
+                "server_parser_attack_types": list(
+                    analysis.attack_types_covered
+                ),
+                "server_parser_observed_surfaces": [
+                    {
+                        "attack_type": item.attack_type,
+                        "signal_count": item.signal_count,
+                        "sources": list(item.sources),
+                    }
+                    for item in analysis.observed_surfaces
+                ],
+                "server_query_parameter_count": (
+                    analysis.query_parameter_count
+                ),
+                "server_form_control_count": (
+                    analysis.form_control_count
+                ),
+                "absolute_url_value_count": (
+                    analysis.absolute_url_value_count
+                ),
+                "duplicate_parameter_count": (
+                    analysis.duplicate_parameter_count
+                ),
+                "xml_content_type_observed": (
+                    analysis.xml_content_type_observed
+                ),
+                "serialized_content_type_observed": (
+                    analysis.serialized_content_type_observed
+                ),
+                "archive_content_type_observed": (
+                    analysis.archive_content_type_observed
+                ),
+                "body_truncated": analysis.body_truncated,
+                "analysis_truncated": analysis.analysis_truncated,
+                "parameter_names_discarded": True,
+                "parameter_values_discarded": True,
+                "form_values_discarded": True,
+                "response_body_discarded": True,
+                "target_unchanged": True,
+                "parameters_mutated": False,
+                "request_body_sent": False,
+                "parser_payload_sent": False,
+                "callback_generated": False,
+                "subprocess_started": False,
                 "exploit_executed": False,
             }
         )
@@ -1828,6 +2023,18 @@ async def run_tracked_controlled_validation_observation(
             if validator_analysis is None:
                 raise ControlledValidationObservationWorkflowError(
                     "Browser-surface analysis was not produced safely."
+                )
+        elif (
+            validation.action
+            is ControlledValidationAction
+            .SERVER_PARSER_SURFACE_VALIDATION
+        ):
+            validator_analysis = (
+                observation.server_parser_surface_analysis
+            )
+            if validator_analysis is None:
+                raise ControlledValidationObservationWorkflowError(
+                    "Server/parser-surface analysis was not produced safely."
                 )
 
         database.add_audit_event(

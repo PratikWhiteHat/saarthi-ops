@@ -1208,6 +1208,76 @@ class ReadOnlySaarthiRepository:
                     metadata.get("script_executed"),
                     "false",
                 ),
+                "server_parser_attack_types": (
+                    str(
+                        len(
+                            metadata.get(
+                                "server_parser_attack_types",
+                                [],
+                            )
+                        )
+                    )
+                    if isinstance(
+                        metadata.get("server_parser_attack_types"),
+                        list,
+                    )
+                    else "0"
+                ),
+                "server_parser_observed_surfaces": (
+                    ", ".join(
+                        (
+                            f"{item.get('attack_type')}="
+                            f"{item.get('signal_count')}"
+                        )
+                        for item in metadata.get(
+                            "server_parser_observed_surfaces",
+                            [],
+                        )
+                        if isinstance(item, dict)
+                        and item.get("attack_type")
+                    )
+                    if isinstance(
+                        metadata.get("server_parser_observed_surfaces"),
+                        list,
+                    )
+                    else "—"
+                ),
+                "server_query_parameter_count": display(
+                    metadata.get("server_query_parameter_count"),
+                    "0",
+                ),
+                "server_form_control_count": display(
+                    metadata.get("server_form_control_count"),
+                    "0",
+                ),
+                "absolute_url_value_count": display(
+                    metadata.get("absolute_url_value_count"),
+                    "0",
+                ),
+                "xml_content_type_observed": display(
+                    metadata.get("xml_content_type_observed"),
+                    "false",
+                ),
+                "serialized_content_type_observed": display(
+                    metadata.get("serialized_content_type_observed"),
+                    "false",
+                ),
+                "archive_content_type_observed": display(
+                    metadata.get("archive_content_type_observed"),
+                    "false",
+                ),
+                "parser_payload_sent": display(
+                    metadata.get("parser_payload_sent"),
+                    "false",
+                ),
+                "callback_generated": display(
+                    metadata.get("callback_generated"),
+                    "false",
+                ),
+                "subprocess_started": display(
+                    metadata.get("subprocess_started"),
+                    "false",
+                ),
                 "protection_sources": (
                     ", ".join(
                         item
@@ -3018,6 +3088,7 @@ TOOLS = [
     ("Saarthi 6B", "Policy & Approval Gate", "APPROVAL"),
     ("Saarthi 6C.1", "Injection Surface Validator", "APPROVAL"),
     ("Saarthi 6C.2", "Browser Attack Surface Validator", "APPROVAL"),
+    ("Saarthi 6C.3", "Server/Parser Surface Validator", "APPROVAL"),
     ("Saarthi 6C.2", "Clickjacking Header Validator", "APPROVAL"),
     ("Saarthi 6C.2", "CSRF Protection Surface Validator", "APPROVAL"),
     ("Saarthi 6C.3", "HTTP Parameter Surface Validator", "APPROVAL"),
@@ -3513,6 +3584,62 @@ def build_scope_lines(
                         "Browser / Script   : "
                         f"{observation_value('browser_launched', max_length=10)} / "
                         f"{observation_value('script_executed', max_length=10)}"
+                    ),
+                    (
+                        "Payload / Exploit  : "
+                        f"{observation_value('payload_generated', max_length=10)} / "
+                        f"{observation_value('exploit_executed', max_length=10)}"
+                    ),
+                ]
+            )
+        elif (
+            observation.get("validator_id")
+            == "6C.3-server-parser-surface-analysis"
+        ):
+            scope_lines.extend(
+                [
+                    "",
+                    (
+                        "[bold cyan]6C.3 — SERVER/PARSER SURFACE "
+                        "VALIDATION[/bold cyan]"
+                    ),
+                    (
+                        "Classification     : "
+                        f"{observation_value('validator_classification', max_length=40)}"
+                    ),
+                    (
+                        "Reason             : "
+                        f"{observation_value('validator_reason', max_length=120)}"
+                    ),
+                    (
+                        "Attack Coverage    : "
+                        f"{observation_value('server_parser_attack_types', max_length=12)} types"
+                    ),
+                    (
+                        "Observed Surfaces  : "
+                        f"{observation_value('server_parser_observed_surfaces', max_length=120)}"
+                    ),
+                    (
+                        "Query / Form / URLs: "
+                        f"{observation_value('server_query_parameter_count', max_length=10)} / "
+                        f"{observation_value('server_form_control_count', max_length=10)} / "
+                        f"{observation_value('absolute_url_value_count', max_length=10)}"
+                    ),
+                    (
+                        "XML / Serial / Arch: "
+                        f"{observation_value('xml_content_type_observed', max_length=10)} / "
+                        f"{observation_value('serialized_content_type_observed', max_length=10)} / "
+                        f"{observation_value('archive_content_type_observed', max_length=10)}"
+                    ),
+                    (
+                        "Parser / Callback  : "
+                        f"{observation_value('parser_payload_sent', max_length=10)} / "
+                        f"{observation_value('callback_generated', max_length=10)}"
+                    ),
+                    (
+                        "Mutation / Process : "
+                        f"{observation_value('parameters_mutated', max_length=10)} / "
+                        f"{observation_value('subprocess_started', max_length=10)}"
                     ),
                     (
                         "Payload / Exploit  : "

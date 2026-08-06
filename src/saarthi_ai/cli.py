@@ -2897,7 +2897,8 @@ def controlled_observe(
                 "api_data_exposure_surface_validation, or "
                 "file_upload_surface_validation, or "
                 "injection_surface_validation, or "
-                "browser_attack_surface_validation."
+                "browser_attack_surface_validation, or "
+                "server_parser_surface_validation."
             ),
         ),
     ] = ControlledValidationAction.RESPONSE_DIFFERENTIAL,
@@ -2967,14 +2968,15 @@ def controlled_observe(
         ControlledValidationAction.FILE_UPLOAD_SURFACE_VALIDATION,
         ControlledValidationAction.INJECTION_SURFACE_VALIDATION,
         ControlledValidationAction.BROWSER_ATTACK_SURFACE_VALIDATION,
+        ControlledValidationAction.SERVER_PARSER_SURFACE_VALIDATION,
     }:
         console.print(
             "[bold red]Unsupported executable action.[/bold red] "
             "Only registered low-risk response, input-handling, and "
             "clickjacking, parameter-surface, or session-cookie "
             "CSRF-surface, API exposure-surface, file-upload, and "
-            "injection-surface, and browser-surface observations are "
-            "allowed."
+            "injection, browser, and server/parser-surface observations "
+            "are allowed."
         )
         raise typer.Exit(code=1)
 
@@ -2993,14 +2995,15 @@ def controlled_observe(
                 ControlledValidationAction
                 .BROWSER_ATTACK_SURFACE_VALIDATION
             ),
+            ControlledValidationAction.SERVER_PARSER_SURFACE_VALIDATION,
         }
         and normalized_method != "GET"
     ):
         console.print(
             "[bold red]Invalid method.[/bold red] "
             "Session-cookie, CSRF, API exposure, file-upload, and "
-            "injection-surface, and browser-surface validation require "
-            "GET."
+            "injection, browser, and server/parser-surface validation "
+            "require GET."
         )
         raise typer.Exit(code=1)
 
@@ -3255,6 +3258,54 @@ def controlled_observe(
                 console.print("Attribute values discarded: true")
                 console.print("Browser launched: false")
                 console.print("Script executed: false")
+                console.print("Payload generated: false")
+                console.print("Exploit executed: false")
+            elif (
+                getattr(analysis, "validator_id", None)
+                == "6C.3-server-parser-surface-analysis"
+            ):
+                console.print(
+                    "[bold cyan]6C.3 Server Request & Parser Surface "
+                    "Validation[/bold cyan]"
+                )
+                console.print(
+                    "Classification: "
+                    f"{analysis.classification.value}"
+                )
+                console.print(f"Reason: {analysis.reason}")
+                console.print(
+                    "Official attack types covered: "
+                    f"{len(analysis.attack_types_covered)}"
+                )
+                console.print(
+                    "Observed surfaces: "
+                    + (
+                        ", ".join(
+                            f"{item.attack_type}={item.signal_count}"
+                            for item in analysis.observed_surfaces
+                        )
+                        if analysis.observed_surfaces
+                        else "none"
+                    )
+                )
+                console.print(
+                    "Query / form / URL values: "
+                    f"{analysis.query_parameter_count} / "
+                    f"{analysis.form_control_count} / "
+                    f"{analysis.absolute_url_value_count}"
+                )
+                console.print(
+                    "XML / serialized / archive types: "
+                    f"{str(analysis.xml_content_type_observed).lower()} / "
+                    f"{str(analysis.serialized_content_type_observed).lower()} "
+                    f"/ {str(analysis.archive_content_type_observed).lower()}"
+                )
+                console.print("Parameter values discarded: true")
+                console.print("Response body discarded: true")
+                console.print("Parameters mutated: false")
+                console.print("Parser payload sent: false")
+                console.print("Callback generated: false")
+                console.print("Subprocess started: false")
                 console.print("Payload generated: false")
                 console.print("Exploit executed: false")
             elif (
