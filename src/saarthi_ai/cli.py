@@ -19,6 +19,9 @@ from saarthi_ai.assessments.scope import (
     ScopeValidationError,
     validate_assessment,
 )
+from saarthi_ai.attack_hypothesis import (
+    AttackHypothesisGenerationRequest,
+)
 from saarthi_ai.blind_validation.models import (
     BlindValidationRequest,
     CallbackProtocol,
@@ -44,6 +47,10 @@ from saarthi_ai.execution.tool_runner import run_tool
 from saarthi_ai.llm import (
     OllamaUnavailableError,
     SaarthiOllamaClient,
+)
+from saarthi_ai.persistence.attack_hypothesis_workflow import (
+    AttackHypothesisWorkflowError,
+    create_tracked_attack_hypotheses,
 )
 from saarthi_ai.persistence.blind_validation_workflow import (
     BlindValidationWorkflowError,
@@ -174,7 +181,10 @@ confirm_app = typer.Typer(
 
 controlled_app = typer.Typer(
     no_args_is_help=True,
-    help="Prepare bounded Phase 6 controlled-validation plans.",
+    help=(
+        "Generate hypotheses and manage bounded Phase 6 "
+        "controlled-validation workflows."
+    ),
 )
 
 workflow_app = typer.Typer(
@@ -1653,6 +1663,164 @@ def confirm_run(
     console.print(f"Evidence SHA-256: {evidence.sha256}")
     console.print(
         "[dim]No additional security test or payload was executed.[/dim]"
+    )
+
+
+@controlled_app.command("hypotheses")
+def controlled_hypotheses(
+    execution_id: Annotated[
+        str,
+        typer.Option(
+            "--execution",
+            help="Authorized execution containing Phase 1-5 evidence.",
+        ),
+    ],
+    target_url: Annotated[
+        str,
+        typer.Option(
+            "--url",
+            help="In-scope credential-free HTTP or HTTPS target URL.",
+        ),
+    ],
+    max_hypotheses: Annotated[
+        int,
+        typer.Option(
+            "--max-hypotheses",
+            min=1,
+            max=50,
+            help="Maximum deterministic candidate paths to persist.",
+        ),
+    ] = 20,
+    approved: Annotated[
+        bool,
+        typer.Option(
+            "--approved",
+            help=(
+                "Confirm authorization to analyze existing redacted "
+                "evidence metadata and persist Phase 6A hypotheses."
+            ),
+        ),
+    ] = False,
+) -> None:
+    """Generate Phase 6A hypotheses without executing validation."""
+
+    if not approved:
+        console.print(
+            "[bold yellow]Approval required.[/bold yellow] "
+            "Review the execution, target, evidence scope, and output "
+            "bound, then rerun with --approved."
+        )
+        console.print("Executed: false")
+        console.print("Network activity: false")
+        console.print("Payload generated: false")
+        console.print("Subprocess started: false")
+        raise typer.Exit(code=1)
+
+    request = AttackHypothesisGenerationRequest(
+        execution_id=execution_id,
+        target_url=target_url,
+        authorized=True,
+        max_hypotheses=max_hypotheses,
+    )
+
+    console.print(
+        "[bold]Generating evidence-driven Phase 6A attack "
+        "hypotheses...[/bold]"
+    )
+    console.print(f"Execution: {execution_id}")
+    console.print(f"Target: {target_url}")
+    console.print(f"Maximum hypotheses: {max_hypotheses}")
+
+    try:
+        result = create_tracked_attack_hypotheses(
+            get_database(),
+            request,
+            actor="cli-attack-hypothesis-engine",
+            evidence_root=(
+                Path.cwd()
+                / "evidence"
+                / "attack-hypothesis-sets"
+            ),
+        )
+    except (
+        ExecutionNotFoundError,
+        InvalidStateTransitionError,
+        AttackHypothesisWorkflowError,
+        ValueError,
+    ) as exc:
+        console.print(
+            "[bold red]Attack-hypothesis generation failed:"
+            f"[/bold red] {exc}"
+        )
+        console.print("Executed: false")
+        console.print("Network activity: false")
+        console.print("Payload generated: false")
+        console.print("Subprocess started: false")
+        raise typer.Exit(code=1) from exc
+
+    hypothesis_set = result.hypothesis_set
+
+    console.print()
+    console.print(
+        "[bold green]Phase 6A hypothesis set persisted.[/bold green]"
+    )
+    console.print(
+        f"Hypotheses: {len(hypothesis_set.hypotheses)}"
+    )
+    console.print(
+        "Evidence considered: "
+        f"{len(hypothesis_set.considered_evidence_ids)}"
+    )
+    console.print(
+        "Evidence rejected: "
+        f"{len(hypothesis_set.rejected_evidence_ids)}"
+    )
+    console.print(
+        f"Truncated: {str(hypothesis_set.truncated).lower()}"
+    )
+
+    for hypothesis in hypothesis_set.hypotheses:
+        console.print()
+        console.print(
+            f"[bold]{hypothesis.hypothesis_id}[/bold]"
+        )
+        console.print(
+            f"  Family: {hypothesis.family.value}"
+        )
+        console.print(f"  Title: {hypothesis.title}")
+        console.print(
+            "  Confidence: "
+            f"{hypothesis.confidence.value} "
+            f"({hypothesis.confidence_score})"
+        )
+        console.print(
+            f"  Validation risk: {hypothesis.validation_risk.value}"
+        )
+        console.print(
+            "  Validation method: "
+            f"{hypothesis.validation_method.value}"
+        )
+        console.print(
+            "  Supporting evidence: "
+            + ", ".join(hypothesis.supporting_evidence_ids)
+        )
+
+    console.print()
+    console.print("Executed: false")
+    console.print("Network activity: false")
+    console.print("Payload generated: false")
+    console.print("Subprocess started: false")
+    console.print(
+        "Existing evidence reused: "
+        f"{str(result.reused_existing_evidence).lower()}"
+    )
+    console.print(f"Evidence ID: {result.evidence.evidence_id}")
+    console.print(f"Evidence path: {result.evidence.path}")
+    console.print(f"Evidence SHA-256: {result.evidence.sha256}")
+    console.print(
+        "[dim]Phase 6A generated candidate paths from redacted "
+        "evidence metadata only. No validation or security test "
+        "was executed.[/dim]"
     )
 
 

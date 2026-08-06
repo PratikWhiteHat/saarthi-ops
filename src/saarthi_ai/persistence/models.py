@@ -52,6 +52,7 @@ class EvidenceType(StrEnum):
     BLIND_VALIDATION_RESULT = "blind_validation_result"
     OAST_OBSERVATION = "oast_observation"
     CONFIRMATION_RESULT = "confirmation_result"
+    ATTACK_HYPOTHESIS_SET = "attack_hypothesis_set"
     CONTROLLED_VALIDATION_PLAN = "controlled_validation_plan"
     CONTROLLED_VALIDATION_OBSERVATION = (
         "controlled_validation_observation"

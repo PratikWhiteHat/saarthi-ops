@@ -2315,3 +2315,202 @@ def test_nuclei_execution_has_priority_over_preparation() -> None:
     assert "evidence-nuclei-execution" in rendered
     assert "CONTROLLED NUCLEI PREPARATION" not in rendered
     assert "evidence-nuclei-preparation" not in rendered
+
+
+def test_attack_hypothesis_set_maps_to_official_phase_6a() -> None:
+    assert (
+        infer_phase(
+            "created",
+            {"attack_hypothesis_set"},
+        )
+        == "6A — ATTACK HYPOTHESIS & PATH GENERATION"
+    )
+    assert (
+        infer_phase_short(
+            "created",
+            {"attack_hypothesis_set"},
+        )
+        == "6A"
+    )
+    assert (
+        infer_phase(
+            "failed",
+            {"attack_hypothesis_set"},
+        )
+        == "6A — ATTACK HYPOTHESIS REVIEW"
+    )
+
+
+def test_loads_safe_attack_hypothesis_summary() -> None:
+    import json
+    import sqlite3
+
+    from saarthi_ai.tui.app import ReadOnlySaarthiRepository
+
+    connection = sqlite3.connect(":memory:")
+    connection.row_factory = sqlite3.Row
+    connection.execute(
+        """
+        CREATE TABLE evidence (
+            evidence_id TEXT PRIMARY KEY,
+            execution_id TEXT NOT NULL,
+            evidence_type TEXT NOT NULL,
+            sha256 TEXT,
+            metadata_json TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        )
+        """
+    )
+    connection.execute(
+        """
+        INSERT INTO evidence (
+            evidence_id,
+            execution_id,
+            evidence_type,
+            sha256,
+            metadata_json,
+            created_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (
+            "evidence-hypothesis-set",
+            "execution-test",
+            "attack_hypothesis_set",
+            "d" * 64,
+            json.dumps(
+                {
+                    "phase": "6A",
+                    "target_url": "https://example.com/",
+                    "hypothesis_count": 2,
+                    "hypothesis_ids": [
+                        "hypothesis-one",
+                        "hypothesis-two",
+                    ],
+                    "families": [
+                        "api_business_logic",
+                        "injection",
+                    ],
+                    "considered_evidence_ids": [
+                        "evidence-crawl",
+                        "evidence-js",
+                    ],
+                    "rejected_evidence_ids": [],
+                    "truncated": False,
+                    "executed": False,
+                    "network_activity": False,
+                    "payload_generated": False,
+                    "subprocess_started": False,
+                }
+            ),
+            "2026-08-06T09:00:00+00:00",
+        ),
+    )
+
+    repository = ReadOnlySaarthiRepository()
+    summary = repository._load_attack_hypothesis_set(
+        connection,
+        {"evidence"},
+        "execution-test",
+    )
+
+    assert summary is not None
+    assert summary["evidence_id"] == "evidence-hypothesis-set"
+    assert summary["evidence_sha256"] == "d" * 64
+    assert summary["target_url"] == "https://example.com/"
+    assert summary["hypothesis_count"] == "2"
+    assert summary["families"] == "api_business_logic, injection"
+    assert summary["hypothesis_ids"] == (
+        "hypothesis-one, hypothesis-two"
+    )
+    assert summary["considered_evidence_count"] == "2"
+    assert summary["rejected_evidence_count"] == "0"
+    assert summary["truncated"] == "false"
+    assert summary["executed"] == "false"
+    assert summary["network_activity"] == "false"
+    assert summary["payload_generated"] == "false"
+    assert summary["subprocess_started"] == "false"
+
+
+def test_scope_lines_render_attack_hypothesis_summary() -> None:
+    from dataclasses import replace
+
+    from saarthi_ai.tui.app import (
+        build_scope_lines,
+        demo_snapshot,
+    )
+
+    snapshot = replace(
+        demo_snapshot(),
+        current_phase="6A — ATTACK HYPOTHESIS & PATH GENERATION",
+        attack_hypothesis_set={
+            "evidence_id": "evidence-hypothesis-set",
+            "evidence_sha256": "d" * 64,
+            "target_url": "https://example.com/",
+            "hypothesis_count": "2",
+            "families": "api_business_logic, injection",
+            "hypothesis_ids": (
+                "hypothesis-one, hypothesis-two"
+            ),
+            "considered_evidence_count": "2",
+            "rejected_evidence_count": "0",
+            "truncated": "false",
+            "executed": "false",
+            "network_activity": "false",
+            "payload_generated": "false",
+            "subprocess_started": "false",
+        },
+    )
+
+    rendered = "\n".join(build_scope_lines(snapshot))
+
+    assert "PHASE 6A — ATTACK HYPOTHESES" in rendered
+    assert "evidence-hypothesis-set" in rendered
+    assert "Hypothesis Count   : 2" in rendered
+    assert "api_business_logic, injection" in rendered
+    assert "Evidence Considered: 2" in rendered
+    assert "Evidence Rejected  : 0" in rendered
+    assert "Executed           : false" in rendered
+    assert "Network Activity   : false" in rendered
+    assert "Payload Generated  : false" in rendered
+    assert "Subprocess Started : false" in rendered
+    assert "No validation or security test was executed" in rendered
+
+
+def test_attack_hypothesis_summary_has_render_priority() -> None:
+    from dataclasses import replace
+
+    from saarthi_ai.tui.app import (
+        build_scope_lines,
+        demo_snapshot,
+    )
+
+    snapshot = replace(
+        demo_snapshot(),
+        attack_hypothesis_set={
+            "evidence_id": "evidence-hypothesis-set",
+            "target_url": "https://example.com/",
+        },
+        controlled_nuclei_execution={
+            "evidence_id": "evidence-nuclei-execution",
+            "tool_name": "nuclei",
+            "target_url": "https://example.com/",
+        },
+    )
+
+    rendered = "\n".join(build_scope_lines(snapshot))
+
+    assert "PHASE 6A — ATTACK HYPOTHESES" in rendered
+    assert "evidence-hypothesis-set" in rendered
+    assert "CONTROLLED NUCLEI EXECUTION" not in rendered
+    assert "evidence-nuclei-execution" not in rendered
+
+
+def test_attack_hypothesis_tool_row_is_enabled() -> None:
+    from saarthi_ai.tui.app import TOOLS
+
+    assert (
+        "Saarthi 6A",
+        "Attack Hypothesis Engine",
+        "ENABLED",
+    ) in TOOLS

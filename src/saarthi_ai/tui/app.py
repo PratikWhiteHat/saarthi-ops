@@ -36,6 +36,7 @@ class DashboardSnapshot:
     orchestration_status: str = "unknown"
     outcome_counts: dict[str, int] = field(default_factory=dict)
     optional_failure_summary: str | None = None
+    attack_hypothesis_set: dict[str, str] | None = None
     controlled_observation: dict[str, str] | None = None
     controlled_nuclei_execution: dict[str, str] | None = None
     controlled_nuclei_preparation: dict[str, str] | None = None
@@ -235,6 +236,14 @@ class ReadOnlySaarthiRepository:
             execution_id,
         )
 
+        attack_hypothesis_set = (
+            self._load_attack_hypothesis_set(
+                connection,
+                tables,
+                execution_id,
+            )
+        )
+
         controlled_observation = (
             self._load_controlled_validation_observation(
                 connection,
@@ -322,6 +331,7 @@ class ReadOnlySaarthiRepository:
             orchestration_status=orchestration_status,
             outcome_counts=outcome_counts,
             optional_failure_summary=optional_failure_summary,
+            attack_hypothesis_set=attack_hypothesis_set,
             controlled_observation=controlled_observation,
             controlled_nuclei_execution=controlled_nuclei_execution,
             controlled_nuclei_preparation=(
@@ -376,6 +386,189 @@ class ReadOnlySaarthiRepository:
         return {
             str(row[type_column]).strip().lower() for row in rows if row[type_column] is not None
         }
+
+    def _load_attack_hypothesis_set(
+        self,
+        connection: sqlite3.Connection,
+        tables: set[str],
+        execution_id: str,
+    ) -> dict[str, str] | None:
+        """Load the newest valid Phase 6A hypothesis-set summary."""
+
+        table = next(
+            (
+                name
+                for name in ("evidence", "evidence_items")
+                if name in tables
+            ),
+            None,
+        )
+
+        if table is None:
+            return None
+
+        columns = self._columns(connection, table)
+        execution_column = self._pick(
+            columns,
+            "execution_id",
+            "execution",
+        )
+        type_column = self._pick(
+            columns,
+            "evidence_type",
+            "type",
+            "kind",
+        )
+        evidence_id_column = self._pick(
+            columns,
+            "evidence_id",
+            "id",
+        )
+        sha256_column = self._pick(columns, "sha256")
+        metadata_column = self._pick(
+            columns,
+            "metadata_json",
+            "metadata",
+        )
+        created_column = self._pick(
+            columns,
+            "created_at",
+            "timestamp",
+        )
+
+        if (
+            execution_column is None
+            or type_column is None
+            or metadata_column is None
+        ):
+            return None
+
+        order_sql = (
+            f'ORDER BY "{created_column}" DESC'
+            if created_column
+            else ""
+        )
+        rows = connection.execute(
+            f"""
+            SELECT *
+            FROM "{table}"
+            WHERE "{execution_column}" = ?
+              AND LOWER("{type_column}") = ?
+            {order_sql}
+            LIMIT 50
+            """,
+            (
+                execution_id,
+                "attack_hypothesis_set",
+            ),
+        ).fetchall()
+
+        def display(value: Any, default: str = "—") -> str:
+            if value is None:
+                return default
+
+            if isinstance(value, bool):
+                return str(value).lower()
+
+            if isinstance(value, int) and not isinstance(value, bool):
+                return str(value)
+
+            if isinstance(value, str):
+                return value
+
+            return default
+
+        for row in rows:
+            try:
+                metadata = json.loads(str(row[metadata_column]))
+            except (
+                json.JSONDecodeError,
+                TypeError,
+                ValueError,
+            ):
+                continue
+
+            if not isinstance(metadata, dict):
+                continue
+
+            families = metadata.get("families")
+            hypothesis_ids = metadata.get("hypothesis_ids")
+            considered_ids = metadata.get(
+                "considered_evidence_ids"
+            )
+            rejected_ids = metadata.get(
+                "rejected_evidence_ids"
+            )
+
+            return {
+                "evidence_id": (
+                    display(row[evidence_id_column])
+                    if evidence_id_column
+                    else "—"
+                ),
+                "evidence_sha256": (
+                    display(row[sha256_column])
+                    if sha256_column
+                    else "—"
+                ),
+                "target_url": display(
+                    metadata.get("target_url")
+                ),
+                "hypothesis_count": display(
+                    metadata.get("hypothesis_count"),
+                    "0",
+                ),
+                "families": (
+                    ", ".join(
+                        item
+                        for item in families
+                        if isinstance(item, str)
+                    )
+                    if isinstance(families, list)
+                    else "—"
+                ),
+                "hypothesis_ids": (
+                    ", ".join(
+                        item
+                        for item in hypothesis_ids
+                        if isinstance(item, str)
+                    )
+                    if isinstance(hypothesis_ids, list)
+                    else "—"
+                ),
+                "considered_evidence_count": (
+                    str(len(considered_ids))
+                    if isinstance(considered_ids, list)
+                    else "0"
+                ),
+                "rejected_evidence_count": (
+                    str(len(rejected_ids))
+                    if isinstance(rejected_ids, list)
+                    else "0"
+                ),
+                "truncated": display(
+                    metadata.get("truncated"),
+                    "false",
+                ),
+                "executed": display(
+                    metadata.get("executed"),
+                    "false",
+                ),
+                "network_activity": display(
+                    metadata.get("network_activity"),
+                    "false",
+                ),
+                "payload_generated": display(
+                    metadata.get("payload_generated"),
+                    "false",
+                ),
+                "subprocess_started": display(
+                    metadata.get("subprocess_started"),
+                    "false",
+                ),
+            }
+
+        return None
 
     def _load_controlled_validation_observation(
         self,
@@ -1950,6 +2143,8 @@ def infer_phase(
     normalized_evidence = {evidence_type.strip().lower() for evidence_type in evidence_types}
 
     if normalized == "completed":
+        if "attack_hypothesis_set" in normalized_evidence:
+            return "6A — ATTACK HYPOTHESIS & PATH GENERATION"
         if (
             "controlled_nuclei_execution"
             in normalized_evidence
@@ -1983,6 +2178,8 @@ def infer_phase(
         return "3B — SUBDOMAIN ENUMERATION"
 
     if normalized in {"running", "analyzing"}:
+        if "attack_hypothesis_set" in normalized_evidence:
+            return "6A — ATTACK HYPOTHESIS & PATH GENERATION"
         if (
             "controlled_nuclei_execution"
             in normalized_evidence
@@ -2014,6 +2211,8 @@ def infer_phase(
         return "ACTIVE WORKFLOW"
 
     if normalized in {"planned", "created"}:
+        if "attack_hypothesis_set" in normalized_evidence:
+            return "6A — ATTACK HYPOTHESIS & PATH GENERATION"
         if (
             "controlled_nuclei_preparation"
             in normalized_evidence
@@ -2026,6 +2225,8 @@ def infer_phase(
         return "PLANNING"
 
     if normalized == "failed":
+        if "attack_hypothesis_set" in normalized_evidence:
+            return "6A — ATTACK HYPOTHESIS REVIEW"
         if (
             "controlled_nuclei_execution"
             in normalized_evidence
@@ -2049,6 +2250,8 @@ def infer_phase_short(
 
     phase = infer_phase(state, evidence_types)
 
+    if phase.startswith("6A"):
+        return "6A"
     if phase.startswith("6C"):
         return "6C"
     if phase.startswith("6B"):
@@ -2231,6 +2434,7 @@ TOOLS = [
     ("crt.sh", "Certificate Transparency", "ENABLED"),
     ("httpx", "Live Host & Service Probe", "ENABLED"),
     ("katana", "Web Crawler", "ENABLED"),
+    ("Saarthi 6A", "Attack Hypothesis Engine", "ENABLED"),
     ("nuclei", "Controlled Preview / Execution", "APPROVAL"),
     ("sqlmap", "SQL Injection Testing", "PHASE 4A"),
     ("ghauri", "Blind SQLi Cross-check", "PHASE 4B"),
@@ -2293,7 +2497,84 @@ def build_scope_lines(
             ]
         )
 
-    if snapshot.controlled_observation:
+    if snapshot.attack_hypothesis_set:
+        hypothesis_set = snapshot.attack_hypothesis_set
+
+        def hypothesis_value(
+            key: str,
+            *,
+            max_length: int = 96,
+        ) -> str:
+            return safe_tui_display(
+                hypothesis_set.get(key),
+                max_length=max_length,
+            )
+
+        scope_lines.extend(
+            [
+                "",
+                "[bold cyan]PHASE 6A — ATTACK HYPOTHESES[/bold cyan]",
+                (
+                    "Evidence ID        : "
+                    f"{hypothesis_value('evidence_id', max_length=72)}"
+                ),
+                (
+                    "Target             : "
+                    f"{hypothesis_value('target_url', max_length=88)}"
+                ),
+                (
+                    "Hypothesis Count   : "
+                    f"{hypothesis_value('hypothesis_count', max_length=12)}"
+                ),
+                (
+                    "Families           : "
+                    f"{hypothesis_value('families', max_length=120)}"
+                ),
+                (
+                    "Hypothesis IDs     : "
+                    f"{hypothesis_value('hypothesis_ids', max_length=120)}"
+                ),
+                (
+                    "Evidence Considered: "
+                    f"{hypothesis_value('considered_evidence_count', max_length=12)}"
+                ),
+                (
+                    "Evidence Rejected  : "
+                    f"{hypothesis_value('rejected_evidence_count', max_length=12)}"
+                ),
+                (
+                    "Output Truncated   : "
+                    f"{hypothesis_value('truncated', max_length=12)}"
+                ),
+                (
+                    "Executed           : "
+                    f"{hypothesis_value('executed', max_length=12)}"
+                ),
+                (
+                    "Network Activity   : "
+                    f"{hypothesis_value('network_activity', max_length=12)}"
+                ),
+                (
+                    "Payload Generated  : "
+                    f"{hypothesis_value('payload_generated', max_length=12)}"
+                ),
+                (
+                    "Subprocess Started : "
+                    f"{hypothesis_value('subprocess_started', max_length=12)}"
+                ),
+                (
+                    "Evidence SHA-256   : "
+                    f"{hypothesis_value('evidence_sha256', max_length=72)}"
+                ),
+                (
+                    "[dim]Read-only Phase 6A candidate paths generated "
+                    "from redacted evidence metadata. No validation or "
+                    "security test was executed.[/dim]"
+                ),
+            ]
+        )
+
+    elif snapshot.controlled_observation:
         observation = snapshot.controlled_observation
 
         def observation_value(
