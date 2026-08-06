@@ -2981,7 +2981,7 @@ def test_scope_lines_render_upload_surface_summary() -> None:
             "method": "GET",
             "status_code": "200",
             "validator_id": (
-                "6C.5-file-upload-surface-validation"
+                "6C.6-file-upload-surface-validation"
             ),
             "validator_classification": (
                 "upload_surface_observed"
@@ -3005,7 +3005,7 @@ def test_scope_lines_render_upload_surface_summary() -> None:
 
     rendered = "\n".join(build_scope_lines(snapshot))
 
-    assert "6C.5 — FILE UPLOAD SURFACE VALIDATION" in rendered
+    assert "6C.6 — FILE UPLOAD SURFACE VALIDATION" in rendered
     assert "upload_surface_observed" in rendered
     assert "Upload Forms       : 1" in rendered
     assert "File Inputs        : 2" in rendered
@@ -3023,7 +3023,34 @@ def test_upload_surface_validator_tool_row_requires_approval() -> None:
     from saarthi_ai.tui.app import TOOLS
 
     assert (
-        "Saarthi 6C.5",
+        "Saarthi 6C.6",
         "File Upload Surface Validator",
         "APPROVAL",
     ) in TOOLS
+
+
+def test_tui_lists_all_official_validator_families() -> None:
+    from saarthi_ai.tui.app import TOOLS
+
+    family_rows = [
+        row
+        for row in TOOLS
+        if row[0]
+        in {
+            "Saarthi 6C.1",
+            "Saarthi 6C.2",
+            "Saarthi 6C.3",
+            "Saarthi 6C.4",
+            "Saarthi 6C.5",
+            "Saarthi 6C.6",
+            "Saarthi 6C.7",
+        }
+        and "total)" in row[1]
+    ]
+
+    assert len(family_rows) == 7
+    assert (
+        "Saarthi 6C.5",
+        "Authorization & Access Control (0 ready, 0 partial, 9 total)",
+        "PLANNED",
+    ) in family_rows

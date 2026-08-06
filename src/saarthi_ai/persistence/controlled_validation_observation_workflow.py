@@ -506,7 +506,10 @@ def _validator_analysis_from_evidence(
             parse_error=bool(metadata.get("parse_error")),
         )
 
-    if validator_id == "6C.5-file-upload-surface-validation":
+    if validator_id in {
+        "6C.5-file-upload-surface-validation",
+        "6C.6-file-upload-surface-validation",
+    }:
         try:
             classification = UploadSurfaceClassification(
                 str(metadata["validator_classification"])
@@ -515,7 +518,7 @@ def _validator_analysis_from_evidence(
             return None
 
         return UploadSurfaceValidationResult(
-            validator_id=validator_id,
+            validator_id="6C.6-file-upload-surface-validation",
             classification=classification,
             reason=str(metadata.get("validator_reason") or ""),
             form_count=int(metadata.get("form_count") or 0),

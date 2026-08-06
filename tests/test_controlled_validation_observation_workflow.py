@@ -18,6 +18,7 @@ from saarthi_ai.controlled_validation.models import (
 )
 from saarthi_ai.persistence.controlled_validation_observation_workflow import (
     ControlledValidationObservationWorkflowError,
+    _validator_analysis_from_evidence,
     run_tracked_controlled_validation_observation,
 )
 from saarthi_ai.persistence.controlled_validation_workflow import (
@@ -26,9 +27,11 @@ from saarthi_ai.persistence.controlled_validation_workflow import (
 from saarthi_ai.persistence.database import SaarthiDatabase
 from saarthi_ai.persistence.models import (
     AuditEventType,
+    EvidenceRecord,
     EvidenceType,
     ExecutionCreate,
     ExecutionState,
+    utc_now,
 )
 
 
@@ -659,7 +662,7 @@ async def test_upload_surface_persists_only_aggregate_metadata(
     assert result.validator_analysis is not None
     assert (
         result.validator_analysis.validator_id
-        == "6C.5-file-upload-surface-validation"
+        == "6C.6-file-upload-surface-validation"
     )
     assert result.validator_analysis.upload_form_count == 1
     assert result.validator_analysis.file_input_count == 1
@@ -744,6 +747,45 @@ async def test_upload_surface_reuse_sends_no_second_request(
         == "no_upload_surface_observed"
     )
     assert second.reused_existing_evidence is True
+
+
+def test_legacy_6c5_upload_evidence_uses_canonical_6c6_id() -> None:
+    evidence = EvidenceRecord(
+        evidence_id="legacy-upload-evidence",
+        execution_id="execution-phase-6c",
+        evidence_type=(
+            EvidenceType.CONTROLLED_VALIDATION_OBSERVATION
+        ),
+        source="legacy-test",
+        path="/tmp/legacy-upload.json",
+        sha256="a" * 64,
+        size_bytes=100,
+        content_type="application/json",
+        step_id="6C.5",
+        tool_name="saarthi-controlled-validation-observer",
+        metadata={
+            "validator_id": (
+                "6C.5-file-upload-surface-validation"
+            ),
+            "validator_classification": (
+                "upload_surface_observed"
+            ),
+            "validator_reason": "Legacy upload surface.",
+            "form_count": 1,
+            "upload_form_count": 1,
+            "file_input_count": 1,
+        },
+        created_at=utc_now(),
+    )
+
+    analysis = _validator_analysis_from_evidence(evidence)
+
+    assert analysis is not None
+    assert (
+        analysis.validator_id
+        == "6C.6-file-upload-surface-validation"
+    )
+    assert analysis.upload_form_count == 1
 
 
 @pytest.mark.asyncio

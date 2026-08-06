@@ -1,4 +1,4 @@
-"""Non-submitting Phase 6C.5 file-upload surface analysis."""
+"""Non-submitting Phase 6C.6 file-upload surface analysis."""
 
 from __future__ import annotations
 
@@ -207,7 +207,7 @@ def analyze_upload_surface(
         )
 
     return UploadSurfaceValidationResult(
-        validator_id="6C.5-file-upload-surface-validation",
+        validator_id="6C.6-file-upload-surface-validation",
         classification=classification,
         reason=reason,
         form_count=parser.form_count,

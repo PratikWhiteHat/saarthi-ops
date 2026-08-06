@@ -59,6 +59,15 @@ from saarthi_ai.controlled_validation.upload_surface import (
     UploadSurfaceValidationResult,
     analyze_upload_surface,
 )
+from saarthi_ai.controlled_validation.validator_registry import (
+    PHASE_6_VALIDATOR_REGISTRY,
+    ValidationLevel,
+    ValidatorDefinition,
+    ValidatorModuleSummary,
+    ValidatorStatus,
+    list_phase6_validators,
+    summarize_phase6_validator_modules,
+)
 
 __all__ = [
     "ALLOWED_METHODS",
@@ -73,6 +82,7 @@ __all__ = [
     "MAX_TIMEOUT_SECONDS",
     "ParameterSurfaceClassification",
     "ParameterSurfaceValidationResult",
+    "PHASE_6_VALIDATOR_REGISTRY",
     "ControlledValidationAction",
     "ClickjackingClassification",
     "ClickjackingValidationResult",
@@ -91,6 +101,10 @@ __all__ = [
     "SessionCookieValidationResult",
     "UploadSurfaceClassification",
     "UploadSurfaceValidationResult",
+    "ValidationLevel",
+    "ValidatorDefinition",
+    "ValidatorModuleSummary",
+    "ValidatorStatus",
     "evaluate_controlled_validation",
     "evaluate_controlled_validation_execution",
     "execute_bounded_observation",
@@ -100,4 +114,6 @@ __all__ = [
     "analyze_parameter_surface",
     "analyze_session_cookie_attributes",
     "analyze_upload_surface",
+    "list_phase6_validators",
+    "summarize_phase6_validator_modules",
 ]

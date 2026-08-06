@@ -29,6 +29,47 @@ def test_controlled_command_is_available() -> None:
     assert "controlled-validation" in result.stdout.lower()
 
 
+def test_controlled_validators_renders_module_summary() -> None:
+    result = runner.invoke(
+        app,
+        ["controlled", "validators"],
+    )
+
+    assert result.exit_code == 0
+    normalized = " ".join(result.stdout.split())
+    assert "Phase 6C Attack Validator Readiness" in normalized
+    assert "6C.1" in normalized
+    assert "Injection Testing" in normalized
+    assert "6C.7" in normalized
+    assert "API & Business Logic Attacks" in normalized
+
+
+def test_controlled_validators_filters_one_module() -> None:
+    result = runner.invoke(
+        app,
+        ["controlled", "validators", "--module", "6C.6"],
+    )
+
+    assert result.exit_code == 0
+    normalized = " ".join(result.stdout.split())
+    assert "6C.6 — File & Execution Attacks" in normalized
+    assert "Unrestricted File Upload" in normalized
+    assert "file_upload_surface_validation" in normalized
+    assert "Uploaded Script Execution" in normalized
+    assert "manual_only" in normalized
+    assert "SQL Injection" not in normalized
+
+
+def test_controlled_validators_rejects_unknown_module() -> None:
+    result = runner.invoke(
+        app,
+        ["controlled", "validators", "--module", "6C.8"],
+    )
+
+    assert result.exit_code == 1
+    assert "Unknown validator module" in result.stdout
+
+
 def test_controlled_plan_requires_explicit_approval() -> None:
     result = runner.invoke(
         app,
@@ -2120,7 +2161,7 @@ def test_controlled_observe_renders_upload_surface_analysis(
             ),
             validator_analysis=SimpleNamespace(
                 validator_id=(
-                    "6C.5-file-upload-surface-validation"
+                    "6C.6-file-upload-surface-validation"
                 ),
                 classification=SimpleNamespace(
                     value="upload_surface_observed"
@@ -2177,7 +2218,7 @@ def test_controlled_observe_renders_upload_surface_analysis(
         is ControlledValidationAction.FILE_UPLOAD_SURFACE_VALIDATION
     )
     normalized = " ".join(result.stdout.split())
-    assert "6C.5 File Upload Surface Validation" in normalized
+    assert "6C.6 File Upload Surface Validation" in normalized
     assert "Classification: upload_surface_observed" in normalized
     assert "Upload forms: 1" in normalized
     assert "File inputs: 2" in normalized

@@ -1,4 +1,4 @@
-"""Tests for non-submitting Phase 6C.5 upload-surface analysis."""
+"""Tests for non-submitting Phase 6C.6 upload-surface analysis."""
 
 from __future__ import annotations
 

@@ -36,6 +36,10 @@ from saarthi_ai.controlled_validation.models import (
     ControlledValidationAction,
     ControlledValidationRequest,
 )
+from saarthi_ai.controlled_validation.validator_registry import (
+    list_phase6_validators,
+    summarize_phase6_validator_modules,
+)
 from saarthi_ai.execution.http_collector import HttpCollectionError
 from saarthi_ai.execution.http_models import HttpMetadataCollectionRequest
 from saarthi_ai.execution.nuclei_adapter import (
@@ -2629,6 +2633,72 @@ def controlled_nuclei_execute(
 
 
 
+@controlled_app.command("validators")
+def controlled_validators(
+    module_code: Annotated[
+        str | None,
+        typer.Option(
+            "--module",
+            help="Optional official module code, for example 6C.2.",
+        ),
+    ] = None,
+) -> None:
+    """Show official Phase 6C validator readiness and safety levels."""
+
+    if module_code is None:
+        console.print(
+            "[bold cyan]Phase 6C Attack Validator Readiness[/bold cyan]"
+        )
+
+        for summary in summarize_phase6_validator_modules():
+            console.print(
+                f"{summary.module_code} — {summary.module_name}: "
+                f"ready={summary.implemented}, "
+                f"partial={summary.partial}, "
+                f"planned={summary.planned}, "
+                "authenticated="
+                f"{summary.requires_authenticated_workflow}, "
+                f"manual={summary.manual_only}, "
+                f"total={summary.total} "
+                f"[{summary.display_status}]"
+            )
+
+        console.print(
+            "[dim]Use --module 6C.N to list every validator in one "
+            "family.[/dim]"
+        )
+        return
+
+    validators = list_phase6_validators(module_code)
+    if not validators:
+        console.print(
+            "[bold red]Unknown validator module.[/bold red] "
+            "Use one of 6C.1 through 6C.7."
+        )
+        raise typer.Exit(code=1)
+
+    console.print(
+        "[bold cyan]"
+        f"{validators[0].module_code} — "
+        f"{validators[0].module_name}"
+        "[/bold cyan]"
+    )
+
+    for validator in validators:
+        authentication = (
+            "required"
+            if validator.requires_authentication
+            else "not required"
+        )
+        console.print(
+            f"- {validator.name}: "
+            f"level={validator.level.value}; "
+            f"status={validator.status.value}; "
+            f"authentication={authentication}; "
+            f"action={validator.implementation_action or '—'}"
+        )
+
+
 @controlled_app.command("observe")
 def controlled_observe(
     execution_id: Annotated[
@@ -2877,10 +2947,10 @@ def controlled_observe(
             console.print()
             if (
                 getattr(analysis, "validator_id", None)
-                == "6C.5-file-upload-surface-validation"
+                == "6C.6-file-upload-surface-validation"
             ):
                 console.print(
-                    "[bold cyan]6C.5 File Upload Surface "
+                    "[bold cyan]6C.6 File Upload Surface "
                     "Validation[/bold cyan]"
                 )
                 console.print(

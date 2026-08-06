@@ -15,6 +15,10 @@ from textual.containers import Grid, Horizontal, Vertical
 from textual.reactive import reactive
 from textual.widgets import DataTable, Footer, Label, Log, ProgressBar, Static
 
+from saarthi_ai.controlled_validation.validator_registry import (
+    validator_module_tool_rows,
+)
+
 DEFAULT_DB_PATH = Path.home() / ".saarthi" / "saarthi.db"
 
 
@@ -2811,13 +2815,14 @@ TOOLS = [
     ("crt.sh", "Certificate Transparency", "ENABLED"),
     ("httpx", "Live Host & Service Probe", "ENABLED"),
     ("katana", "Web Crawler", "ENABLED"),
+    *validator_module_tool_rows(),
     ("Saarthi 6A", "Attack Hypothesis Engine", "ENABLED"),
     ("Saarthi 6B", "Policy & Approval Gate", "APPROVAL"),
     ("Saarthi 6C.2", "Clickjacking Header Validator", "APPROVAL"),
     ("Saarthi 6C.2", "CSRF Protection Surface Validator", "APPROVAL"),
     ("Saarthi 6C.3", "HTTP Parameter Surface Validator", "APPROVAL"),
     ("Saarthi 6C.4", "Session Cookie Attribute Validator", "APPROVAL"),
-    ("Saarthi 6C.5", "File Upload Surface Validator", "APPROVAL"),
+    ("Saarthi 6C.6", "File Upload Surface Validator", "APPROVAL"),
     ("Saarthi 6C.7", "API Data-Exposure Surface Validator", "APPROVAL"),
     ("nuclei", "Controlled Preview / Execution", "APPROVAL"),
     ("sqlmap", "SQL Injection Testing", "PHASE 4A"),
@@ -3299,13 +3304,16 @@ def build_scope_lines(
             )
         elif (
             observation.get("validator_id")
-            == "6C.5-file-upload-surface-validation"
+            in {
+                "6C.5-file-upload-surface-validation",
+                "6C.6-file-upload-surface-validation",
+            }
         ):
             scope_lines.extend(
                 [
                     "",
                     (
-                        "[bold cyan]6C.5 — FILE UPLOAD SURFACE "
+                        "[bold cyan]6C.6 — FILE UPLOAD SURFACE "
                         "VALIDATION[/bold cyan]"
                     ),
                     (
