@@ -40,6 +40,7 @@ from saarthi_ai.execution.nuclei_adapter import (
     NucleiExecutionRequest,
     build_nuclei_invocation_preview,
 )
+from saarthi_ai.execution.tool_runner import run_tool
 from saarthi_ai.llm import (
     OllamaUnavailableError,
     SaarthiOllamaClient,
@@ -89,6 +90,13 @@ from saarthi_ai.persistence.models import (
     EvidenceType,
     ExecutionCreate,
     ExecutionState,
+)
+from saarthi_ai.persistence.nuclei_execution_verification import (
+    NucleiExecutionVerificationRequest,
+)
+from saarthi_ai.persistence.nuclei_execution_workflow import (
+    NucleiExecutionWorkflowError,
+    run_tracked_nuclei_execution,
 )
 from saarthi_ai.persistence.nuclei_preparation_workflow import (
     NucleiPreparationWorkflowError,
@@ -2110,6 +2118,198 @@ def controlled_nuclei_prepare(
         "The runner was not invoked, no executable was resolved, "
         "Nuclei was not started, and no network request was sent.[/dim]"
     )
+
+
+@controlled_app.command("nuclei-execute")
+def controlled_nuclei_execute(
+    execution_id: Annotated[
+        str,
+        typer.Option(
+            "--execution",
+            help="Execution containing the exact persisted Nuclei preparation.",
+        ),
+    ],
+    target_url: Annotated[
+        str,
+        typer.Option(
+            "--url",
+            help="Exact in-scope URL from the persisted Nuclei preparation.",
+        ),
+    ],
+    rate_limit: Annotated[
+        int,
+        typer.Option(
+            "--rate-limit",
+            min=1,
+            max=2,
+            help="Approved Nuclei request rate per second, capped at 2.",
+        ),
+    ] = 1,
+    concurrency: Annotated[
+        int,
+        typer.Option(
+            "--concurrency",
+            min=1,
+            max=2,
+            help="Approved Nuclei concurrency, capped at 2.",
+        ),
+    ] = 1,
+    timeout_seconds: Annotated[
+        int,
+        typer.Option(
+            "--timeout",
+            min=1,
+            max=10,
+            help="Approved per-request timeout in seconds, capped at 10.",
+        ),
+    ] = 10,
+    approved: Annotated[
+        bool,
+        typer.Option(
+            "--approved",
+            help=(
+                "Confirm scope, authorization, active testing, and the exact "
+                "persisted Nuclei preparation."
+            ),
+        ),
+    ] = False,
+    execute: Annotated[
+        bool,
+        typer.Option(
+            "--execute",
+            help=(
+                "Confirm awareness that one real Nuclei subprocess and "
+                "network activity will occur."
+            ),
+        ),
+    ] = False,
+) -> None:
+    """Execute one exact persisted Phase 6C Nuclei preparation."""
+
+    if not approved:
+        console.print(
+            "[bold yellow]Approval required.[/bold yellow] "
+            "Review the persisted preparation, scope, target, rate, "
+            "concurrency, and timeout, then rerun with --approved."
+        )
+        console.print("Execution requested: false")
+        console.print("Network activity: false")
+        console.print("Subprocess started: false")
+        console.print("Runner invoked: false")
+        raise typer.Exit(code=1)
+
+    if not execute:
+        console.print(
+            "[bold yellow]Execution confirmation required.[/bold yellow] "
+            "This command starts one real Nuclei subprocess and permits "
+            "bounded network activity. Rerun with --execute after review."
+        )
+        console.print("Execution requested: false")
+        console.print("Network activity: false")
+        console.print("Subprocess started: false")
+        console.print("Runner invoked: false")
+        raise typer.Exit(code=1)
+
+    preview = build_nuclei_invocation_preview(
+        NucleiDryRunRequest(
+            target_url=target_url,
+            authorized=True,
+            active_testing=True,
+            approval_granted=True,
+            rate_limit_per_second=rate_limit,
+            concurrency=concurrency,
+            timeout_seconds=timeout_seconds,
+            dry_run=True,
+        )
+    )
+
+    request = NucleiExecutionVerificationRequest(
+        target_url=preview.target_url,
+        arguments=preview.arguments,
+        authorization_confirmed=True,
+        active_testing_allowed=True,
+        explicitly_approved=True,
+    )
+
+    console.print(
+        "[bold yellow]Phase 6C controlled execution authorized.[/bold yellow]"
+    )
+    console.print(f"Execution: {execution_id}")
+    console.print(f"Target: {preview.target_url}")
+    console.print(
+        f"Rate limit: {preview.rate_limit_per_second} request(s)/second"
+    )
+    console.print(f"Concurrency: {preview.concurrency}")
+    console.print(
+        f"Request timeout: {preview.timeout_seconds} second(s)"
+    )
+    console.print("Process timeout bound: 120 second(s)")
+    console.print("Automatic retry: false")
+    console.print(
+        "[bold yellow]One real Nuclei subprocess and bounded network "
+        "activity will now occur.[/bold yellow]"
+    )
+
+    try:
+        result = run_tracked_nuclei_execution(
+            get_database(),
+            execution_id,
+            request,
+            runner=run_tool,
+            actor="cli-controlled-nuclei-execution",
+            evidence_root=(
+                Path.cwd()
+                / "evidence"
+                / "controlled-nuclei-executions"
+            ),
+        )
+    except (
+        ExecutionNotFoundError,
+        InvalidStateTransitionError,
+        NucleiExecutionWorkflowError,
+        ValueError,
+    ) as exc:
+        console.print(
+            "[bold red]Controlled Nuclei execution failed:[/bold red] "
+            f"{exc}"
+        )
+        console.print("Execution requested: true")
+        console.print("Automatic retry: false")
+        console.print(
+            "[dim]Inspect the execution audit trail to determine whether "
+            "the runner or subprocess started before the safe failure.[/dim]"
+        )
+        raise typer.Exit(code=1) from exc
+
+    execution_result = result.result
+
+    console.print()
+    console.print(
+        "[bold green]Phase 6C controlled Nuclei execution completed."
+        "[/bold green]"
+    )
+    console.print(f"Execution state: {result.execution.state.value}")
+    console.print(f"Tool: {execution_result.tool_name}")
+    console.print(f"Target: {execution_result.target_url}")
+    console.print(f"Executable: {execution_result.executable}")
+    console.print("Arguments:")
+    console.print("  " + " ".join(execution_result.arguments))
+    console.print(f"Exit code: {execution_result.exit_code}")
+    console.print(
+        f"Timed out: {str(execution_result.timed_out).lower()}"
+    )
+    console.print("Automatic retry: false")
+    console.print("Executed: true")
+    console.print("Network activity: true")
+    console.print("Subprocess started: true")
+    console.print("Runner invoked: true")
+    console.print(
+        "Preparation evidence ID: "
+        f"{result.verified_preparation.evidence.evidence_id}"
+    )
+    console.print(f"Evidence ID: {result.evidence.evidence_id}")
+    console.print(f"Evidence path: {result.evidence.path}")
+    console.print(f"Evidence SHA-256: {result.evidence.sha256}")
 
 
 

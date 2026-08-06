@@ -188,7 +188,7 @@ def _serialize_execution(
 
     return {
         "schema_version": "1.0",
-        "phase": "6J.3",
+        "phase": "6C",
         "evidence_type": (
             EvidenceType.CONTROLLED_NUCLEI_EXECUTION.value
         ),
@@ -260,11 +260,11 @@ def _record_failure(
             event_type=AuditEventType.TOOL_FAILED,
             actor=actor,
             message=(
-                "[6J.3][nuclei] Controlled Nuclei execution "
+                "[6C][nuclei] Controlled Nuclei execution "
                 "failed safely."
             ),
             details={
-                "phase_code": "6J.3",
+                "phase_code": "6C",
                 "tool": "nuclei",
                 "error_type": type(error).__name__,
                 "error": str(error),
@@ -300,11 +300,11 @@ def run_tracked_nuclei_execution(
         event_type=AuditEventType.APPROVAL_RECORDED,
         actor=actor,
         message=(
-            "[6J.3][nuclei] Fresh explicit operator approval "
+            "[6C][nuclei] Fresh explicit operator approval "
             "recorded for controlled execution."
         ),
         details={
-            "phase_code": "6J.3",
+            "phase_code": "6C",
             "tool": "nuclei",
             "preparation_evidence_id": (
                 verified.evidence.evidence_id
@@ -325,9 +325,9 @@ def run_tracked_nuclei_execution(
         execution_id,
         event_type=AuditEventType.TOOL_STARTED,
         actor=actor,
-        message="[6J.3][nuclei] Bounded Nuclei runner invoked.",
+        message="[6C][nuclei] Bounded Nuclei runner invoked.",
         details={
-            "phase_code": "6J.3",
+            "phase_code": "6C",
             "tool": "nuclei",
             "target_url": verified.plan.target_url,
             "arguments": list(verified.binding.arguments),
@@ -363,11 +363,11 @@ def run_tracked_nuclei_execution(
             event_type=AuditEventType.TOOL_OUTPUT,
             actor=actor,
             message=(
-                f"[6J.3][nuclei][{event.stream}] "
+                f"[6C][nuclei][{event.stream}] "
                 f"Bounded output event {output_sequence}."
             ),
             details={
-                "phase_code": "6J.3",
+                "phase_code": "6C",
                 "tool": "nuclei",
                 "stream": event.stream,
                 "sequence": output_sequence,
@@ -428,7 +428,7 @@ def run_tracked_nuclei_execution(
                 step_id="controlled-nuclei-execution-001",
                 tool_name="nuclei",
                 metadata={
-                    "phase": "6J.3",
+                    "phase": "6C",
                     "target_url": result.target_url,
                     "arguments": list(result.arguments),
                     "preparation_evidence_id": (
@@ -479,11 +479,11 @@ def run_tracked_nuclei_execution(
             event_type=AuditEventType.TOOL_COMPLETED,
             actor=actor,
             message=(
-                "[6J.3][nuclei] Controlled Nuclei execution "
+                "[6C][nuclei] Controlled Nuclei execution "
                 "completed and evidence was persisted."
             ),
             details={
-                "phase_code": "6J.3",
+                "phase_code": "6C",
                 "tool": "nuclei",
                 "evidence_id": evidence.evidence_id,
                 "evidence_sha256": evidence.sha256,
@@ -507,7 +507,7 @@ def run_tracked_nuclei_execution(
             execution_id,
             ExecutionState.COMPLETED,
             actor=actor,
-            reason="Phase 6J.3 controlled Nuclei execution completed.",
+            reason="Phase 6C controlled Nuclei execution completed.",
         )
 
         return TrackedNucleiExecution(

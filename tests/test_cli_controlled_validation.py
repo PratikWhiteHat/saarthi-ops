@@ -1278,3 +1278,264 @@ def test_controlled_nuclei_prepare_enforces_cli_bounds() -> None:
     )
 
     assert result.exit_code != 0
+
+
+def test_controlled_nuclei_execute_requires_both_confirmations(
+    monkeypatch,
+) -> None:
+    import saarthi_ai.cli as cli_module
+
+    workflow_calls = 0
+
+    def fake_workflow(*args, **kwargs):
+        nonlocal workflow_calls
+        workflow_calls += 1
+        raise AssertionError("Execution workflow must not be called.")
+
+    monkeypatch.setattr(
+        cli_module,
+        "run_tracked_nuclei_execution",
+        fake_workflow,
+    )
+
+    missing_approval = runner.invoke(
+        app,
+        [
+            "controlled",
+            "nuclei-execute",
+            "--execution",
+            "execution-test",
+            "--url",
+            "https://example.com/",
+            "--execute",
+        ],
+    )
+    missing_execution_confirmation = runner.invoke(
+        app,
+        [
+            "controlled",
+            "nuclei-execute",
+            "--execution",
+            "execution-test",
+            "--url",
+            "https://example.com/",
+            "--approved",
+        ],
+    )
+
+    assert missing_approval.exit_code == 1
+    assert missing_execution_confirmation.exit_code == 1
+    assert workflow_calls == 0
+
+    approval_output = " ".join(missing_approval.stdout.split())
+    execution_output = " ".join(
+        missing_execution_confirmation.stdout.split()
+    )
+
+    assert "Approval required" in approval_output
+    assert "Execution confirmation required" in execution_output
+
+    for output in (approval_output, execution_output):
+        assert "Execution requested: false" in output
+        assert "Network activity: false" in output
+        assert "Subprocess started: false" in output
+        assert "Runner invoked: false" in output
+
+
+def test_controlled_nuclei_execute_runs_exact_verified_preparation(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    import saarthi_ai.cli as cli_module
+
+    captured: dict[str, object] = {}
+
+    def fake_workflow(
+        database,
+        execution_id,
+        request,
+        *,
+        runner,
+        actor,
+        evidence_root,
+    ):
+        captured["database"] = database
+        captured["execution_id"] = execution_id
+        captured["request"] = request
+        captured["runner"] = runner
+        captured["actor"] = actor
+        captured["evidence_root"] = evidence_root
+
+        return SimpleNamespace(
+            execution=SimpleNamespace(
+                state=SimpleNamespace(value="completed"),
+            ),
+            verified_preparation=SimpleNamespace(
+                evidence=SimpleNamespace(
+                    evidence_id="evidence-nuclei-preparation",
+                ),
+            ),
+            result=SimpleNamespace(
+                tool_name="nuclei",
+                target_url=request.target_url,
+                executable="/opt/homebrew/bin/nuclei",
+                arguments=request.arguments,
+                exit_code=0,
+                timed_out=False,
+            ),
+            evidence=SimpleNamespace(
+                evidence_id="evidence-nuclei-execution",
+                path=str(evidence_root / "execution.json"),
+                sha256="f" * 64,
+            ),
+        )
+
+    database = object()
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        cli_module,
+        "get_database",
+        lambda: database,
+    )
+    monkeypatch.setattr(
+        cli_module,
+        "run_tracked_nuclei_execution",
+        fake_workflow,
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "controlled",
+            "nuclei-execute",
+            "--execution",
+            "execution-test",
+            "--url",
+            "https://example.com/",
+            "--rate-limit",
+            "2",
+            "--concurrency",
+            "2",
+            "--timeout",
+            "7",
+            "--approved",
+            "--execute",
+        ],
+    )
+
+    assert result.exit_code == 0
+
+    request = captured["request"]
+
+    assert captured["database"] is database
+    assert captured["execution_id"] == "execution-test"
+    assert captured["runner"] is cli_module.run_tool
+    assert captured["actor"] == "cli-controlled-nuclei-execution"
+    assert captured["evidence_root"] == (
+        tmp_path
+        / "evidence"
+        / "controlled-nuclei-executions"
+    )
+    assert request.target_url == "https://example.com/"
+    assert request.authorization_confirmed is True
+    assert request.active_testing_allowed is True
+    assert request.explicitly_approved is True
+    assert "-rate-limit" in request.arguments
+    assert request.arguments[
+        request.arguments.index("-rate-limit") + 1
+    ] == "2"
+    assert "-concurrency" in request.arguments
+    assert request.arguments[
+        request.arguments.index("-concurrency") + 1
+    ] == "2"
+    assert "-timeout" in request.arguments
+    assert request.arguments[
+        request.arguments.index("-timeout") + 1
+    ] == "7"
+    assert request.arguments[
+        request.arguments.index("-retries") + 1
+    ] == "0"
+
+    normalized_output = " ".join(result.stdout.split())
+
+    assert "Phase 6C controlled execution authorized" in normalized_output
+    assert "One real Nuclei subprocess" in normalized_output
+    assert "Phase 6C controlled Nuclei execution completed" in (
+        normalized_output
+    )
+    assert "Execution state: completed" in normalized_output
+    assert "Exit code: 0" in normalized_output
+    assert "Timed out: false" in normalized_output
+    assert "Automatic retry: false" in normalized_output
+    assert "Executed: true" in normalized_output
+    assert "Network activity: true" in normalized_output
+    assert "Subprocess started: true" in normalized_output
+    assert "Runner invoked: true" in normalized_output
+    assert "evidence-nuclei-preparation" in normalized_output
+    assert "evidence-nuclei-execution" in normalized_output
+
+
+def test_controlled_nuclei_execute_reports_safe_failure(
+    monkeypatch,
+) -> None:
+    import saarthi_ai.cli as cli_module
+
+    def fake_workflow(*args, **kwargs):
+        raise cli_module.NucleiExecutionWorkflowError(
+            "simulated controlled execution failure"
+        )
+
+    monkeypatch.setattr(
+        cli_module,
+        "get_database",
+        lambda: object(),
+    )
+    monkeypatch.setattr(
+        cli_module,
+        "run_tracked_nuclei_execution",
+        fake_workflow,
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "controlled",
+            "nuclei-execute",
+            "--execution",
+            "execution-test",
+            "--url",
+            "https://example.com/",
+            "--approved",
+            "--execute",
+        ],
+    )
+
+    assert result.exit_code == 1
+
+    normalized_output = " ".join(result.stdout.split())
+
+    assert "simulated controlled execution failure" in normalized_output
+    assert "Execution requested: true" in normalized_output
+    assert "Automatic retry: false" in normalized_output
+    assert "audit trail" in normalized_output
+
+
+def test_controlled_nuclei_execute_enforces_cli_bounds() -> None:
+    result = runner.invoke(
+        app,
+        [
+            "controlled",
+            "nuclei-execute",
+            "--execution",
+            "execution-test",
+            "--url",
+            "https://example.com/",
+            "--timeout",
+            "11",
+            "--approved",
+            "--execute",
+        ],
+    )
+
+    assert result.exit_code != 0

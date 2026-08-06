@@ -165,7 +165,7 @@ def test_executes_with_injected_runner_and_persists_evidence(
         hashlib.sha256(evidence_bytes).hexdigest()
         == result.evidence.sha256
     )
-    assert payload["phase"] == "6J.3"
+    assert payload["phase"] == "6C"
     assert payload["runtime"]["exit_code"] == 0
     assert payload["runtime"]["automatic_retry"] is False
     assert payload["execution"] == {
@@ -439,7 +439,7 @@ def test_registration_failure_removes_orphan_file(
         for event in database.list_audit_events(execution_id)
         if (
             event.event_type is AuditEventType.TOOL_FAILED
-            and event.details.get("phase_code") == "6J.3"
+            and event.details.get("phase_code") == "6C"
         )
     ]
 
