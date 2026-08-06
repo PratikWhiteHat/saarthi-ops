@@ -2838,3 +2838,66 @@ def test_session_cookie_validator_tool_row_requires_approval() -> None:
         "Session Cookie Attribute Validator",
         "APPROVAL",
     ) in TOOLS
+
+
+def test_scope_lines_render_csrf_surface_summary() -> None:
+    from dataclasses import replace
+
+    from saarthi_ai.tui.app import (
+        build_scope_lines,
+        demo_snapshot,
+    )
+
+    snapshot = replace(
+        demo_snapshot(),
+        attack_hypothesis_set=None,
+        controlled_validation_plan=None,
+        controlled_observation={
+            "evidence_id": "evidence-csrf-surface",
+            "target_url": "https://example.com/account",
+            "action": "csrf_protection_surface_validation",
+            "method": "GET",
+            "status_code": "200",
+            "validator_id": (
+                "6C.2-csrf-protection-surface-validation"
+            ),
+            "validator_classification": (
+                "protection_signals_observed"
+            ),
+            "validator_reason": (
+                "Anti-CSRF field signal observed."
+            ),
+            "post_form_count": "1",
+            "forms_with_token_signal": "1",
+            "forms_without_token_signal": "0",
+            "cross_origin_action_count": "0",
+            "protection_sources": "anti_csrf_field_name",
+            "token_values_discarded": "true",
+            "form_submitted": "false",
+            "browser_launched": "false",
+            "request_body_sent": "false",
+            "payload_generated": "false",
+        },
+    )
+
+    rendered = "\n".join(build_scope_lines(snapshot))
+
+    assert "6C.2 — CSRF PROTECTION SURFACE VALIDATION" in rendered
+    assert "protection_signals_observed" in rendered
+    assert "POST Forms         : 1" in rendered
+    assert "With / Without Token: 1 / 0" in rendered
+    assert "anti_csrf_field_name" in rendered
+    assert "Tokens Discarded   : true" in rendered
+    assert "Form Submitted     : false" in rendered
+    assert "Browser Launched   : false" in rendered
+    assert "Request Body Sent  : false" in rendered
+
+
+def test_csrf_surface_validator_tool_row_requires_approval() -> None:
+    from saarthi_ai.tui.app import TOOLS
+
+    assert (
+        "Saarthi 6C.2",
+        "CSRF Protection Surface Validator",
+        "APPROVAL",
+    ) in TOOLS

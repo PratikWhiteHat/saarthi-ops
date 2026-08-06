@@ -666,6 +666,34 @@ class ReadOnlySaarthiRepository:
                     metadata.get("credential_header_sent"),
                     "false",
                 ),
+                "post_form_count": display(
+                    metadata.get("post_form_count"),
+                    "0",
+                ),
+                "forms_with_token_signal": display(
+                    metadata.get("forms_with_token_signal"),
+                    "0",
+                ),
+                "forms_without_token_signal": display(
+                    metadata.get("forms_without_token_signal"),
+                    "0",
+                ),
+                "cross_origin_action_count": display(
+                    metadata.get("cross_origin_action_count"),
+                    "0",
+                ),
+                "token_values_discarded": display(
+                    metadata.get("token_values_discarded"),
+                    "false",
+                ),
+                "form_submitted": display(
+                    metadata.get("form_submitted"),
+                    "false",
+                ),
+                "request_body_sent": display(
+                    metadata.get("request_body_sent"),
+                    "false",
+                ),
                 "subprocess_started": display(
                     metadata.get("subprocess_started"),
                     "false",
@@ -2707,6 +2735,7 @@ TOOLS = [
     ("Saarthi 6A", "Attack Hypothesis Engine", "ENABLED"),
     ("Saarthi 6B", "Policy & Approval Gate", "APPROVAL"),
     ("Saarthi 6C.2", "Clickjacking Header Validator", "APPROVAL"),
+    ("Saarthi 6C.2", "CSRF Protection Surface Validator", "APPROVAL"),
     ("Saarthi 6C.3", "HTTP Parameter Surface Validator", "APPROVAL"),
     ("Saarthi 6C.4", "Session Cookie Attribute Validator", "APPROVAL"),
     ("nuclei", "Controlled Preview / Execution", "APPROVAL"),
@@ -3122,6 +3151,64 @@ def build_scope_lines(
                     (
                         "Credential Sent    : "
                         f"{observation_value('credential_header_sent', max_length=12)}"
+                    ),
+                    (
+                        "Payload Generated  : "
+                        f"{observation_value('payload_generated', max_length=12)}"
+                    ),
+                ]
+            )
+        elif (
+            observation.get("validator_id")
+            == "6C.2-csrf-protection-surface-validation"
+        ):
+            scope_lines.extend(
+                [
+                    "",
+                    (
+                        "[bold cyan]6C.2 — CSRF PROTECTION SURFACE "
+                        "VALIDATION[/bold cyan]"
+                    ),
+                    (
+                        "Classification     : "
+                        f"{observation_value('validator_classification', max_length=40)}"
+                    ),
+                    (
+                        "Reason             : "
+                        f"{observation_value('validator_reason', max_length=120)}"
+                    ),
+                    (
+                        "POST Forms         : "
+                        f"{observation_value('post_form_count', max_length=12)}"
+                    ),
+                    (
+                        "With / Without Token: "
+                        f"{observation_value('forms_with_token_signal', max_length=12)} / "
+                        f"{observation_value('forms_without_token_signal', max_length=12)}"
+                    ),
+                    (
+                        "Cross-Origin Action: "
+                        f"{observation_value('cross_origin_action_count', max_length=12)}"
+                    ),
+                    (
+                        "Protection Sources : "
+                        f"{observation_value('protection_sources', max_length=72)}"
+                    ),
+                    (
+                        "Tokens Discarded   : "
+                        f"{observation_value('token_values_discarded', max_length=12)}"
+                    ),
+                    (
+                        "Form Submitted     : "
+                        f"{observation_value('form_submitted', max_length=12)}"
+                    ),
+                    (
+                        "Browser Launched   : "
+                        f"{observation_value('browser_launched', max_length=12)}"
+                    ),
+                    (
+                        "Request Body Sent  : "
+                        f"{observation_value('request_body_sent', max_length=12)}"
                     ),
                     (
                         "Payload Generated  : "

@@ -42,6 +42,9 @@ class ControlledValidationAction(StrEnum):
     SESSION_COOKIE_ATTRIBUTE_VALIDATION = (
         "session_cookie_attribute_validation"
     )
+    CSRF_PROTECTION_SURFACE_VALIDATION = (
+        "csrf_protection_surface_validation"
+    )
     AUTHORIZATION_BOUNDARY = "authorization_boundary"
     STATE_CHANGE_VALIDATION = "state_change_validation"
     FILE_PROCESSING_VALIDATION = "file_processing_validation"

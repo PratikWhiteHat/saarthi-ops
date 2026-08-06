@@ -1862,6 +1862,113 @@ def test_controlled_observe_rejects_head_for_session_cookie() -> None:
 
     assert result.exit_code == 1
     assert (
-        "Session-cookie attribute validation requires GET"
+        "Session-cookie and CSRF surface validation require GET"
         in result.stdout
     )
+
+
+def test_controlled_observe_renders_csrf_surface_analysis(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    import saarthi_ai.cli as cli_module
+
+    captured: dict[str, object] = {}
+
+    async def fake_workflow(
+        database,
+        request,
+        *,
+        transport=None,
+        actor,
+        evidence_root,
+    ):
+        captured["request"] = request
+        return SimpleNamespace(
+            execution=SimpleNamespace(
+                state=SimpleNamespace(value="completed"),
+            ),
+            observation=SimpleNamespace(
+                policy=SimpleNamespace(
+                    decision=SimpleNamespace(value="allow"),
+                ),
+                method=request.method,
+                request_attempted=True,
+                response_received=True,
+                status_code=200,
+                final_url=request.validation.target_url,
+                body_bytes_captured=100,
+                body_truncated=False,
+                body_sha256="b" * 64,
+            ),
+            validator_analysis=SimpleNamespace(
+                validator_id=(
+                    "6C.2-csrf-protection-surface-validation"
+                ),
+                classification=SimpleNamespace(
+                    value="protection_signals_observed"
+                ),
+                reason="Anti-CSRF field signal observed.",
+                post_form_count=1,
+                forms_with_token_signal=1,
+                forms_without_token_signal=0,
+                cross_origin_action_count=0,
+                protection_sources=("anti_csrf_field_name",),
+            ),
+            evidence=SimpleNamespace(
+                evidence_id="evidence-csrf-surface",
+                path=str(evidence_root / "csrf.json"),
+                sha256="a" * 64,
+            ),
+            reused_existing_evidence=False,
+        )
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        cli_module,
+        "get_database",
+        lambda: object(),
+    )
+    monkeypatch.setattr(
+        cli_module,
+        "run_tracked_controlled_validation_observation",
+        fake_workflow,
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "controlled",
+            "observe",
+            "--execution",
+            "execution-test",
+            "--url",
+            "https://example.com/account",
+            "--action",
+            "csrf_protection_surface_validation",
+            "--method",
+            "GET",
+            "--approved",
+        ],
+    )
+
+    assert result.exit_code == 0
+    request = captured["request"]
+    assert (
+        request.validation.action
+        is (
+            ControlledValidationAction
+            .CSRF_PROTECTION_SURFACE_VALIDATION
+        )
+    )
+    normalized = " ".join(result.stdout.split())
+    assert "6C.2 CSRF Protection Surface Validation" in normalized
+    assert "Classification: protection_signals_observed" in normalized
+    assert "POST forms: 1" in normalized
+    assert "Forms with token signal: 1" in normalized
+    assert "Forms without token signal: 0" in normalized
+    assert "Token values discarded: true" in normalized
+    assert "Form submitted: false" in normalized
+    assert "Browser launched: false" in normalized
+    assert "Request body sent: false" in normalized
+    assert "Payload generated: false" in normalized

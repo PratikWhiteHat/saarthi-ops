@@ -315,3 +315,41 @@ async def test_cookie_analysis_discards_secret_values() -> None:
     assert secret not in repr(result.session_cookie_analysis)
     assert result.response_headers is not None
     assert result.response_headers["set-cookie"] == "<redacted>"
+
+
+@pytest.mark.asyncio
+async def test_csrf_analysis_never_submits_form_or_retains_token() -> None:
+    secret = "never-retain-csrf-token"
+    captured: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.append(request)
+        return httpx.Response(
+            200,
+            headers={"Content-Type": "text/html"},
+            content=(
+                "<form method='post'>"
+                "<input type='hidden' name='_token' "
+                f"value='{secret}'>"
+                "</form>"
+            ),
+            request=request,
+        )
+
+    result = await execute_bounded_observation(
+        make_request(
+            action=(
+                ControlledValidationAction
+                .CSRF_PROTECTION_SURFACE_VALIDATION
+            )
+        ),
+        transport=httpx.MockTransport(handler),
+    )
+
+    assert len(captured) == 1
+    assert captured[0].method == "GET"
+    assert captured[0].content == b""
+    assert result.csrf_surface_analysis is not None
+    assert result.csrf_surface_analysis.form_submitted is False
+    assert result.csrf_surface_analysis.request_body_sent is False
+    assert secret not in repr(result.csrf_surface_analysis)

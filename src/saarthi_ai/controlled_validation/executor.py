@@ -29,6 +29,7 @@ EXECUTABLE_ACTIONS = frozenset(
         ControlledValidationAction.CLICKJACKING_HEADER_VALIDATION,
         ControlledValidationAction.HTTP_PARAMETER_SURFACE_VALIDATION,
         ControlledValidationAction.SESSION_COOKIE_ATTRIBUTE_VALIDATION,
+        ControlledValidationAction.CSRF_PROTECTION_SURFACE_VALIDATION,
     }
 )
 
@@ -136,13 +137,17 @@ def evaluate_controlled_validation_execution(
 
     if (
         validation.action
-        is ControlledValidationAction.SESSION_COOKIE_ATTRIBUTE_VALIDATION
+        in {
+            ControlledValidationAction.SESSION_COOKIE_ATTRIBUTE_VALIDATION,
+            ControlledValidationAction.CSRF_PROTECTION_SURFACE_VALIDATION,
+        }
         and method != "GET"
     ):
         return _result(
             request,
             ControlledValidationExecutionDecision.DENY,
-            "Session-cookie attribute validation requires exactly one GET.",
+            "Session-cookie and CSRF surface validation require exactly "
+            "one GET.",
         )
 
     if (

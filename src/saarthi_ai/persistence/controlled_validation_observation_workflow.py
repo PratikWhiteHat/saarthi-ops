@@ -19,6 +19,10 @@ from saarthi_ai.controlled_validation.clickjacking import (
     ClickjackingValidationResult,
     analyze_clickjacking_protection,
 )
+from saarthi_ai.controlled_validation.csrf_surface import (
+    CsrfSurfaceClassification,
+    CsrfSurfaceValidationResult,
+)
 from saarthi_ai.controlled_validation.executor import (
     ControlledValidationExecutionDecision,
     ControlledValidationExecutionRequest,
@@ -66,6 +70,7 @@ ValidatorAnalysis = (
     ClickjackingValidationResult
     | ParameterSurfaceValidationResult
     | SessionCookieValidationResult
+    | CsrfSurfaceValidationResult
 )
 
 
@@ -408,6 +413,52 @@ def _validator_analysis_from_evidence(
             ),
         )
 
+    if validator_id == "6C.2-csrf-protection-surface-validation":
+        try:
+            classification = CsrfSurfaceClassification(
+                str(metadata["validator_classification"])
+            )
+        except (KeyError, ValueError):
+            return None
+
+        protection_sources = metadata.get("protection_sources")
+        return CsrfSurfaceValidationResult(
+            validator_id=validator_id,
+            classification=classification,
+            reason=str(metadata.get("validator_reason") or ""),
+            form_count=int(metadata.get("form_count") or 0),
+            post_form_count=int(
+                metadata.get("post_form_count") or 0
+            ),
+            forms_with_token_signal=int(
+                metadata.get("forms_with_token_signal") or 0
+            ),
+            forms_without_token_signal=int(
+                metadata.get("forms_without_token_signal") or 0
+            ),
+            cross_origin_action_count=int(
+                metadata.get("cross_origin_action_count") or 0
+            ),
+            cookie_count=int(metadata.get("cookie_count") or 0),
+            same_site_protected_cookie_count=int(
+                metadata.get(
+                    "same_site_protected_cookie_count"
+                )
+                or 0
+            ),
+            protection_sources=tuple(
+                item
+                for item in protection_sources
+                if isinstance(item, str)
+            )
+            if isinstance(protection_sources, list)
+            else (),
+            body_truncated=bool(metadata.get("body_truncated")),
+            analysis_truncated=bool(
+                metadata.get("analysis_truncated")
+            ),
+        )
+
     return None
 
 
@@ -596,7 +647,10 @@ def _serialize_observation(
                     ),
                 }
             )
-        else:
+        elif isinstance(
+            validator_analysis,
+            SessionCookieValidationResult,
+        ):
             serialized_analysis.update(
                 {
                     "cookie_count": validator_analysis.cookie_count,
@@ -641,6 +695,50 @@ def _serialize_observation(
                     ),
                     "credential_header_sent": (
                         validator_analysis.credential_header_sent
+                    ),
+                }
+            )
+        else:
+            serialized_analysis.update(
+                {
+                    "form_count": validator_analysis.form_count,
+                    "post_form_count": (
+                        validator_analysis.post_form_count
+                    ),
+                    "forms_with_token_signal": (
+                        validator_analysis.forms_with_token_signal
+                    ),
+                    "forms_without_token_signal": (
+                        validator_analysis.forms_without_token_signal
+                    ),
+                    "cross_origin_action_count": (
+                        validator_analysis.cross_origin_action_count
+                    ),
+                    "cookie_count": validator_analysis.cookie_count,
+                    "same_site_protected_cookie_count": (
+                        validator_analysis
+                        .same_site_protected_cookie_count
+                    ),
+                    "protection_sources": list(
+                        validator_analysis.protection_sources
+                    ),
+                    "body_truncated": (
+                        validator_analysis.body_truncated
+                    ),
+                    "analysis_truncated": (
+                        validator_analysis.analysis_truncated
+                    ),
+                    "token_values_discarded": (
+                        validator_analysis.token_values_discarded
+                    ),
+                    "form_submitted": (
+                        validator_analysis.form_submitted
+                    ),
+                    "browser_launched": (
+                        validator_analysis.browser_launched
+                    ),
+                    "request_body_sent": (
+                        validator_analysis.request_body_sent
                     ),
                 }
             )
@@ -718,7 +816,7 @@ def _validator_metadata(
                 "parser_attack_sent": analysis.parser_attack_sent,
             }
         )
-    else:
+    elif isinstance(analysis, SessionCookieValidationResult):
         metadata.update(
             {
                 "cookie_count": analysis.cookie_count,
@@ -754,6 +852,37 @@ def _validator_metadata(
                 "credential_header_sent": (
                     analysis.credential_header_sent
                 ),
+            }
+        )
+    else:
+        metadata.update(
+            {
+                "form_count": analysis.form_count,
+                "post_form_count": analysis.post_form_count,
+                "forms_with_token_signal": (
+                    analysis.forms_with_token_signal
+                ),
+                "forms_without_token_signal": (
+                    analysis.forms_without_token_signal
+                ),
+                "cross_origin_action_count": (
+                    analysis.cross_origin_action_count
+                ),
+                "cookie_count": analysis.cookie_count,
+                "same_site_protected_cookie_count": (
+                    analysis.same_site_protected_cookie_count
+                ),
+                "protection_sources": list(
+                    analysis.protection_sources
+                ),
+                "body_truncated": analysis.body_truncated,
+                "analysis_truncated": analysis.analysis_truncated,
+                "token_values_discarded": (
+                    analysis.token_values_discarded
+                ),
+                "form_submitted": analysis.form_submitted,
+                "browser_launched": analysis.browser_launched,
+                "request_body_sent": analysis.request_body_sent,
             }
         )
 
@@ -993,6 +1122,16 @@ async def run_tracked_controlled_validation_observation(
             if validator_analysis is None:
                 raise ControlledValidationObservationWorkflowError(
                     "Session-cookie analysis was not produced safely."
+                )
+        elif (
+            validation.action
+            is ControlledValidationAction
+            .CSRF_PROTECTION_SURFACE_VALIDATION
+        ):
+            validator_analysis = observation.csrf_surface_analysis
+            if validator_analysis is None:
+                raise ControlledValidationObservationWorkflowError(
+                    "CSRF surface analysis was not produced safely."
                 )
 
         database.add_audit_event(

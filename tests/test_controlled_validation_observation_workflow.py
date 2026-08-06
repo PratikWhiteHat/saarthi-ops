@@ -339,6 +339,138 @@ async def test_session_cookie_reuse_sends_no_second_request(
 
 
 @pytest.mark.asyncio
+async def test_csrf_surface_persists_no_form_or_token_values(
+    database: SaarthiDatabase,
+    tmp_path: Path,
+) -> None:
+    execution_id = create_execution(database)
+    request = make_request(
+        execution_id,
+        action=(
+            ControlledValidationAction
+            .CSRF_PROTECTION_SURFACE_VALIDATION
+        ),
+    )
+    create_tracked_controlled_validation_plan(
+        database,
+        request.validation,
+        evidence_root=tmp_path / "plans",
+    )
+    secret = "csrf-token-value-never-persist"
+    captured: list[httpx.Request] = []
+
+    def handler(request_object: httpx.Request) -> httpx.Response:
+        captured.append(request_object)
+        return httpx.Response(
+            200,
+            headers={
+                "Content-Type": "text/html",
+                "Set-Cookie": (
+                    "session=cookie-secret; Secure; HttpOnly; "
+                    "SameSite=Lax"
+                ),
+            },
+            content=(
+                "<form method='post' action='/save'>"
+                "<input type='hidden' name='csrf_token' "
+                f"value='{secret}'>"
+                "<input name='email' value='private@example.com'>"
+                "</form>"
+            ),
+            request=request_object,
+        )
+
+    result = await run_tracked_controlled_validation_observation(
+        database,
+        request,
+        transport=httpx.MockTransport(handler),
+        evidence_root=tmp_path / "observations",
+    )
+
+    assert len(captured) == 1
+    assert captured[0].method == "GET"
+    assert captured[0].content == b""
+    assert "cookie" not in captured[0].headers
+    assert result.validator_analysis is not None
+    assert (
+        result.validator_analysis.validator_id
+        == "6C.2-csrf-protection-surface-validation"
+    )
+    assert result.validator_analysis.post_form_count == 1
+    assert result.validator_analysis.forms_with_token_signal == 1
+    assert result.validator_analysis.form_submitted is False
+    assert result.validator_analysis.browser_launched is False
+    assert result.validator_analysis.request_body_sent is False
+
+    evidence_text = Path(result.evidence.path).read_text()
+    assert secret not in evidence_text
+    assert "cookie-secret" not in evidence_text
+    assert "private@example.com" not in evidence_text
+    payload = json.loads(evidence_text)
+    analysis = payload["validator_analysis"]
+    assert analysis["token_values_discarded"] is True
+    assert analysis["form_submitted"] is False
+    assert analysis["browser_launched"] is False
+    assert analysis["request_body_sent"] is False
+    assert analysis["payload_generated"] is False
+    assert "body" not in payload["response"]
+
+
+@pytest.mark.asyncio
+async def test_csrf_surface_reuse_sends_no_second_request(
+    database: SaarthiDatabase,
+    tmp_path: Path,
+) -> None:
+    execution_id = create_execution(database)
+    request = make_request(
+        execution_id,
+        action=(
+            ControlledValidationAction
+            .CSRF_PROTECTION_SURFACE_VALIDATION
+        ),
+    )
+    create_tracked_controlled_validation_plan(
+        database,
+        request.validation,
+        evidence_root=tmp_path / "plans",
+    )
+    request_count = 0
+
+    def handler(request_object: httpx.Request) -> httpx.Response:
+        nonlocal request_count
+        request_count += 1
+        return httpx.Response(
+            200,
+            headers={"Content-Type": "text/html"},
+            content=b"<p>No forms</p>",
+            request=request_object,
+        )
+
+    transport = httpx.MockTransport(handler)
+    first = await run_tracked_controlled_validation_observation(
+        database,
+        request,
+        transport=transport,
+        evidence_root=tmp_path / "observations",
+    )
+    second = await run_tracked_controlled_validation_observation(
+        database,
+        request,
+        transport=transport,
+        evidence_root=tmp_path / "observations",
+    )
+
+    assert request_count == 1
+    assert first.validator_analysis is not None
+    assert second.validator_analysis is not None
+    assert (
+        second.validator_analysis.classification.value
+        == "not_applicable"
+    )
+    assert second.reused_existing_evidence is True
+
+
+@pytest.mark.asyncio
 async def test_clickjacking_validator_persists_header_only_analysis(
     database: SaarthiDatabase,
     tmp_path: Path,

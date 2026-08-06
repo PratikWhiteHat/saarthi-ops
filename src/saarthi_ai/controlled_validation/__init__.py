@@ -5,6 +5,11 @@ from saarthi_ai.controlled_validation.clickjacking import (
     ClickjackingValidationResult,
     analyze_clickjacking_protection,
 )
+from saarthi_ai.controlled_validation.csrf_surface import (
+    CsrfSurfaceClassification,
+    CsrfSurfaceValidationResult,
+    analyze_csrf_surface,
+)
 from saarthi_ai.controlled_validation.executor import (
     ALLOWED_METHODS,
     DEFAULT_MAX_RESPONSE_BYTES,
@@ -68,12 +73,15 @@ __all__ = [
     "ControlledValidationRequest",
     "ControlledValidationRisk",
     "CookieAttributeObservation",
+    "CsrfSurfaceClassification",
+    "CsrfSurfaceValidationResult",
     "SessionCookieClassification",
     "SessionCookieValidationResult",
     "evaluate_controlled_validation",
     "evaluate_controlled_validation_execution",
     "execute_bounded_observation",
     "analyze_clickjacking_protection",
+    "analyze_csrf_surface",
     "analyze_parameter_surface",
     "analyze_session_cookie_attributes",
 ]

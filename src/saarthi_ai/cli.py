@@ -2654,7 +2654,8 @@ def controlled_observe(
                 "input_handling_observation, or "
                 "clickjacking_header_validation, or "
                 "http_parameter_surface_validation, or "
-                "session_cookie_attribute_validation."
+                "session_cookie_attribute_validation, or "
+                "csrf_protection_surface_validation."
             ),
         ),
     ] = ControlledValidationAction.RESPONSE_DIFFERENTIAL,
@@ -2719,23 +2720,27 @@ def controlled_observe(
         ControlledValidationAction.CLICKJACKING_HEADER_VALIDATION,
         ControlledValidationAction.HTTP_PARAMETER_SURFACE_VALIDATION,
         ControlledValidationAction.SESSION_COOKIE_ATTRIBUTE_VALIDATION,
+        ControlledValidationAction.CSRF_PROTECTION_SURFACE_VALIDATION,
     }:
         console.print(
             "[bold red]Unsupported executable action.[/bold red] "
             "Only registered low-risk response, input-handling, and "
             "clickjacking, parameter-surface, or session-cookie "
-            "observations are allowed."
+            "and CSRF-surface observations are allowed."
         )
         raise typer.Exit(code=1)
 
     if (
         action
-        is ControlledValidationAction.SESSION_COOKIE_ATTRIBUTE_VALIDATION
+        in {
+            ControlledValidationAction.SESSION_COOKIE_ATTRIBUTE_VALIDATION,
+            ControlledValidationAction.CSRF_PROTECTION_SURFACE_VALIDATION,
+        }
         and normalized_method != "GET"
     ):
         console.print(
             "[bold red]Invalid method.[/bold red] "
-            "Session-cookie attribute validation requires GET."
+            "Session-cookie and CSRF surface validation require GET."
         )
         raise typer.Exit(code=1)
 
@@ -2860,6 +2865,47 @@ def controlled_observe(
         ) is not None:
             console.print()
             if (
+                getattr(analysis, "validator_id", None)
+                == "6C.2-csrf-protection-surface-validation"
+            ):
+                console.print(
+                    "[bold cyan]6C.2 CSRF Protection Surface "
+                    "Validation[/bold cyan]"
+                )
+                console.print(
+                    "Classification: "
+                    f"{analysis.classification.value}"
+                )
+                console.print(f"Reason: {analysis.reason}")
+                console.print(
+                    f"POST forms: {analysis.post_form_count}"
+                )
+                console.print(
+                    "Forms with token signal: "
+                    f"{analysis.forms_with_token_signal}"
+                )
+                console.print(
+                    "Forms without token signal: "
+                    f"{analysis.forms_without_token_signal}"
+                )
+                console.print(
+                    "Cross-origin actions: "
+                    f"{analysis.cross_origin_action_count}"
+                )
+                console.print(
+                    "Protection sources: "
+                    + (
+                        ", ".join(analysis.protection_sources)
+                        if analysis.protection_sources
+                        else "none"
+                    )
+                )
+                console.print("Token values discarded: true")
+                console.print("Form submitted: false")
+                console.print("Browser launched: false")
+                console.print("Request body sent: false")
+                console.print("Payload generated: false")
+            elif (
                 getattr(analysis, "validator_id", None)
                 == "6C.4-session-cookie-attribute-validation"
             ):
