@@ -179,6 +179,11 @@ def _find_matching_observation(
 
     validation = request.validation
     policy = evaluate_controlled_validation_execution(request)
+    request_body_sha256 = (
+        hashlib.sha256(request.body).hexdigest()
+        if request.body
+        else None
+    )
 
     evidence_items = database.list_evidence(
         validation.execution_id,
@@ -202,6 +207,8 @@ def _find_matching_observation(
             is policy.follow_redirects
             and metadata.get("request_attempted") is True
             and metadata.get("network_activity") is True
+            and metadata.get("request_body_sha256")
+            == request_body_sha256
         ):
             return evidence
 
@@ -903,6 +910,9 @@ def _serialize_observation(
                 observation.policy.max_response_bytes
             ),
             "follow_redirects": observation.policy.follow_redirects,
+            "body_bytes": observation.request_body_bytes,
+            "body_sha256": observation.request_body_sha256,
+            "body_stored": False,
         },
         "policy": {
             "decision": observation.policy.decision.value,
@@ -914,6 +924,8 @@ def _serialize_observation(
             "network_activity": observation.request_attempted,
             "subprocess_started": False,
             "payload_sent": False,
+            "payload_generated": False,
+            "request_body_sent": observation.request_body_bytes > 0,
         },
         "response": {
             "final_url": observation.final_url,
@@ -1931,6 +1943,13 @@ async def run_tracked_controlled_validation_observation(
                 "method": policy.method,
                 "plan_evidence_id": plan_evidence.evidence_id,
                 "requested_requests": validation.requested_requests,
+                "request_body_bytes": len(request.body or b""),
+                "request_body_sha256": (
+                    hashlib.sha256(request.body).hexdigest()
+                    if request.body
+                    else None
+                ),
+                "request_body_stored": False,
             },
         )
 
@@ -2059,6 +2078,10 @@ async def run_tracked_controlled_validation_observation(
                 ),
                 "body_truncated": observation.body_truncated,
                 "body_sha256": observation.body_sha256,
+                "request_body_bytes": observation.request_body_bytes,
+                "request_body_sha256": (
+                    observation.request_body_sha256
+                ),
                 "validator_id": (
                     validator_analysis.validator_id
                     if validator_analysis is not None
@@ -2116,6 +2139,13 @@ async def run_tracked_controlled_validation_observation(
                         observation.body_truncated
                     ),
                     "body_sha256": observation.body_sha256,
+                    "request_body_bytes": (
+                        observation.request_body_bytes
+                    ),
+                    "request_body_sha256": (
+                        observation.request_body_sha256
+                    ),
+                    "request_body_stored": False,
                     "plan_evidence_id": plan_evidence.evidence_id,
                     "max_response_bytes": (
                         observation.policy.max_response_bytes

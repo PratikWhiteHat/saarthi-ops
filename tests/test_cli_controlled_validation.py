@@ -605,13 +605,13 @@ def test_controlled_observe_rejects_unsupported_method() -> None:
             "--url",
             "https://example.com/account",
             "--method",
-            "POST",
+            "PUT",
             "--approved",
         ],
     )
 
     assert result.exit_code == 1
-    assert "Only GET and HEAD are allowed" in result.stdout
+    assert "Only GET, HEAD, and POST are allowed" in result.stdout
 
 
 def test_controlled_observe_reports_missing_matching_plan(
@@ -2022,8 +2022,7 @@ def test_controlled_observe_rejects_head_for_session_cookie() -> None:
     assert result.exit_code == 1
     normalized = " ".join(result.stdout.split())
     assert (
-        "Session-cookie, CSRF, API exposure, file-upload, and "
-        "injection, browser, and server/parser-surface validation require GET"
+        "This validator requires exactly one GET or controlled POST"
         in normalized
     )
 

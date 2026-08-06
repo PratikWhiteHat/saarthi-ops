@@ -69,6 +69,8 @@ class ControlledValidationObservationResult:
     body_bytes_captured: int = 0
     body_truncated: bool = False
     body_sha256: str | None = None
+    request_body_bytes: int = 0
+    request_body_sha256: str | None = None
     session_cookie_analysis: (
         SessionCookieValidationResult | None
     ) = None
@@ -134,7 +136,7 @@ async def execute_bounded_observation(
     *,
     transport: httpx.AsyncBaseTransport | None = None,
 ) -> ControlledValidationObservationResult:
-    """Perform exactly one approved GET or HEAD observation."""
+    """Perform exactly one approved GET, HEAD, or baseline POST observation."""
 
     policy = evaluate_controlled_validation_execution(request)
 
@@ -176,6 +178,7 @@ async def execute_bounded_observation(
             async with client.stream(
                 policy.method,
                 request.validation.target_url,
+                content=request.body,
             ) as response:
                 if policy.method == "HEAD":
                     body = b""
@@ -204,6 +207,12 @@ async def execute_bounded_observation(
                     body_bytes_captured=len(body),
                     body_truncated=truncated,
                     body_sha256=sha256(body).hexdigest(),
+                    request_body_bytes=len(request.body or b""),
+                    request_body_sha256=(
+                        sha256(request.body).hexdigest()
+                        if request.body
+                        else None
+                    ),
                     session_cookie_analysis=(
                         analyze_session_cookie_attributes(
                             tuple(

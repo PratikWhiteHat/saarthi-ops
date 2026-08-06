@@ -26,6 +26,7 @@ def make_request(
         ControlledValidationAction.RESPONSE_DIFFERENTIAL
     ),
     explicitly_approved: bool = True,
+    body: bytes | None = None,
 ) -> ControlledValidationExecutionRequest:
     validation = ControlledValidationRequest(
         execution_id="execution-phase-6c",
@@ -44,6 +45,7 @@ def make_request(
         method=method,
         max_response_bytes=max_response_bytes,
         headers=headers,
+        body=body,
     )
 
 
@@ -79,6 +81,40 @@ async def test_adapter_performs_exactly_one_allowed_request(
         assert result.body_bytes_captured == 0
     else:
         assert result.body_bytes_captured == len(b"observation")
+
+
+@pytest.mark.asyncio
+async def test_adapter_sends_one_operator_supplied_post_without_storing_it() -> None:
+    requests: list[httpx.Request] = []
+    body = b'{"query":"baseline"}'
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            200,
+            headers={"Content-Type": "application/json"},
+            content=b'{"status":"ok"}',
+            request=request,
+        )
+
+    result = await execute_bounded_observation(
+        make_request(
+            method="POST",
+            action=(
+                ControlledValidationAction
+                .API_DATA_EXPOSURE_SURFACE_VALIDATION
+            ),
+            headers=(("Content-Type", "application/json"),),
+            body=body,
+        ),
+        transport=httpx.MockTransport(handler),
+    )
+
+    assert len(requests) == 1
+    assert requests[0].method == "POST"
+    assert requests[0].content == body
+    assert result.request_body_bytes == len(body)
+    assert result.request_body_sha256 is not None
 
 
 @pytest.mark.asyncio

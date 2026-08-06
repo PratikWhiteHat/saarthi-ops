@@ -30,6 +30,7 @@ from saarthi_ai.checks.models import DirectCheckRequest
 from saarthi_ai.config import get_settings
 from saarthi_ai.confirmation.models import ConfirmationCandidate
 from saarthi_ai.controlled_validation.executor import (
+    MAX_REQUEST_BODY_BYTES,
     ControlledValidationExecutionRequest,
 )
 from saarthi_ai.controlled_validation.models import (
@@ -3103,9 +3104,23 @@ def controlled_observe(
         str,
         typer.Option(
             "--method",
-            help="Bounded HTTP method: GET or HEAD.",
+            help="Bounded HTTP method: GET, HEAD, or POST.",
         ),
     ] = "GET",
+    body_file: Annotated[
+        Path | None,
+        typer.Option(
+            "--body-file",
+            help="Operator-supplied POST body file; never stored in evidence.",
+        ),
+    ] = None,
+    content_type: Annotated[
+        str | None,
+        typer.Option(
+            "--content-type",
+            help="POST media type, including multipart boundary if used.",
+        ),
+    ] = None,
     timeout_seconds: Annotated[
         float,
         typer.Option(
@@ -3134,7 +3149,7 @@ def controlled_observe(
         ),
     ] = False,
 ) -> None:
-    """Execute one approved Phase 6C GET or HEAD observation."""
+    """Execute one approved Phase 6C GET, HEAD, or baseline POST."""
 
     if not approved:
         console.print(
@@ -3147,10 +3162,10 @@ def controlled_observe(
 
     normalized_method = method.strip().upper()
 
-    if normalized_method not in {"GET", "HEAD"}:
+    if normalized_method not in {"GET", "HEAD", "POST"}:
         console.print(
             "[bold red]Invalid method.[/bold red] "
-            "Only GET and HEAD are allowed."
+            "Only GET, HEAD, and POST are allowed."
         )
         raise typer.Exit(code=1)
 
@@ -3182,25 +3197,48 @@ def controlled_observe(
         in {
             ControlledValidationAction.SESSION_COOKIE_ATTRIBUTE_VALIDATION,
             ControlledValidationAction.CSRF_PROTECTION_SURFACE_VALIDATION,
-            (
-                ControlledValidationAction
-                .API_DATA_EXPOSURE_SURFACE_VALIDATION
-            ),
+            ControlledValidationAction.API_DATA_EXPOSURE_SURFACE_VALIDATION,
             ControlledValidationAction.FILE_UPLOAD_SURFACE_VALIDATION,
             ControlledValidationAction.INJECTION_SURFACE_VALIDATION,
-            (
-                ControlledValidationAction
-                .BROWSER_ATTACK_SURFACE_VALIDATION
-            ),
+            ControlledValidationAction.BROWSER_ATTACK_SURFACE_VALIDATION,
             ControlledValidationAction.SERVER_PARSER_SURFACE_VALIDATION,
         }
-        and normalized_method != "GET"
+        and normalized_method not in {"GET", "POST"}
     ):
         console.print(
             "[bold red]Invalid method.[/bold red] "
-            "Session-cookie, CSRF, API exposure, file-upload, and "
-            "injection, browser, and server/parser-surface validation "
-            "require GET."
+            "This validator requires exactly one GET or controlled POST."
+        )
+        raise typer.Exit(code=1)
+
+    request_body: bytes | None = None
+    headers: tuple[tuple[str, str], ...] = ()
+    if normalized_method == "POST":
+        if body_file is None or content_type is None:
+            console.print(
+                "[bold red]POST configuration required.[/bold red] "
+                "Provide --body-file and --content-type."
+            )
+            raise typer.Exit(code=1)
+        if body_file.is_symlink() or not body_file.is_file():
+            console.print(
+                "[bold red]Invalid body file.[/bold red] "
+                "A regular non-symlink file is required."
+            )
+            raise typer.Exit(code=1)
+        if not 1 <= body_file.stat().st_size <= MAX_REQUEST_BODY_BYTES:
+            console.print(
+                "[bold red]Invalid body size.[/bold red] "
+                f"POST bodies must be between 1 and "
+                f"{MAX_REQUEST_BODY_BYTES} bytes."
+            )
+            raise typer.Exit(code=1)
+        request_body = body_file.read_bytes()
+        headers = (("Content-Type", content_type),)
+    elif body_file is not None or content_type is not None:
+        console.print(
+            "[bold red]Unexpected body options.[/bold red] "
+            "--body-file and --content-type require POST."
         )
         raise typer.Exit(code=1)
 
@@ -3222,8 +3260,8 @@ def controlled_observe(
         timeout_seconds=timeout_seconds,
         max_response_bytes=max_response_bytes,
         follow_redirects=False,
-        headers=(),
-        body=None,
+        headers=headers,
+        body=request_body,
     )
 
     database = get_database()
@@ -3235,6 +3273,8 @@ def controlled_observe(
     console.print(f"Target: {target_url}")
     console.print(f"Action: {action.value}")
     console.print(f"Method: {normalized_method}")
+    console.print(f"Request body bytes: {len(request_body or b'')}")
+    console.print("Request body stored: false")
     console.print("Request budget: 1")
     console.print("Redirects: disabled")
     console.print(f"Timeout: {timeout_seconds:g} seconds")

@@ -47,7 +47,7 @@ def test_get_and_head_are_allowed(method: str) -> None:
     assert result.allowed is True
 
 
-@pytest.mark.parametrize("method", ["POST", "PUT", "PATCH", "DELETE"])
+@pytest.mark.parametrize("method", ["PUT", "PATCH", "DELETE"])
 def test_state_capable_methods_are_denied(method: str) -> None:
     result = evaluate_controlled_validation_execution(
         ControlledValidationExecutionRequest(
@@ -57,7 +57,45 @@ def test_state_capable_methods_are_denied(method: str) -> None:
     )
 
     assert result.decision is ControlledValidationExecutionDecision.DENY
-    assert "Only GET and HEAD" in result.reason
+    assert "Only GET, HEAD, and POST" in result.reason
+
+
+def test_controlled_post_is_allowed_with_body_and_content_type() -> None:
+    result = evaluate_controlled_validation_execution(
+        ControlledValidationExecutionRequest(
+            validation=make_validation(
+                action=(
+                    ControlledValidationAction
+                    .INJECTION_SURFACE_VALIDATION
+                )
+            ),
+            method="POST",
+            headers=(("Content-Type", "application/json"),),
+            body=b'{"query":"baseline"}',
+        )
+    )
+
+    assert result.decision is ControlledValidationExecutionDecision.ALLOW
+
+
+def test_post_requires_body_and_content_type() -> None:
+    missing_body = evaluate_controlled_validation_execution(
+        ControlledValidationExecutionRequest(
+            validation=make_validation(),
+            method="POST",
+            headers=(("Content-Type", "application/json"),),
+        )
+    )
+    missing_type = evaluate_controlled_validation_execution(
+        ControlledValidationExecutionRequest(
+            validation=make_validation(),
+            method="POST",
+            body=b"baseline=true",
+        )
+    )
+
+    assert missing_body.decision is ControlledValidationExecutionDecision.DENY
+    assert missing_type.decision is ControlledValidationExecutionDecision.DENY
 
 
 def test_only_low_risk_actions_are_executable() -> None:
@@ -152,7 +190,7 @@ def test_session_cookie_validation_requires_get() -> None:
         head_result.decision
         is ControlledValidationExecutionDecision.DENY
     )
-    assert "require exactly one GET" in head_result.reason
+    assert "requires exactly one GET or controlled POST" in head_result.reason
 
 
 def test_csrf_surface_validation_requires_get() -> None:
@@ -221,7 +259,7 @@ def test_api_exposure_surface_validation_requires_get() -> None:
         head_result.decision
         is ControlledValidationExecutionDecision.DENY
     )
-    assert "require exactly one GET" in head_result.reason
+    assert "requires exactly one GET or controlled POST" in head_result.reason
 
 
 def test_file_upload_surface_validation_requires_get() -> None:
@@ -256,7 +294,7 @@ def test_file_upload_surface_validation_requires_get() -> None:
         head_result.decision
         is ControlledValidationExecutionDecision.DENY
     )
-    assert "require exactly one GET" in head_result.reason
+    assert "requires exactly one GET or controlled POST" in head_result.reason
 
 
 def test_injection_surface_validation_requires_get() -> None:

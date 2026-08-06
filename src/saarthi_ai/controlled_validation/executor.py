@@ -20,8 +20,19 @@ DEFAULT_TIMEOUT_SECONDS = 8.0
 MAX_TIMEOUT_SECONDS = 10.0
 DEFAULT_MAX_RESPONSE_BYTES = 64 * 1024
 MAX_RESPONSE_BYTES = 128 * 1024
+MAX_REQUEST_BODY_BYTES = 16 * 1024
 
-ALLOWED_METHODS = frozenset({"GET", "HEAD"})
+ALLOWED_METHODS = frozenset({"GET", "HEAD", "POST"})
+POST_CONTENT_TYPES = frozenset(
+    {
+        "application/json",
+        "application/x-www-form-urlencoded",
+        "multipart/form-data",
+        "text/plain",
+        "application/xml",
+        "text/xml",
+    }
+)
 EXECUTABLE_ACTIONS = frozenset(
     {
         ControlledValidationAction.RESPONSE_DIFFERENTIAL,
@@ -137,7 +148,7 @@ def evaluate_controlled_validation_execution(
         return _result(
             request,
             ControlledValidationExecutionDecision.DENY,
-            "Only GET and HEAD requests are allowed.",
+            "Only GET, HEAD, and POST requests are allowed.",
         )
 
     if (
@@ -145,26 +156,18 @@ def evaluate_controlled_validation_execution(
         in {
             ControlledValidationAction.SESSION_COOKIE_ATTRIBUTE_VALIDATION,
             ControlledValidationAction.CSRF_PROTECTION_SURFACE_VALIDATION,
-            (
-                ControlledValidationAction
-                .API_DATA_EXPOSURE_SURFACE_VALIDATION
-            ),
+            ControlledValidationAction.API_DATA_EXPOSURE_SURFACE_VALIDATION,
             ControlledValidationAction.FILE_UPLOAD_SURFACE_VALIDATION,
             ControlledValidationAction.INJECTION_SURFACE_VALIDATION,
-            (
-                ControlledValidationAction
-                .BROWSER_ATTACK_SURFACE_VALIDATION
-            ),
+            ControlledValidationAction.BROWSER_ATTACK_SURFACE_VALIDATION,
             ControlledValidationAction.SERVER_PARSER_SURFACE_VALIDATION,
         }
-        and method != "GET"
+        and method not in {"GET", "POST"}
     ):
         return _result(
             request,
             ControlledValidationExecutionDecision.DENY,
-            "Session-cookie, CSRF, API exposure, file-upload, and "
-            "injection, browser, and server/parser-surface validation "
-            "require exactly one GET.",
+            "This validator requires exactly one GET or controlled POST.",
         )
 
     if (
@@ -201,11 +204,24 @@ def evaluate_controlled_validation_execution(
             "Redirect following is disabled for the initial executor.",
         )
 
-    if request.body not in {None, b""}:
+    body = request.body or b""
+    if method in {"GET", "HEAD"} and body:
         return _result(
             request,
             ControlledValidationExecutionDecision.DENY,
-            "Request bodies are not allowed.",
+            "GET and HEAD request bodies are not allowed.",
+        )
+    if method == "POST" and not body:
+        return _result(
+            request,
+            ControlledValidationExecutionDecision.DENY,
+            "POST requires one operator-supplied baseline request body.",
+        )
+    if len(body) > MAX_REQUEST_BODY_BYTES:
+        return _result(
+            request,
+            ControlledValidationExecutionDecision.DENY,
+            f"POST body exceeds the {MAX_REQUEST_BODY_BYTES}-byte limit.",
         )
 
     if not 0 < request.timeout_seconds <= MAX_TIMEOUT_SECONDS:
@@ -239,6 +255,34 @@ def evaluate_controlled_validation_execution(
             "Credential-bearing headers are prohibited: "
             f"{', '.join(prohibited)}.",
         )
+    if method == "POST":
+        content_types = [
+            value
+            for name, value in request.headers
+            if name.strip().lower() == "content-type"
+        ]
+        if len(content_types) != 1:
+            return _result(
+                request,
+                ControlledValidationExecutionDecision.DENY,
+                "POST requires exactly one Content-Type header.",
+            )
+        media_type = content_types[0].split(";", 1)[0].strip().lower()
+        if media_type not in POST_CONTENT_TYPES:
+            return _result(
+                request,
+                ControlledValidationExecutionDecision.DENY,
+                "POST Content-Type is outside the controlled allowlist.",
+            )
+        if (
+            media_type == "multipart/form-data"
+            and "boundary=" not in content_types[0].lower()
+        ):
+            return _result(
+                request,
+                ControlledValidationExecutionDecision.DENY,
+                "Multipart POST requires an explicit boundary.",
+            )
 
     return _result(
         request,
