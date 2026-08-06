@@ -1064,7 +1064,7 @@ class ReadOnlySaarthiRepository:
             if str(details.get("evidence_id") or "") != evidence_id:
                 continue
 
-            if str(details.get("phase_code") or "") != "6J.2":
+            if str(details.get("phase_code") or "") != "6C":
                 continue
 
             return {
@@ -1954,12 +1954,12 @@ def infer_phase(
             "controlled_nuclei_execution"
             in normalized_evidence
         ):
-            return "6C — CONTROLLED NUCLEI EXECUTION"
+            return "6C — LOW-RISK NUCLEI VALIDATOR"
         if (
             "controlled_validation_observation"
             in normalized_evidence
         ):
-            return "6F — CONTROLLED VALIDATION OBSERVATION"
+            return "6C — LOW-RISK HTTP VALIDATOR"
         if "confirmation_result" in normalized_evidence:
             return "4D — CONFIRMATION ENGINE"
         if "oast_observation" in normalized_evidence:
@@ -1987,12 +1987,12 @@ def infer_phase(
             "controlled_nuclei_execution"
             in normalized_evidence
         ):
-            return "6C — CONTROLLED NUCLEI EXECUTION"
+            return "6C — LOW-RISK NUCLEI VALIDATOR"
         if (
             "controlled_validation_observation"
             in normalized_evidence
         ):
-            return "6F — CONTROLLED VALIDATION OBSERVATION"
+            return "6C — LOW-RISK HTTP VALIDATOR"
         if "confirmation_result" in normalized_evidence:
             return "4D — CONFIRMATION ENGINE"
         if "oast_observation" in normalized_evidence:
@@ -2018,9 +2018,9 @@ def infer_phase(
             "controlled_nuclei_preparation"
             in normalized_evidence
         ):
-            return "6J — CONTROLLED NUCLEI PREPARATION"
+            return "6C — NUCLEI VALIDATOR PREPARATION"
         if "controlled_nuclei_preview" in normalized_evidence:
-            return "6I — CONTROLLED NUCLEI PREVIEW"
+            return "6C — NUCLEI VALIDATOR PREVIEW"
         if "controlled_validation_plan" in normalized_evidence:
             return "6B — CONTROLLED VALIDATION PLAN"
         return "PLANNING"
@@ -2030,12 +2030,12 @@ def infer_phase(
             "controlled_nuclei_execution"
             in normalized_evidence
         ):
-            return "6C — CONTROLLED NUCLEI REVIEW"
+            return "6C — LOW-RISK NUCLEI VALIDATOR REVIEW"
         if (
             "controlled_validation_observation"
             in normalized_evidence
         ):
-            return "6F — CONTROLLED VALIDATION REVIEW"
+            return "6C — LOW-RISK HTTP VALIDATOR REVIEW"
         return "EXECUTION REVIEW"
 
     return "CURRENT WORKFLOW"
@@ -2051,12 +2051,6 @@ def infer_phase_short(
 
     if phase.startswith("6C"):
         return "6C"
-    if phase.startswith("6J"):
-        return "6J"
-    if phase.startswith("6I"):
-        return "6I"
-    if phase.startswith("6F"):
-        return "6F"
     if phase.startswith("6B"):
         return "6B"
     if phase.startswith("4D"):

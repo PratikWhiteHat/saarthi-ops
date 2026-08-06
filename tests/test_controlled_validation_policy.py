@@ -1,4 +1,4 @@
-"""Tests for the Phase 6A controlled-validation policy."""
+"""Tests for the Phase 6B policy and approval gate."""
 
 from __future__ import annotations
 

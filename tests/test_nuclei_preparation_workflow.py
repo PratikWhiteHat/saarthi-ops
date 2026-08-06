@@ -129,7 +129,7 @@ def test_persists_non_executed_nuclei_preparation(
         hashlib.sha256(evidence_bytes).hexdigest()
         == result.evidence.sha256
     )
-    assert payload["phase"] == "6J.2"
+    assert payload["phase"] == "6C"
     assert payload["tool"]["name"] == "nuclei"
     assert payload["tool"]["request_timeout_seconds"] == 7
     assert payload["tool"]["process_timeout_seconds"] == 120
@@ -148,17 +148,17 @@ def test_persists_non_executed_nuclei_preparation(
 
     assert any(
         event.event_type is AuditEventType.APPROVAL_RECORDED
-        and event.details.get("phase_code") == "6J.2"
+        and event.details.get("phase_code") == "6C"
         for event in events
     )
     assert any(
         event.event_type is AuditEventType.TOOL_PREPARED
-        and event.details.get("phase_code") == "6J.2"
+        and event.details.get("phase_code") == "6C"
         for event in events
     )
     assert any(
         event.event_type is AuditEventType.TOOL_COMPLETED
-        and event.details.get("phase_code") == "6J.2"
+        and event.details.get("phase_code") == "6C"
         for event in events
     )
 
@@ -292,7 +292,7 @@ def test_repeated_preparation_is_idempotent(
         event
         for event in database.list_audit_events(execution_id)
         if (
-            event.details.get("phase_code") == "6J.2"
+            event.details.get("phase_code") == "6C"
             and event.details.get("idempotent_reuse") is True
         )
     ]
@@ -357,7 +357,7 @@ def test_registration_failure_removes_orphan_file(
         for event in database.list_audit_events(execution_id)
         if (
             event.event_type is AuditEventType.TOOL_FAILED
-            and event.details.get("phase_code") == "6J.2"
+            and event.details.get("phase_code") == "6C"
         )
     ]
 

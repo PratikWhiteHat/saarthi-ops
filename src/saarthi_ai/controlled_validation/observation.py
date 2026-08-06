@@ -1,4 +1,4 @@
-"""Bounded HTTP observation adapter for Phase 6F controlled validation."""
+"""Bounded HTTP observation adapter for Phase 6C low-risk validation."""
 
 from __future__ import annotations
 

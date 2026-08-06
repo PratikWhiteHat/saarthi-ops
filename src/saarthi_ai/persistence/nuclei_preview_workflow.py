@@ -130,7 +130,7 @@ def _serialize_preview(
 
     return {
         "schema_version": "1.0",
-        "phase": "6I.3A",
+        "phase": "6C",
         "evidence_type": (
             EvidenceType.CONTROLLED_NUCLEI_PREVIEW.value
         ),
@@ -272,11 +272,11 @@ def create_tracked_nuclei_preview(
             event_type=AuditEventType.TOOL_COMPLETED,
             actor=actor,
             message=(
-                "[6I.3A][nuclei] Existing non-executed "
+                "[6C][nuclei] Existing non-executed "
                 "Nuclei preview reused."
             ),
             details={
-                "phase_code": "6I.3A",
+                "phase_code": "6C",
                 "tool": "nuclei",
                 "evidence_id": existing.evidence_id,
                 "evidence_sha256": existing.sha256,
@@ -299,11 +299,11 @@ def create_tracked_nuclei_preview(
         event_type=AuditEventType.APPROVAL_RECORDED,
         actor=actor,
         message=(
-            "[6I.3A][nuclei] Explicit operator approval recorded "
+            "[6C][nuclei] Explicit operator approval recorded "
             "for a non-executed preview."
         ),
         details={
-            "phase_code": "6I.3A",
+            "phase_code": "6C",
             "tool": "nuclei",
             "target_url": preview.target_url,
             "executed": False,
@@ -315,10 +315,10 @@ def create_tracked_nuclei_preview(
         event_type=AuditEventType.TOOL_PREPARED,
         actor=actor,
         message=(
-            "[6I.3A][nuclei] Non-executed Nuclei preview prepared."
+            "[6C][nuclei] Non-executed Nuclei preview prepared."
         ),
         details={
-            "phase_code": "6I.3A",
+            "phase_code": "6C",
             "tool": "nuclei",
             "arguments": list(preview.arguments),
             "executed": False,
@@ -359,7 +359,7 @@ def create_tracked_nuclei_preview(
                 step_id="controlled-nuclei-preview-001",
                 tool_name="nuclei",
                 metadata={
-                    "phase": "6I.3A",
+                    "phase": "6C",
                     "target_url": preview.target_url,
                     "arguments": list(preview.arguments),
                     "rate_limit_per_second": (
@@ -389,10 +389,10 @@ def create_tracked_nuclei_preview(
             event_type=AuditEventType.TOOL_FAILED,
             actor=actor,
             message=(
-                "[6I.3A][nuclei] Preview persistence failed."
+                "[6C][nuclei] Preview persistence failed."
             ),
             details={
-                "phase_code": "6I.3A",
+                "phase_code": "6C",
                 "tool": "nuclei",
                 "error_type": type(exc).__name__,
                 "retry_allowed": True,
@@ -416,10 +416,10 @@ def create_tracked_nuclei_preview(
         event_type=AuditEventType.TOOL_COMPLETED,
         actor=actor,
         message=(
-            "[6I.3A][nuclei] Non-executed Nuclei preview persisted."
+            "[6C][nuclei] Non-executed Nuclei preview persisted."
         ),
         details={
-            "phase_code": "6I.3A",
+            "phase_code": "6C",
             "tool": "nuclei",
             "evidence_id": evidence.evidence_id,
             "evidence_sha256": evidence.sha256,

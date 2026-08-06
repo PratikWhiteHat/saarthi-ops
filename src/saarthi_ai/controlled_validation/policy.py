@@ -159,6 +159,6 @@ def evaluate_controlled_validation(
         risk,
         (
             "Request is authorized, bounded, reversible, and permitted by "
-            "Phase 6A policy."
+            "Phase 6B policy."
         ),
     )

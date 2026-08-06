@@ -2374,7 +2374,7 @@ def controlled_observe(
         ),
     ] = False,
 ) -> None:
-    """Execute one approved Phase 6F GET or HEAD observation."""
+    """Execute one approved Phase 6C GET or HEAD observation."""
 
     if not approved:
         console.print(

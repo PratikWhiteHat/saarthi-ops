@@ -1,4 +1,4 @@
-"""Persistence-model tests for Phase 6F3 observation evidence."""
+"""Persistence-model tests for Phase 6C validator evidence."""
 
 from saarthi_ai.persistence.models import EvidenceType
 

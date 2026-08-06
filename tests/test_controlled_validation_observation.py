@@ -1,4 +1,4 @@
-"""Mocked-transport tests for the Phase 6F HTTP observation adapter."""
+"""Mocked-transport tests for the Phase 6C HTTP validator adapter."""
 
 from __future__ import annotations
 
@@ -28,7 +28,7 @@ def make_request(
     explicitly_approved: bool = True,
 ) -> ControlledValidationExecutionRequest:
     validation = ControlledValidationRequest(
-        execution_id="execution-phase-6f2",
+        execution_id="execution-phase-6c",
         target_url="https://example.com/search?q=saarthi",
         action=action,
         authorized=True,

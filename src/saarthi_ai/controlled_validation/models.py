@@ -27,7 +27,7 @@ class ControlledValidationDecision(StrEnum):
 class ControlledValidationAction(StrEnum):
     """Supported Phase 6 validation actions.
 
-    Phase 6A defines policy classifications only. It performs no network
+    Phase 6B defines policy classifications only. It performs no network
     requests, payload execution, subprocess execution, or state changes.
     """
 

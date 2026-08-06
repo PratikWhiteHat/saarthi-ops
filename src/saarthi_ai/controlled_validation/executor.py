@@ -1,4 +1,4 @@
-"""Fail-closed execution contract for Phase 6F controlled validation."""
+"""Fail-closed execution contract for Phase 6C low-risk validation."""
 
 from __future__ import annotations
 
@@ -41,7 +41,7 @@ PROHIBITED_HEADER_NAMES = frozenset(
 
 
 class ControlledValidationExecutionDecision(StrEnum):
-    """Phase 6F executor-gate decision."""
+    """Phase 6C executor-gate decision."""
 
     ALLOW = "allow"
     DENY = "deny"
@@ -49,7 +49,7 @@ class ControlledValidationExecutionDecision(StrEnum):
 
 @dataclass(frozen=True)
 class ControlledValidationExecutionRequest:
-    """One proposed bounded Phase 6F HTTP observation."""
+    """One proposed bounded Phase 6C HTTP observation."""
 
     validation: ControlledValidationRequest
     method: str = "GET"
@@ -62,7 +62,7 @@ class ControlledValidationExecutionRequest:
 
 @dataclass(frozen=True)
 class ControlledValidationExecutionPolicy:
-    """Fail-closed result for the Phase 6F execution gate."""
+    """Fail-closed result for the Phase 6C execution gate."""
 
     decision: ControlledValidationExecutionDecision
     reason: str
@@ -99,7 +99,7 @@ def _result(
 def evaluate_controlled_validation_execution(
     request: ControlledValidationExecutionRequest,
 ) -> ControlledValidationExecutionPolicy:
-    """Validate a Phase 6F proposal without making a network request."""
+    """Validate a Phase 6C proposal without making a network request."""
 
     validation = request.validation
     method = request.method.strip().upper()
@@ -206,6 +206,6 @@ def evaluate_controlled_validation_execution(
     return _result(
         request,
         ControlledValidationExecutionDecision.ALLOW,
-        "Phase 6F proposal satisfies the bounded low-risk execution "
+        "Phase 6C proposal satisfies the bounded low-risk execution "
         "contract. No request has been executed.",
     )

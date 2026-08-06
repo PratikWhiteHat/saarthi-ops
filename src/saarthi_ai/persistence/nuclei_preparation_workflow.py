@@ -187,7 +187,7 @@ def _serialize_preparation(
 
     return {
         "schema_version": "1.0",
-        "phase": "6J.2",
+        "phase": "6C",
         "evidence_type": (
             EvidenceType.CONTROLLED_NUCLEI_PREPARATION.value
         ),
@@ -333,11 +333,11 @@ def create_tracked_nuclei_preparation(
             event_type=AuditEventType.TOOL_COMPLETED,
             actor=actor,
             message=(
-                "[6J.2][nuclei] Existing non-executed "
+                "[6C][nuclei] Existing non-executed "
                 "Nuclei preparation reused."
             ),
             details={
-                "phase_code": "6J.2",
+                "phase_code": "6C",
                 "tool": "nuclei",
                 "evidence_id": existing.evidence_id,
                 "evidence_sha256": existing.sha256,
@@ -366,11 +366,11 @@ def create_tracked_nuclei_preparation(
         event_type=AuditEventType.APPROVAL_RECORDED,
         actor=actor,
         message=(
-            "[6J.2][nuclei] Explicit operator approval recorded "
+            "[6C][nuclei] Explicit operator approval recorded "
             "for non-executed Nuclei preparation."
         ),
         details={
-            "phase_code": "6J.2",
+            "phase_code": "6C",
             "tool": "nuclei",
             "target_url": plan.target_url,
             "preview_evidence_id": preview_evidence.evidence_id,
@@ -383,10 +383,10 @@ def create_tracked_nuclei_preparation(
         event_type=AuditEventType.TOOL_PREPARED,
         actor=actor,
         message=(
-            "[6J.2][nuclei] Bounded Nuclei runner binding prepared."
+            "[6C][nuclei] Bounded Nuclei runner binding prepared."
         ),
         details={
-            "phase_code": "6J.2",
+            "phase_code": "6C",
             "tool": "nuclei",
             "target_url": plan.target_url,
             "arguments": list(plan.arguments),
@@ -438,7 +438,7 @@ def create_tracked_nuclei_preparation(
                 step_id="controlled-nuclei-preparation-001",
                 tool_name="nuclei",
                 metadata={
-                    "phase": "6J.2",
+                    "phase": "6C",
                     "preview_evidence_id": (
                         preview_evidence.evidence_id
                     ),
@@ -482,10 +482,10 @@ def create_tracked_nuclei_preparation(
             event_type=AuditEventType.TOOL_FAILED,
             actor=actor,
             message=(
-                "[6J.2][nuclei] Preparation persistence failed."
+                "[6C][nuclei] Preparation persistence failed."
             ),
             details={
-                "phase_code": "6J.2",
+                "phase_code": "6C",
                 "tool": "nuclei",
                 "error_type": type(exc).__name__,
                 "retry_allowed": True,
@@ -510,11 +510,11 @@ def create_tracked_nuclei_preparation(
         event_type=AuditEventType.TOOL_COMPLETED,
         actor=actor,
         message=(
-            "[6J.2][nuclei] Non-executed Nuclei "
+            "[6C][nuclei] Non-executed Nuclei "
             "preparation persisted."
         ),
         details={
-            "phase_code": "6J.2",
+            "phase_code": "6C",
             "tool": "nuclei",
             "evidence_id": evidence.evidence_id,
             "evidence_sha256": evidence.sha256,

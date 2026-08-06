@@ -1,4 +1,4 @@
-"""Tests for the non-network Phase 6F executor contract."""
+"""Tests for the non-network Phase 6C validator contract."""
 
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ def make_validation(
     **overrides: object,
 ) -> ControlledValidationRequest:
     values: dict[str, object] = {
-        "execution_id": "execution-phase-6f",
+        "execution_id": "execution-phase-6c",
         "target_url": "https://example.com/search?q=saarthi",
         "action": ControlledValidationAction.RESPONSE_DIFFERENTIAL,
         "authorized": True,

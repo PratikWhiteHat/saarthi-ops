@@ -1,4 +1,4 @@
-"""Tracked Phase 6F controlled-validation observation tests."""
+"""Tracked Phase 6C low-risk validation observation tests."""
 
 from __future__ import annotations
 
@@ -44,7 +44,7 @@ def database(tmp_path: Path) -> SaarthiDatabase:
 def create_execution(database: SaarthiDatabase) -> str:
     execution = database.create_execution(
         ExecutionCreate(
-            assessment_name="Phase 6F Controlled Observation",
+            assessment_name="Phase 6C Controlled Observation",
             asset_types=["web"],
             targets=["example.com"],
             authorization_confirmed=True,
@@ -131,7 +131,7 @@ async def test_tracked_observation_persists_one_mocked_result(
         hashlib.sha256(evidence_bytes).hexdigest()
         == result.evidence.sha256
     )
-    assert payload["phase"] == "6F3C"
+    assert payload["phase"] == "6C"
     assert payload["plan"]["evidence_id"] == plan.evidence.evidence_id
     assert payload["response"]["status_code"] == 200
     assert (

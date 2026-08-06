@@ -1,4 +1,4 @@
-"""Tracked Phase 6F controlled-validation observation workflow."""
+"""Tracked Phase 6C low-risk validation observation workflow."""
 
 from __future__ import annotations
 
@@ -46,7 +46,7 @@ DEFAULT_EVIDENCE_ROOT = (
 
 
 class ControlledValidationObservationWorkflowError(RuntimeError):
-    """Raised when a tracked Phase 6F observation cannot complete."""
+    """Raised when a tracked Phase 6C observation cannot complete."""
 
 
 @dataclass(frozen=True)
@@ -226,11 +226,11 @@ def _audit_failure_safely(
             event_type=AuditEventType.TOOL_FAILED,
             actor=actor,
             message=(
-                "[6F3C][controlled-validation] "
+                "[6C][controlled-validation] "
                 "Bounded HTTP observation failed."
             ),
             details={
-                "phase_code": "6F3C",
+                "phase_code": "6C",
                 "error_type": type(error).__name__,
                 "error": str(error),
                 "execution_state": current_state.value,
@@ -254,7 +254,7 @@ def _serialize_observation(
 
     return {
         "schema_version": "1.0",
-        "phase": "6F3B",
+        "phase": "6C",
         "evidence_type": (
             EvidenceType.CONTROLLED_VALIDATION_OBSERVATION.value
         ),
@@ -432,11 +432,11 @@ async def run_tracked_controlled_validation_observation(
             event_type=AuditEventType.TOOL_COMPLETED,
             actor=actor,
             message=(
-                "[6F3C][controlled-validation] "
+                "[6C][controlled-validation] "
                 "Existing bounded observation reused."
             ),
             details={
-                "phase_code": "6F3C",
+                "phase_code": "6C",
                 "evidence_id": existing_evidence.evidence_id,
                 "evidence_sha256": existing_evidence.sha256,
                 "plan_evidence_id": plan_evidence.evidence_id,
@@ -476,11 +476,11 @@ async def run_tracked_controlled_validation_observation(
             event_type=AuditEventType.TOOL_STARTED,
             actor=actor,
             message=(
-                "[6F3C][controlled-validation] "
+                "[6C][controlled-validation] "
                 "Bounded HTTP observation started."
             ),
             details={
-                "phase_code": "6F3C",
+                "phase_code": "6C",
                 "tool": "saarthi-controlled-validation-observer",
                 "target_url": validation.target_url,
                 "action": validation.action.value,
@@ -506,14 +506,14 @@ async def run_tracked_controlled_validation_observation(
             event_type=AuditEventType.TOOL_OUTPUT,
             actor=actor,
             message=(
-                "[6F3C][controlled-validation] "
+                "[6C][controlled-validation] "
                 f"HTTP {observation.status_code}; "
                 f"captured={observation.body_bytes_captured}; "
                 f"truncated="
                 f"{str(observation.body_truncated).lower()}."
             ),
             details={
-                "phase_code": "6F3C",
+                "phase_code": "6C",
                 "status_code": observation.status_code,
                 "final_url": observation.final_url,
                 "http_version": observation.http_version,
@@ -531,7 +531,7 @@ async def run_tracked_controlled_validation_observation(
             observation,
             plan_evidence=plan_evidence,
         )
-        payload["phase"] = "6F3C"
+        payload["phase"] = "6C"
 
         evidence_path, evidence_sha256, evidence_size = (
             _write_evidence_atomically(
@@ -554,7 +554,7 @@ async def run_tracked_controlled_validation_observation(
                 step_id="controlled-validation-observation-001",
                 tool_name="saarthi-controlled-validation-observer",
                 metadata={
-                    "phase": "6F3C",
+                    "phase": "6C",
                     "target_url": validation.target_url,
                     "action": validation.action.value,
                     "method": observation.method,
@@ -589,11 +589,11 @@ async def run_tracked_controlled_validation_observation(
             event_type=AuditEventType.TOOL_COMPLETED,
             actor=actor,
             message=(
-                "[6F3C][controlled-validation] "
+                "[6C][controlled-validation] "
                 "Bounded HTTP observation persisted."
             ),
             details={
-                "phase_code": "6F3C",
+                "phase_code": "6C",
                 "evidence_id": evidence.evidence_id,
                 "evidence_sha256": evidence.sha256,
                 "plan_evidence_id": plan_evidence.evidence_id,
@@ -616,7 +616,7 @@ async def run_tracked_controlled_validation_observation(
             ExecutionState.COMPLETED,
             actor=actor,
             reason=(
-                "Phase 6F tracked controlled-validation "
+                "Phase 6C tracked controlled-validation "
                 "observation completed."
             ),
         )

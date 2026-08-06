@@ -655,33 +655,33 @@ def test_planned_execution_without_phase_6_evidence_remains_generic() -> None:
     assert infer_phase_short("planned") == "PLAN"
 
 
-def test_completed_controlled_observation_maps_to_phase_6f() -> None:
+def test_completed_controlled_observation_maps_to_phase_6c() -> None:
     assert (
         infer_phase(
             "completed",
             {"controlled_validation_observation"},
         )
-        == "6F — CONTROLLED VALIDATION OBSERVATION"
+        == "6C — LOW-RISK HTTP VALIDATOR"
     )
 
 
-def test_running_controlled_observation_maps_to_phase_6f() -> None:
+def test_running_controlled_observation_maps_to_phase_6c() -> None:
     assert (
         infer_phase(
             "running",
             {"controlled_validation_observation"},
         )
-        == "6F — CONTROLLED VALIDATION OBSERVATION"
+        == "6C — LOW-RISK HTTP VALIDATOR"
     )
 
 
-def test_failed_controlled_observation_maps_to_phase_6f_review() -> None:
+def test_failed_controlled_observation_maps_to_phase_6c_review() -> None:
     assert (
         infer_phase(
             "failed",
             {"controlled_validation_observation"},
         )
-        == "6F — CONTROLLED VALIDATION REVIEW"
+        == "6C — LOW-RISK HTTP VALIDATOR REVIEW"
     )
 
 
@@ -691,7 +691,7 @@ def test_controlled_observation_compact_phase_is_6f() -> None:
             "completed",
             {"controlled_validation_observation"},
         )
-        == "6F"
+        == "6C"
     )
 
 
@@ -1148,33 +1148,33 @@ def test_safe_tui_display_rejects_invalid_bound() -> None:
         safe_tui_display("value", max_length=1)
 
 
-def test_planned_nuclei_preview_maps_to_phase_6i() -> None:
+def test_planned_nuclei_preview_maps_to_phase_6c() -> None:
     assert (
         infer_phase(
             "planned",
             {"controlled_nuclei_preview"},
         )
-        == "6I — CONTROLLED NUCLEI PREVIEW"
+        == "6C — NUCLEI VALIDATOR PREVIEW"
     )
 
 
-def test_created_nuclei_preview_maps_to_phase_6i() -> None:
+def test_created_nuclei_preview_maps_to_phase_6c() -> None:
     assert (
         infer_phase(
             "created",
             {"controlled_nuclei_preview"},
         )
-        == "6I — CONTROLLED NUCLEI PREVIEW"
+        == "6C — NUCLEI VALIDATOR PREVIEW"
     )
 
 
-def test_nuclei_preview_compact_phase_is_6i() -> None:
+def test_nuclei_preview_compact_phase_is_6c() -> None:
     assert (
         infer_phase_short(
             "planned",
             {"controlled_nuclei_preview"},
         )
-        == "6I"
+        == "6C"
     )
 
 
@@ -1448,7 +1448,7 @@ def test_scope_lines_render_controlled_nuclei_preview() -> None:
 
     snapshot = replace(
         demo_snapshot(),
-        current_phase="6I — CONTROLLED NUCLEI PREVIEW",
+        current_phase="6C — NUCLEI VALIDATOR PREVIEW",
         execution_state="planned",
         controlled_nuclei_preview={
             "evidence_id": "evidence-nuclei-preview",
@@ -1604,13 +1604,13 @@ def test_nuclei_tool_row_requires_approval() -> None:
     ]
 
 
-def test_planned_nuclei_preparation_maps_to_phase_6j() -> None:
+def test_planned_nuclei_preparation_maps_to_phase_6c() -> None:
     assert (
         infer_phase(
             "planned",
             {"controlled_nuclei_preparation"},
         )
-        == "6J — CONTROLLED NUCLEI PREPARATION"
+        == "6C — NUCLEI VALIDATOR PREPARATION"
     )
 
 
@@ -1623,17 +1623,17 @@ def test_nuclei_preparation_takes_precedence_over_preview() -> None:
                 "controlled_nuclei_preparation",
             },
         )
-        == "6J — CONTROLLED NUCLEI PREPARATION"
+        == "6C — NUCLEI VALIDATOR PREPARATION"
     )
 
 
-def test_nuclei_preparation_compact_phase_is_6j() -> None:
+def test_nuclei_preparation_compact_phase_is_6c() -> None:
     assert (
         infer_phase_short(
             "planned",
             {"controlled_nuclei_preparation"},
         )
-        == "6J"
+        == "6C"
     )
 
 
@@ -1903,7 +1903,7 @@ def test_loads_matching_nuclei_preparation_reuse_event() -> None:
             "execution-test",
             json.dumps(
                 {
-                    "phase_code": "6J.2",
+                    "phase_code": "6C",
                     "tool": "nuclei",
                     "evidence_id": (
                         "evidence-nuclei-preparation"
@@ -1937,7 +1937,7 @@ def test_scope_lines_render_controlled_nuclei_preparation() -> None:
 
     snapshot = replace(
         demo_snapshot(),
-        current_phase="6J — CONTROLLED NUCLEI PREPARATION",
+        current_phase="6C — NUCLEI VALIDATOR PREPARATION",
         execution_state="planned",
         controlled_nuclei_preparation={
             "evidence_id": "evidence-nuclei-preparation",
@@ -2108,7 +2108,7 @@ def test_completed_nuclei_execution_maps_to_official_phase_6c() -> None:
             "completed",
             {"controlled_nuclei_execution"},
         )
-        == "6C — CONTROLLED NUCLEI EXECUTION"
+        == "6C — LOW-RISK NUCLEI VALIDATOR"
     )
     assert (
         infer_phase_short(
@@ -2125,7 +2125,7 @@ def test_failed_nuclei_execution_maps_to_phase_6c_review() -> None:
             "failed",
             {"controlled_nuclei_execution"},
         )
-        == "6C — CONTROLLED NUCLEI REVIEW"
+        == "6C — LOW-RISK NUCLEI VALIDATOR REVIEW"
     )
 
 
@@ -2240,7 +2240,7 @@ def test_scope_lines_render_controlled_nuclei_execution() -> None:
 
     snapshot = replace(
         demo_snapshot(),
-        current_phase="6C — CONTROLLED NUCLEI EXECUTION",
+        current_phase="6C — LOW-RISK NUCLEI VALIDATOR",
         execution_state="completed",
         controlled_nuclei_execution={
             "evidence_id": "evidence-nuclei-execution",

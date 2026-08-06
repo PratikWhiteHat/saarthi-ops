@@ -100,7 +100,7 @@ def test_persists_non_executed_nuclei_preview(
         hashlib.sha256(evidence_bytes).hexdigest()
         == result.evidence.sha256
     )
-    assert payload["phase"] == "6I.3A"
+    assert payload["phase"] == "6C"
     assert payload["tool"]["name"] == "nuclei"
     assert payload["execution"]["executed"] is False
     assert payload["execution"]["network_activity"] is False
