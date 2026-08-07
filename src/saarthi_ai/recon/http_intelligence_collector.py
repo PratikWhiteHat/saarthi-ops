@@ -428,6 +428,7 @@ def collect_http_intelligence(
                     emit_progress if progress_callback is not None else None
                 ),
                 forward_aborted_output=False,
+            retune_on_thin=True,
                 runner=run_tool,
             )
         except ToolRunnerError as exc:

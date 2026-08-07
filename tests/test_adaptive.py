@@ -183,3 +183,64 @@ def test_forward_aborted_output_false_suppresses_aborted_attempt(tmp_path):
     assert "final-data" in joined
     assert "leaked-partial" not in joined  # aborted attempt suppressed
     assert "WAF/IPS" not in joined
+
+
+def test_retune_on_thin_reruns_with_broader_coverage(tmp_path):
+    # subfinder-style tool: empty until '-all' is added, then it finds a host.
+    path = tmp_path / "faketool"
+    path.write_text(
+        "#!/usr/bin/env python3\n"
+        "import sys\n"
+        "if any(a == '-all' for a in sys.argv):\n"
+        "    print('sub.example.com', flush=True)\n"
+        "sys.exit(0)\n",
+        encoding="utf-8",
+    )
+    path.chmod(path.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP)
+    profile = ToolProfile(
+        name="subfinder",
+        executable_candidates=(str(path),),
+        timeout_seconds=30,
+    )
+
+    events = []
+    lines: list[str] = []
+    result = run_tool_adaptively(
+        profile,
+        ["-d", "example.com", "-silent"],
+        max_attempts=3,
+        on_output=lambda event: lines.append(event.line),
+        on_adapt=events.append,
+        forward_aborted_output=False,
+        retune_on_thin=True,
+    )
+
+    assert "sub.example.com" in result.stdout
+    assert len(events) == 1
+    assert events[0].condition is AdaptiveCondition.THIN_RESULTS
+    assert "-all" in events[0].arguments
+    assert "sub.example.com" in " ".join(lines)  # only final attempt replayed
+
+
+def test_retune_on_thin_disabled_accepts_empty(tmp_path):
+    path = tmp_path / "faketool"
+    path.write_text(
+        "#!/usr/bin/env python3\nimport sys\nsys.exit(0)\n",
+        encoding="utf-8",
+    )
+    path.chmod(path.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP)
+    profile = ToolProfile(
+        name="subfinder",
+        executable_candidates=(str(path),),
+        timeout_seconds=30,
+    )
+
+    events = []
+    run_tool_adaptively(
+        profile,
+        ["-d", "example.com"],
+        max_attempts=3,
+        on_adapt=events.append,
+        retune_on_thin=False,
+    )
+    assert events == []  # no re-tune when disabled

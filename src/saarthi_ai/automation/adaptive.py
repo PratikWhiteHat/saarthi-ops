@@ -36,7 +36,14 @@ ALLOWED_ADAPTIVE_SET_FLAGS: dict[str, frozenset[str]] = {
         {"-rate-limit", "-threads", "-timeout", "-retries"}
     ),
     "projectdiscovery-katana": frozenset(
-        {"-rate-limit", "-concurrency", "-parallelism", "-timeout"}
+        {
+            "-rate-limit",
+            "-concurrency",
+            "-parallelism",
+            "-timeout",
+            "-depth",
+            "-crawl-duration",
+        }
     ),
     "subfinder": frozenset({"-rate-limit", "-timeout"}),
 }
@@ -45,7 +52,7 @@ ALLOWED_ADAPTIVE_ADD_FLAGS: dict[str, frozenset[str]] = {
     "nuclei": frozenset(),
     "projectdiscovery-httpx": frozenset(),
     "projectdiscovery-katana": frozenset(),
-    "subfinder": frozenset(),
+    "subfinder": frozenset({"-all"}),
 }
 # WAF-bypass flags gated behind allow_waf_bypass.
 WAF_BYPASS_FLAGS = frozenset({"--tamper", "--random-agent"})
@@ -57,6 +64,7 @@ class AdaptiveCondition(StrEnum):
     WAF = "waf"
     RATE_LIMITED = "rate_limited"
     CONNECTION_RESET = "connection_reset"
+    THIN_RESULTS = "thin_results"
 
 
 _PATTERNS: dict[str, list[tuple[AdaptiveCondition, re.Pattern[str]]]] = {
@@ -154,6 +162,45 @@ def detect_condition(
     return None
 
 
+def _is_thin(result: ToolRunResult) -> bool:
+    """True when a successful run produced no usable output lines.
+
+    A non-zero exit / timeout / abort is a failure, not a thin success, and
+    must not trigger a coverage re-tune.
+    """
+
+    if result.timed_out or result.aborted or result.exit_code != 0:
+        return False
+    return not any(line.strip() for line in result.stdout.splitlines())
+
+
+def _plan_coverage(tool_name: str) -> Adaptation | None:
+    """Broaden a coverage tool's execution when it returned nothing."""
+
+    if tool_name == "subfinder":
+        return Adaptation(
+            AdaptiveCondition.THIN_RESULTS,
+            {"-timeout": "30"},
+            ("-all",),
+            "No subdomains → widen sources (-all)",
+        )
+    if tool_name == "projectdiscovery-katana":
+        return Adaptation(
+            AdaptiveCondition.THIN_RESULTS,
+            {"-depth": "3", "-crawl-duration": "60s", "-timeout": "20"},
+            (),
+            "No URLs crawled → deeper/longer crawl",
+        )
+    if tool_name == "projectdiscovery-httpx":
+        return Adaptation(
+            AdaptiveCondition.THIN_RESULTS,
+            {"-timeout": "20", "-retries": "3"},
+            (),
+            "No live hosts → raise timeout/retries",
+        )
+    return None
+
+
 def plan_adaptation(
     tool_name: str,
     condition: AdaptiveCondition,
@@ -162,6 +209,9 @@ def plan_adaptation(
     allow_waf_bypass: bool,
 ) -> Adaptation | None:
     """Map a detected condition to a bounded, escalating adaptation."""
+
+    if condition is AdaptiveCondition.THIN_RESULTS:
+        return _plan_coverage(tool_name)
 
     delay = str(min(1 + attempt, 5))
 
@@ -345,6 +395,7 @@ def run_tool_adaptively(
     on_output: Callable[[ToolOutputEvent], None] | None = None,
     on_adapt: Callable[[AdaptationEvent], None] | None = None,
     forward_aborted_output: bool = True,
+    retune_on_thin: bool = False,
     runner: Callable[..., ToolRunResult] = run_tool,
 ) -> ToolRunResult:
     """Run a tool, adapting and relaunching it when a condition is detected.
@@ -390,25 +441,34 @@ def run_tool_adaptively(
 
         condition = holder["condition"]
 
-        # When not forwarding live, only replay a clean (non-aborted) attempt.
+        # Result-quality trigger: a clean run that produced nothing is re-run
+        # once (attempt 1 only) with broader settings (coverage tools only).
         if (
-            not forward_aborted_output
-            and on_output is not None
-            and condition is None
+            condition is None
+            and retune_on_thin
+            and attempt == 1
+            and not is_last
+            and _is_thin(result)
         ):
-            for event in buffer:
-                on_output(event)
+            condition = AdaptiveCondition.THIN_RESULTS
 
-        if condition is None:
-            return result
-
-        adaptation = plan_adaptation(
-            profile.name,
-            condition,
-            attempt,
-            allow_waf_bypass=allow_waf_bypass,
+        adaptation = (
+            plan_adaptation(
+                profile.name,
+                condition,
+                attempt,
+                allow_waf_bypass=allow_waf_bypass,
+            )
+            if condition is not None
+            else None
         )
+
         if adaptation is None:
+            # Accept this result: clean, or nothing worth adapting. Replay the
+            # buffered (final, clean) output for incremental-parsing callers.
+            if not forward_aborted_output and on_output is not None:
+                for event in buffer:
+                    on_output(event)
             return result
 
         _validate_adaptation(

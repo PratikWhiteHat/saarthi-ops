@@ -198,6 +198,7 @@ def _run_passive_tool(
             allow_waf_bypass=False,
             on_output=progress_callback,
             forward_aborted_output=False,
+            retune_on_thin=True,
             runner=run_tool,
         )
     except ToolRunnerError as exc:

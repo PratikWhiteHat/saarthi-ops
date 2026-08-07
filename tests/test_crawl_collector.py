@@ -351,8 +351,10 @@ def test_katana_execution_uses_bounded_arguments(
     )
 
     def fake_run_tool(profile, arguments, **_kw):
+        # Capture the first (base) invocation; the controller may re-tune and
+        # re-run once when the crawl returns nothing.
+        captured.setdefault("arguments", arguments)
         captured["profile"] = profile
-        captured["arguments"] = arguments
         return tool_result("")
 
     monkeypatch.setattr(
