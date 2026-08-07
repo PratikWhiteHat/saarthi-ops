@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import signal
 import subprocess
 import threading
 import time
@@ -9,6 +10,71 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from shutil import which
+
+# Registry of live approved-tool subprocesses. Tools are launched in their own
+# session (start_new_session=True), so if the operator quits the UI mid-run
+# they would otherwise be orphaned and keep scanning the target. The UI calls
+# terminate_active_tools() on quit to stop them.
+_active_processes: set[subprocess.Popen[bytes]] = set()
+_active_processes_lock = threading.Lock()
+
+
+def _terminate_process(process: subprocess.Popen[bytes]) -> None:
+    """Terminate a tool process and its session group, then reap it."""
+
+    if process.poll() is not None:
+        return
+
+    def _signal_group(sig: int) -> bool:
+        try:
+            os.killpg(os.getpgid(process.pid), sig)
+            return True
+        except (ProcessLookupError, PermissionError, OSError):
+            return False
+
+    if not _signal_group(signal.SIGTERM):
+        try:
+            process.terminate()
+        except OSError:
+            return
+
+    try:
+        process.wait(timeout=3)
+        return
+    except subprocess.TimeoutExpired:
+        pass
+
+    if not _signal_group(signal.SIGKILL):
+        try:
+            process.kill()
+        except OSError:
+            return
+
+    try:
+        process.wait(timeout=3)
+    except subprocess.TimeoutExpired:
+        return
+
+
+def terminate_active_tools() -> int:
+    """Terminate every running approved-tool subprocess.
+
+    Called when the operator quits the UI so nuclei/sqlmap (and any other
+    approved tool) do not keep executing against the target after exit.
+    Returns the number of processes that were signalled.
+    """
+
+    with _active_processes_lock:
+        processes = list(_active_processes)
+
+    for process in processes:
+        _terminate_process(process)
+
+    with _active_processes_lock:
+        for process in processes:
+            _active_processes.discard(process)
+
+    return len(processes)
 
 
 class ToolRunnerError(RuntimeError):
@@ -231,6 +297,9 @@ def run_tool(
             f"Unable to start approved tool '{profile.name}': {exc}"
         ) from exc
 
+    with _active_processes_lock:
+        _active_processes.add(process)
+
     stdout_buffer = bytearray()
     stderr_buffer = bytearray()
     buffer_lock = threading.Lock()
@@ -353,6 +422,9 @@ def run_tool(
 
     stdout_thread.join(timeout=2)
     stderr_thread.join(timeout=2)
+
+    with _active_processes_lock:
+        _active_processes.discard(process)
 
     raw_stdout = bytes(stdout_buffer)
     raw_stderr = bytes(stderr_buffer)

@@ -380,3 +380,34 @@ printf 'abcdefghij' >&2
     assert result.stderr == "abcde"
     assert result.stdout_truncated is True
     assert result.stderr_truncated is True
+
+
+def test_terminate_active_tools_stops_registered_process() -> None:
+    import subprocess
+
+    from saarthi_ai.execution import tool_runner
+
+    proc = subprocess.Popen(["sleep", "30"], start_new_session=True)
+    try:
+        with tool_runner._active_processes_lock:
+            tool_runner._active_processes.add(proc)
+
+        assert proc.poll() is None
+
+        stopped = tool_runner.terminate_active_tools()
+        assert stopped >= 1
+
+        proc.wait(timeout=5)
+        assert proc.poll() is not None
+
+        with tool_runner._active_processes_lock:
+            assert proc not in tool_runner._active_processes
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+
+
+def test_terminate_active_tools_with_no_processes_is_noop() -> None:
+    from saarthi_ai.execution import tool_runner
+
+    assert tool_runner.terminate_active_tools() == 0

@@ -31,6 +31,7 @@ from saarthi_ai.controlled_validation.validator_registry import (
     summarize_phase6_validator_modules,
     validator_module_tool_rows,
 )
+from saarthi_ai.execution.tool_runner import terminate_active_tools
 
 DEFAULT_DB_PATH = Path.home() / ".saarthi" / "saarthi.db"
 
@@ -5235,6 +5236,26 @@ class SaarthiDashboard(App[None]):
             "P phases · T tools · E executions · Q quit",
             timeout=7,
         )
+
+    def action_quit(self) -> None:
+        """Stop any running scanners before exiting the operator console."""
+
+        self._terminate_running_scanners()
+        self.exit()
+
+    def on_unmount(self) -> None:
+        # Safety net for non-'q' exit paths (ctrl+c, ctrl+q, crash): never
+        # leave nuclei/sqlmap orphaned and scanning the target after exit.
+        self._terminate_running_scanners()
+
+    def _terminate_running_scanners(self) -> None:
+        try:
+            stopped = terminate_active_tools()
+        except Exception:
+            return
+        if stopped:
+            self._run_stage = None
+            self._validation_running = False
 
     def action_run_validation(self) -> None:
         """Run nuclei + SQLMap from the chain with confirmed-PoC proof."""
