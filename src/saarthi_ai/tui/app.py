@@ -4907,6 +4907,7 @@ class SaarthiDashboard(App[None]):
         ("v", "run_validation", "Run Nuclei+SQLMap"),
         ("V", "run_validation_dump", "Run +1-row dump"),
         ("u", "focus_url", "URL"),
+        ("a", "ai_analyze", "AI Analyze"),
         ("h", "help", "Help"),
     ]
 
@@ -4924,6 +4925,7 @@ class SaarthiDashboard(App[None]):
         # Target URL of the current operator-launched run, shown in the
         # TARGET & AUTHORIZE bar while the run is active.
         self._run_target: str | None = None
+        self._analysis_running = False
         self._live_validation_lines: list[str] = []
         # Snapshot of every line currently in the activity log (DB audit
         # events + live tool lines), used to append only new lines instead
@@ -5233,7 +5235,7 @@ class SaarthiDashboard(App[None]):
         self.notify(
             "R refresh · U focus URL (Enter = full assessment) · "
             "V nuclei+sqlmap on chain target · shift+V +1-row dump · "
-            "P phases · T tools · E executions · Q quit",
+            "A AI-analyze latest run · P phases · T tools · Q quit",
             timeout=7,
         )
 
@@ -5256,6 +5258,98 @@ class SaarthiDashboard(App[None]):
         if stopped:
             self._run_stage = None
             self._validation_running = False
+
+    def action_ai_analyze(self) -> None:
+        """Triage the latest run's evidence with the local AI model."""
+
+        if self._analysis_running:
+            self.notify(
+                "An AI analysis is already running.",
+                severity="warning",
+            )
+            return
+
+        self._analysis_running = True
+        self.notify("Analyzing the latest run with the local model…")
+        self._append_validation_line(
+            "[AI] Gathering run evidence for analysis…"
+        )
+        self.run_worker(
+            self._run_analysis_worker,
+            name="ai-analysis",
+            group="ai-analysis",
+            thread=True,
+            exclusive=True,
+        )
+
+    def _run_analysis_worker(self) -> None:
+        """Gather the run digest and ask the local model to triage it."""
+
+        import asyncio
+
+        from saarthi_ai.analysis import (
+            AnalysisError,
+            analyze_run,
+            gather_run_digest,
+        )
+        from saarthi_ai.config import get_settings
+        from saarthi_ai.llm.ollama_client import (
+            OllamaUnavailableError,
+            SaarthiOllamaClient,
+        )
+        from saarthi_ai.persistence.database import SaarthiDatabase
+
+        def log(line: str) -> None:
+            self.call_from_thread(self._append_validation_line, line)
+
+        def fail(message: str) -> None:
+            log(f"[AI][ERR] {message}")
+            self.call_from_thread(
+                self.notify,
+                message,
+                severity="error",
+            )
+            self.call_from_thread(self._finish_analysis)
+
+        try:
+            database = SaarthiDatabase(self.repository.database_path)
+            digest = gather_run_digest(database)
+        except AnalysisError as error:
+            fail(str(error))
+            return
+        except Exception as error:  # defensive
+            fail(f"Could not gather run evidence: {error}")
+            return
+
+        log(
+            f"[AI] Target: {digest.target} | "
+            f"findings={len(digest.findings)} | "
+            f"phases={len(digest.phases)} | state={digest.parent_state}"
+        )
+        log("[AI] Querying the local model (this can take a moment)…")
+
+        client = SaarthiOllamaClient(get_settings())
+        try:
+            content = asyncio.run(analyze_run(client, digest))
+        except OllamaUnavailableError as error:
+            fail(str(error))
+            return
+        except Exception as error:  # defensive
+            fail(f"Analysis failed: {error}")
+            return
+
+        log("[AI] ── Analysis ─────────────────────────────")
+        for line in content.splitlines() or ["(empty response)"]:
+            log(f"[AI] {line}")
+        log("[AI] ── End of analysis ──────────────────────")
+        self.call_from_thread(
+            self.notify,
+            "AI analysis complete — see the activity log.",
+        )
+        self.call_from_thread(self._finish_analysis)
+
+    def _finish_analysis(self) -> None:
+        self._analysis_running = False
 
     def action_run_validation(self) -> None:
         """Run nuclei + SQLMap from the chain with confirmed-PoC proof."""

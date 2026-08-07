@@ -52,13 +52,21 @@ class SaarthiOllamaClient:
         messages: Sequence[Message],
         *,
         think: bool = False,
+        system_prompt: str | None = None,
+        num_predict: int = 150,
     ) -> tuple[str, str | None]:
-        """Send a chat request to the configured Ollama model."""
+        """Send a chat request to the configured Ollama model.
+
+        ``system_prompt`` overrides the default assistant prompt (used by the
+        result-analysis feature to apply a security-triage prompt) and
+        ``num_predict`` bounds the response length (analysis needs a longer
+        answer than interactive chat).
+        """
 
         ollama_messages: list[dict[str, Any]] = [
             {
                 "role": "system",
-                "content": SYSTEM_PROMPT,
+                "content": system_prompt or SYSTEM_PROMPT,
             },
             *[
                 {
@@ -76,7 +84,7 @@ class SaarthiOllamaClient:
                 think=think,
                 options={
                     "temperature": 0.2,
-                    "num_predict": 150,
+                    "num_predict": num_predict,
                     "top_p": 0.9,
                     "repeat_penalty": 1.1,
                 },

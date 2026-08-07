@@ -9,6 +9,11 @@ from rich.console import Console
 from rich.markdown import Markdown
 from rich.table import Table
 
+from saarthi_ai.analysis import (
+    AnalysisError,
+    analyze_run,
+    gather_run_digest,
+)
 from saarthi_ai.assessments.planner import build_assessment_plan
 from saarthi_ai.assessments.schemas import (
     AssessmentRequest,
@@ -373,6 +378,52 @@ def chat(
             )
 
     asyncio.run(run())
+
+
+@app.command()
+def analyze(
+    orchestration: Annotated[
+        str | None,
+        typer.Option(
+            "--orchestration",
+            help=(
+                "Orchestration id to analyze. Defaults to the most recent run."
+            ),
+        ),
+    ] = None,
+) -> None:
+    """AI-triage an assessment run's evidence with the local model."""
+
+    database = get_database()
+
+    try:
+        digest = gather_run_digest(
+            database,
+            orchestration_id=orchestration,
+        )
+    except AnalysisError as exc:
+        console.print(f"[bold red]Cannot analyze:[/bold red] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    console.print("[bold]AI analysis of assessment run[/bold]")
+    console.print(f"Target       : {digest.target}")
+    console.print(f"Orchestration: {digest.orchestration_id}")
+    console.print(
+        f"Findings     : {len(digest.findings)} | "
+        f"phases: {len(digest.phases)} | state: {digest.parent_state}"
+    )
+    console.print("[dim]Asking the local model to triage the evidence…[/dim]")
+
+    client = SaarthiOllamaClient(get_settings())
+
+    try:
+        content = asyncio.run(analyze_run(client, digest))
+    except OllamaUnavailableError as exc:
+        console.print(f"[bold red]Error:[/bold red] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    console.print()
+    console.print(Markdown(content))
 
 
 @project_app.command("create")

@@ -1,0 +1,334 @@
+"""AI-assisted triage of an assessment run's evidence (local Ollama)."""
+
+from __future__ import annotations
+
+import glob
+import json
+from collections import Counter
+from dataclasses import dataclass, field
+from pathlib import Path
+
+from saarthi_ai.llm.ollama_client import SaarthiOllamaClient
+from saarthi_ai.persistence.database import SaarthiDatabase
+from saarthi_ai.persistence.models import AuditEventType, ExecutionRecord
+from saarthi_ai.schemas.chat import Message
+
+ORCHESTRATION_PARENT_ROLE = "orchestration_parent"
+DEFAULT_ORCHESTRATION_EVIDENCE_ROOT = Path("evidence/orchestrations")
+
+MAX_FINDINGS = 60
+MAX_FAILURES = 20
+MAX_EVIDENCE_SIGNALS = 40
+MAX_NUCLEI_HITS = 20
+MAX_ANALYSIS_TOKENS = 900
+
+ANALYST_SYSTEM_PROMPT = (
+    "You are a senior application-security analyst triaging evidence from an "
+    "AUTHORIZED VAPT assessment the operator ran. Analyze ONLY the evidence "
+    "provided; never invent findings, hosts, or data. Be concise and "
+    "specific. Produce:\n"
+    "1. Executive summary (2-3 sentences).\n"
+    "2. Findings ranked by severity (Critical/High/Medium/Low/Info). For "
+    "each: what it is, why it matters, your confidence, and whether it looks "
+    "like a likely false positive.\n"
+    "3. Suggested next manual steps or plausible chains.\n"
+    "4. Remediation notes.\n"
+    "If the evidence is thin or shows nothing exploitable, say so plainly. "
+    "Do not fabricate exploitation detail."
+)
+
+
+class AnalysisError(RuntimeError):
+    """Raised when a run cannot be assembled for AI analysis."""
+
+
+@dataclass(frozen=True)
+class RunDigest:
+    """Bounded, sanitized summary of one assessment run for the model."""
+
+    orchestration_id: str | None
+    target: str
+    parent_state: str
+    assessment_name: str
+    phases: tuple[tuple[str, str], ...]
+    findings: tuple[str, ...] = ()
+    failures: tuple[str, ...] = ()
+    evidence_counts: dict[str, int] = field(default_factory=dict)
+    evidence_signals: tuple[str, ...] = ()
+    nuclei_summary: str | None = None
+    sqlmap_summary: str | None = None
+
+
+def _metadata(execution: ExecutionRecord) -> dict:
+    return execution.metadata or {}
+
+
+def _latest_parent(
+    executions: list[ExecutionRecord],
+    orchestration_id: str | None,
+) -> ExecutionRecord | None:
+    for execution in executions:
+        meta = _metadata(execution)
+        if meta.get("execution_role") != ORCHESTRATION_PARENT_ROLE:
+            continue
+        if (
+            orchestration_id is not None
+            and meta.get("orchestration_id") != orchestration_id
+        ):
+            continue
+        return execution
+    return None
+
+
+def _compact_metadata(metadata: dict) -> str:
+    """Render short scalar metadata as a compact key=value string."""
+
+    interesting = (
+        "action",
+        "classification",
+        "status",
+        "outcome",
+        "missing",
+        "count",
+        "observed",
+        "risk",
+        "check_id",
+        "technique",
+        "dbms",
+        "parameter",
+    )
+    parts: list[str] = []
+    for key, value in metadata.items():
+        lowered = str(key).lower()
+        if not any(term in lowered for term in interesting):
+            continue
+        if isinstance(value, bool | int | float):
+            parts.append(f"{key}={value}")
+        elif isinstance(value, str) and 0 < len(value) <= 80:
+            parts.append(f"{key}={value}")
+        if len(parts) >= 6:
+            break
+    return ", ".join(parts)
+
+
+def _read_auto_validation(
+    orchestration_id: str,
+    evidence_root: Path,
+) -> tuple[str | None, str | None]:
+    """Summarize nuclei/sqlmap output from the auto-validation evidence."""
+
+    pattern = str(
+        evidence_root
+        / orchestration_id
+        / "auto-validation"
+        / "*"
+        / "automatic-validation.json"
+    )
+    files = sorted(glob.glob(pattern))
+    if not files:
+        return None, None
+
+    try:
+        payload = json.loads(Path(files[-1]).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None, None
+
+    nuclei = payload.get("nuclei", {}) or {}
+    stdout = nuclei.get("stdout", "") or ""
+    hits: list[str] = []
+    for line in stdout.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        template = record.get("template-id") or record.get("templateID")
+        info = record.get("info", {}) or {}
+        severity = info.get("severity", "unknown")
+        matched = record.get("matched-at") or record.get("host") or ""
+        hits.append(f"{severity}: {template} @ {matched}"[:160])
+        if len(hits) >= MAX_NUCLEI_HITS:
+            break
+
+    nuclei_summary = (
+        f"nuclei exit={nuclei.get('exit_code')} "
+        f"timed_out={nuclei.get('timed_out')} template_hits={len(hits)}"
+    )
+    if hits:
+        nuclei_summary += "\n  - " + "\n  - ".join(hits)
+
+    sqlmap_runs = payload.get("sqlmap", []) or []
+    sqlmap_lines: list[str] = []
+    for run in sqlmap_runs:
+        std = (run.get("stdout") or "").lower()
+        vulnerable = (
+            "is vulnerable" in std
+            or "injectable" in std
+            or "sqlmap identified" in std
+        )
+        dbms = ""
+        marker = "the back-end dbms is"
+        if marker in std:
+            dbms = std.split(marker, 1)[1].strip()[:40]
+        sqlmap_lines.append(
+            f"param={run.get('parameter')} exit={run.get('exit_code')} "
+            f"timed_out={run.get('timed_out')} sqli={vulnerable}"
+            + (f" dbms={dbms}" if dbms else "")
+        )
+    sqlmap_summary = (
+        "\n  - ".join(sqlmap_lines) if sqlmap_lines else None
+    )
+    if sqlmap_summary:
+        sqlmap_summary = "  - " + sqlmap_summary
+
+    return nuclei_summary, sqlmap_summary
+
+
+def gather_run_digest(
+    database: SaarthiDatabase,
+    *,
+    orchestration_id: str | None = None,
+    evidence_root: Path = DEFAULT_ORCHESTRATION_EVIDENCE_ROOT,
+) -> RunDigest:
+    """Assemble a bounded digest of the latest (or given) run for analysis."""
+
+    executions = database.list_executions(limit=1_000)
+    if not executions:
+        raise AnalysisError("No executions are stored; run an assessment first.")
+
+    parent = _latest_parent(executions, orchestration_id)
+    if parent is None:
+        raise AnalysisError(
+            "No orchestration-parent execution found to analyze."
+        )
+    if not parent.targets:
+        raise AnalysisError(
+            f"Execution {parent.execution_id} has no target."
+        )
+
+    meta = _metadata(parent)
+    oid = meta.get("orchestration_id")
+    children = [
+        execution
+        for execution in executions
+        if _metadata(execution).get("orchestration_id") == oid
+        and _metadata(execution).get("execution_role") == "orchestration_child"
+    ]
+    children.sort(key=lambda execution: execution.created_at)
+
+    phases = tuple(
+        (
+            str(_metadata(child).get("phase_code", "?")),
+            child.state.value,
+        )
+        for child in children
+    )
+
+    findings: list[str] = []
+    failures: list[str] = []
+    evidence_counts: Counter[str] = Counter()
+    evidence_signals: list[str] = []
+
+    for execution in [parent, *children]:
+        phase_code = _metadata(execution).get("phase_code", "-")
+        for event in database.list_audit_events(execution.execution_id):
+            if event.event_type is AuditEventType.FINDING_CREATED:
+                detail = _compact_metadata(event.details or {})
+                findings.append(
+                    f"[{phase_code}] {event.message}"
+                    + (f" ({detail})" if detail else "")
+                )
+            elif event.event_type is AuditEventType.TOOL_FAILED:
+                failures.append(f"[{phase_code}] {event.message}"[:200])
+
+        for evidence in database.list_evidence(execution.execution_id):
+            evidence_counts[evidence.evidence_type.value] += 1
+            signal = _compact_metadata(evidence.metadata or {})
+            if signal:
+                evidence_signals.append(
+                    f"[{phase_code}] {evidence.evidence_type.value}: {signal}"
+                )
+
+    nuclei_summary = sqlmap_summary = None
+    if isinstance(oid, str) and oid:
+        nuclei_summary, sqlmap_summary = _read_auto_validation(
+            oid, evidence_root
+        )
+
+    return RunDigest(
+        orchestration_id=oid if isinstance(oid, str) else None,
+        target=str(parent.targets[0]),
+        parent_state=parent.state.value,
+        assessment_name=parent.assessment_name,
+        phases=phases,
+        findings=tuple(findings[:MAX_FINDINGS]),
+        failures=tuple(failures[:MAX_FAILURES]),
+        evidence_counts=dict(evidence_counts),
+        evidence_signals=tuple(evidence_signals[:MAX_EVIDENCE_SIGNALS]),
+        nuclei_summary=nuclei_summary,
+        sqlmap_summary=sqlmap_summary,
+    )
+
+
+def build_analysis_prompt(digest: RunDigest) -> str:
+    """Render the digest as the user message for the analyst model."""
+
+    lines: list[str] = [
+        "AUTHORIZED VAPT run evidence to triage:",
+        f"Target: {digest.target}",
+        f"Assessment: {digest.assessment_name}",
+        f"Overall state: {digest.parent_state}",
+        "",
+        "Phase outcomes:",
+    ]
+    lines += [f"  {code}: {state}" for code, state in digest.phases] or [
+        "  (none)"
+    ]
+
+    counts = ", ".join(
+        f"{name}={count}" for name, count in sorted(digest.evidence_counts.items())
+    )
+    lines += ["", f"Evidence collected: {counts or '(none)'}"]
+
+    lines += ["", f"Findings ({len(digest.findings)}):"]
+    lines += [f"  - {item}" for item in digest.findings] or [
+        "  - none recorded"
+    ]
+
+    if digest.evidence_signals:
+        lines += ["", "Observation signals:"]
+        lines += [f"  - {item}" for item in digest.evidence_signals]
+
+    if digest.nuclei_summary:
+        lines += ["", "Nuclei:", f"  {digest.nuclei_summary}"]
+    if digest.sqlmap_summary:
+        lines += ["", "SQLMap:", digest.sqlmap_summary]
+
+    if digest.failures:
+        lines += ["", "Phase failures:"]
+        lines += [f"  - {item}" for item in digest.failures]
+
+    lines += [
+        "",
+        "Triage this evidence per your instructions.",
+    ]
+    return "\n".join(lines)
+
+
+async def analyze_run(
+    client: SaarthiOllamaClient,
+    digest: RunDigest,
+    *,
+    num_predict: int = MAX_ANALYSIS_TOKENS,
+) -> str:
+    """Send the digest to the local model and return its triage text."""
+
+    prompt = build_analysis_prompt(digest)
+    content, _thinking = await client.chat(
+        [Message(role="user", content=prompt)],
+        system_prompt=ANALYST_SYSTEM_PROMPT,
+        num_predict=num_predict,
+    )
+    return content
