@@ -67,14 +67,17 @@ ALWAYS_PROHIBITED_SQLMAP_SWITCHES = (
     "--tamper",
 )
 
-# Read-only identity/impact proof switches enabled in confirmed-PoC mode.
-# These demonstrate query execution without exfiltrating user records.
+# Read-only impact-proof switches enabled in confirmed-PoC mode. Once SQLMap
+# fingerprints the DBMS it enumerates the database names (--dbs) and stops --
+# a strong SQLi proof that lists databases without exfiltrating user records.
+# Table/column/row dumping stays off (see ALWAYS_PROHIBITED + single-row opt).
 SQLMAP_CONFIRMED_POC_SWITCHES = (
     "--banner",
     "--current-user",
     "--current-db",
     "--hostname",
     "--is-dba",
+    "--dbs",
 )
 
 

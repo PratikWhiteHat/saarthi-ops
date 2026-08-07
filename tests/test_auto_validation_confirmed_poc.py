@@ -120,3 +120,17 @@ def test_nuclei_only_run_allowed_without_intrusive() -> None:
 
     # Should not raise.
     _validate_config(config)
+
+
+def test_confirmed_poc_enumerates_databases_then_stops(tmp_path) -> None:
+    config = _config(sqlmap_confirmed_poc=True)
+
+    arguments = _sqlmap_arguments(config, _candidate(), tmp_path / "out")
+
+    # Proceeds to list databases as the PoC endpoint...
+    assert "--dbs" in arguments
+    # ...and stops there: no table/column/row extraction.
+    assert "--tables" not in arguments
+    assert "--columns" not in arguments
+    assert "--dump" not in arguments
+    assert "--dump-all" not in arguments
