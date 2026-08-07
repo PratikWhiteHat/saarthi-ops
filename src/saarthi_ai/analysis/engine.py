@@ -8,6 +8,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from saarthi_ai.automation.adaptive import AdaptationEvent
 from saarthi_ai.llm.ollama_client import SaarthiOllamaClient
 from saarthi_ai.persistence.database import SaarthiDatabase
 from saarthi_ai.persistence.models import AuditEventType, ExecutionRecord
@@ -439,6 +440,36 @@ async def suggest_for_phase(
     content, _thinking = await client.chat(
         [Message(role="user", content=prompt)],
         system_prompt=PHASE_ADVISOR_SYSTEM_PROMPT,
+        num_predict=num_predict,
+    )
+    return content
+
+
+ADAPT_ADVISOR_SYSTEM_PROMPT = (
+    "You are a VAPT tool operator. In ONE short sentence, explain why this "
+    "adaptive change to the running scanner is reasonable and what it should "
+    "achieve. No preamble, no list."
+)
+
+
+async def explain_adaptation(
+    client: SaarthiOllamaClient,
+    event: AdaptationEvent,
+    *,
+    num_predict: int = 80,
+) -> str:
+    """One-line AI rationale for an adaptive tool change."""
+
+    args_preview = " ".join(event.arguments)[:280]
+    prompt = (
+        f"Scanner {event.tool_name} hit condition "
+        f"'{event.condition.value}' (attempt {event.attempt}). "
+        f"Adaptation applied: {event.note}. New arguments include: "
+        f"{args_preview}. Explain in one sentence."
+    )
+    content, _thinking = await client.chat(
+        [Message(role="user", content=prompt)],
+        system_prompt=ADAPT_ADVISOR_SYSTEM_PROMPT,
         num_predict=num_predict,
     )
     return content

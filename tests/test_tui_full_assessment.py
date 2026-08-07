@@ -60,7 +60,7 @@ def _install_stubs(monkeypatch, calls, captured):
             sqlmap_parameters=("id",),
         )
 
-    def fake_run(config, *, on_output=None, on_log=None):
+    def fake_run(config, *, on_output=None, on_log=None, on_adapt=None):
         calls.append("run_automatic_validation")
         if on_log is not None:
             on_log("[fake] scanning")

@@ -4248,6 +4248,8 @@ def workflow_run(
             orchestration_id=context.orchestration_id,
             confirmed_poc=confirmed_poc,
             single_row_dump=dump_row,
+            adaptive=True,
+            allow_waf_bypass=intrusive,
             evidence_root=evidence_root / "auto-validation",
         )
     except ChainConfigError as exc:

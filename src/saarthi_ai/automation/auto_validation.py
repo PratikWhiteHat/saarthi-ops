@@ -13,10 +13,15 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qsl, urlsplit
 
+from saarthi_ai.automation.adaptive import (
+    AdaptationEvent,
+    run_tool_adaptively,
+)
 from saarthi_ai.execution.tool_runner import (
     NUCLEI_PROFILE,
     SQLMAP_PROFILE,
     ToolOutputEvent,
+    ToolProfile,
     ToolRunResult,
     run_tool,
 )
@@ -133,6 +138,13 @@ class AutoValidationConfig:
     # When paired with confirmed-PoC, permits a single-row --dump capped at
     # one entry (--start=1 --stop=1) to evidence data reachability.
     sqlmap_poc_single_row_dump: bool = False
+
+    # Adaptive tool control: watch each tool's live output and automatically
+    # retry with bounded, allowlisted settings on WAF / reconnect / rate-limit.
+    adaptive: bool = False
+    # When adaptive, permit bounded WAF bypass (sqlmap --tamper/--random-agent)
+    # on WAF detection. Authorized targets only; OS/SQL/file switches never.
+    allow_waf_bypass: bool = False
 
 
 @dataclass(frozen=True)
@@ -527,13 +539,15 @@ def run_automatic_validation(
     *,
     on_output: Callable[[ToolOutputEvent], None] | None = None,
     on_log: Callable[[str], None] | None = None,
+    on_adapt: Callable[[AdaptationEvent], None] | None = None,
 ) -> AutomaticValidationResult:
     """Run Nuclei and every approved SQLMap candidate automatically.
 
     ``on_output`` receives each bounded tool line and ``on_log`` receives
     progress messages. Both default to stdout printing so the CLI runner is
     unchanged; the Saarthi OPS TUI passes callbacks that stream into the
-    live activity log instead.
+    live activity log instead. ``on_adapt`` receives adaptive-control events
+    (WAF/reconnect/rate-limit retries) when ``config.adaptive`` is set.
     """
 
     _validate_config(config)
@@ -545,6 +559,28 @@ def run_automatic_validation(
             on_log(message)
         else:
             print(message, flush=True)
+
+    def emit_adapt(event: AdaptationEvent) -> None:
+        emit_log(
+            f"[adapt] {event.tool_name}: {event.condition.value} "
+            f"(attempt {event.attempt}) → {event.note}"
+        )
+        if on_adapt is not None:
+            on_adapt(event)
+
+    def run_or_adapt(
+        profile: ToolProfile,
+        arguments: list[str],
+    ) -> ToolRunResult:
+        if config.adaptive:
+            return run_tool_adaptively(
+                profile,
+                arguments,
+                allow_waf_bypass=config.allow_waf_bypass,
+                on_output=emit_output,
+                on_adapt=emit_adapt,
+            )
+        return run_tool(profile, arguments, on_output=emit_output)
 
     started = datetime.now(UTC)
     run_id = (
@@ -570,10 +606,9 @@ def run_automatic_validation(
 
     emit_log("[Saarthi] Starting automatic Nuclei validation...")
 
-    nuclei_result = run_tool(
+    nuclei_result = run_or_adapt(
         nuclei_profile,
         _nuclei_arguments(config),
-        on_output=emit_output,
     )
 
     sqlmap_results: list[dict[str, Any]] = []
@@ -607,14 +642,13 @@ def run_automatic_validation(
             / f"candidate-{index}"
         )
 
-        sqlmap_result = run_tool(
+        sqlmap_result = run_or_adapt(
             sqlmap_profile,
             _sqlmap_arguments(
                 config,
                 candidate,
                 candidate_output_directory,
             ),
-            on_output=emit_output,
         )
 
         summarized_result = _summarize_result(
@@ -689,6 +723,8 @@ def run_automatic_validation(
                 if config.sqlmap_confirmed_poc
                 else PROHIBITED_SQLMAP_SWITCHES
             ),
+            "adaptive": config.adaptive,
+            "allow_waf_bypass": config.allow_waf_bypass,
         },
         "nuclei": _summarize_result(
             nuclei_result

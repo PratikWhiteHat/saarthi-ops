@@ -40,7 +40,7 @@ def _seed_chain(tmp_path):
 
 
 def _fake_run_factory(captured):
-    def fake_run(config, *, on_output=None, on_log=None):
+    def fake_run(config, *, on_output=None, on_log=None, on_adapt=None):
         captured["config"] = config
         if on_log is not None:
             on_log("[fake] starting")
@@ -146,7 +146,7 @@ async def test_missing_chain_reports_error(tmp_path, monkeypatch):
 
     called = {"ran": False}
 
-    def fake_run(config, *, on_output=None, on_log=None):
+    def fake_run(config, *, on_output=None, on_log=None, on_adapt=None):
         called["ran"] = True
         raise AssertionError("runner must not be called without a chain")
 

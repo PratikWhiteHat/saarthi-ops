@@ -117,6 +117,7 @@ class ToolRunResult:
     timed_out: bool
     stdout_truncated: bool = False
     stderr_truncated: bool = False
+    aborted: bool = False
 
 
 SUBFINDER_PROFILE = ToolProfile(
@@ -265,8 +266,15 @@ def run_tool(
     arguments: list[str],
     *,
     on_output: Callable[[ToolOutputEvent], None] | None = None,
+    abort_check: Callable[[], bool] | None = None,
 ) -> ToolRunResult:
-    """Run an approved tool and optionally stream bounded output lines."""
+    """Run an approved tool and optionally stream bounded output lines.
+
+    ``abort_check`` is polled while the tool runs; when it returns True the
+    process (and its session group) is terminated early and the result is
+    marked ``aborted``. The adaptive controller uses this to stop a run the
+    moment it detects a condition (WAF, reconnect, rate-limit) worth adapting.
+    """
 
     validate_tool_arguments(profile, arguments)
 
@@ -401,23 +409,30 @@ def run_tool(
 
     deadline = time.monotonic() + profile.timeout_seconds
     timed_out = False
+    aborted = False
+
+    def _stop() -> None:
+        process.terminate()
+        try:
+            process.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait()
 
     while process.poll() is None:
         if time.monotonic() >= deadline:
             timed_out = True
-            process.terminate()
+            _stop()
+            break
 
-            try:
-                process.wait(timeout=2)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                process.wait()
-
+        if abort_check is not None and abort_check():
+            aborted = True
+            _stop()
             break
 
         time.sleep(0.05)
 
-    if not timed_out:
+    if not (timed_out or aborted):
         process.wait()
 
     stdout_thread.join(timeout=2)
@@ -433,7 +448,7 @@ def run_tool(
         tool_name=profile.name,
         executable=executable,
         arguments=tuple(arguments),
-        exit_code=(-1 if timed_out else process.returncode),
+        exit_code=(-1 if timed_out or aborted else process.returncode),
         stdout=raw_stdout.decode(
             "utf-8",
             errors="replace",
@@ -451,4 +466,5 @@ def run_tool(
         timed_out=timed_out,
         stdout_truncated=truncated_streams["stdout"],
         stderr_truncated=truncated_streams["stderr"],
+        aborted=aborted,
     )

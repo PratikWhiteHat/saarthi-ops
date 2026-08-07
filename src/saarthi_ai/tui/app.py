@@ -5690,6 +5690,8 @@ class SaarthiDashboard(App[None]):
                 orchestration_id=context.orchestration_id,
                 confirmed_poc=True,
                 single_row_dump=False,
+                adaptive=True,
+                allow_waf_bypass=True,
                 evidence_root=evidence_root / "auto-validation",
             )
         except ChainConfigError as error:
@@ -5719,6 +5721,7 @@ class SaarthiDashboard(App[None]):
                 derived.config,
                 on_output=on_output,
                 on_log=log_line,
+                on_adapt=self._make_adapt_callback(),
             )
         except (AutoValidationError, ToolRunnerError) as error:
             fail(str(error))
@@ -5821,10 +5824,40 @@ class SaarthiDashboard(App[None]):
             approved=True,
             confirmed_poc=confirmed_poc,
             single_row_dump=single_row_dump,
+            adaptive=True,
+            allow_waf_bypass=True,
             evidence_root=(
                 Path.cwd() / "evidence" / "automatic-validation"
             ),
         )
+
+    def _make_adapt_callback(self):
+        """Build an on_adapt callback that streams an AI rationale per change."""
+
+        import asyncio
+
+        from saarthi_ai.analysis import explain_adaptation
+        from saarthi_ai.config import get_settings
+        from saarthi_ai.llm.ollama_client import SaarthiOllamaClient
+
+        try:
+            client = SaarthiOllamaClient(get_settings())
+        except Exception:
+            client = None
+
+        def on_adapt(event) -> None:
+            if client is None:
+                return
+            try:
+                text = asyncio.run(explain_adaptation(client, event))
+            except Exception:
+                return
+            if text:
+                self.call_from_thread(
+                    self._append_validation_line, f"[AI] {text}"
+                )
+
+        return on_adapt
 
     def _launch_validation(self, derived, confirmed: bool) -> None:
         """Start the validation worker once the operator has confirmed."""
@@ -5910,6 +5943,7 @@ class SaarthiDashboard(App[None]):
                 derived.config,
                 on_output=on_output,
                 on_log=log_line,
+                on_adapt=self._make_adapt_callback(),
             )
         except (AutoValidationError, ToolRunnerError) as error:
             fail(str(error))
