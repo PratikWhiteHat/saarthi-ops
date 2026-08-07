@@ -3601,3 +3601,29 @@ def test_worker_rows_show_approved_sqlmap_handoff_state() -> None:
         "Approved",
         "AWAITING RESULT · EXTERNAL",
     )
+
+
+def test_worker_rows_prefer_persisted_control_plane_job() -> None:
+    from dataclasses import replace
+
+    from saarthi_ai.tui.app import demo_snapshot, worker_rows
+
+    snapshot = replace(
+        demo_snapshot(),
+        recent_worker_jobs=[
+            {
+                "tool_name": "sqlmap",
+                "adapter_name": "unbound",
+                "state": "APPROVED",
+                "approval_actor": "operator",
+            }
+        ],
+    )
+    rows = {row[0]: row for row in worker_rows(snapshot)}
+
+    assert rows["sqlmap"] == (
+        "sqlmap",
+        "unbound adapter",
+        "Approved",
+        "APPROVED",
+    )

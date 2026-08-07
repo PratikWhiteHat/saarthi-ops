@@ -56,6 +56,7 @@ class DashboardSnapshot:
     controlled_nuclei_preparation: dict[str, str] | None = None
     controlled_nuclei_preview: dict[str, str] | None = None
     phase6_chain_status: dict[str, str] = field(default_factory=dict)
+    recent_worker_jobs: list[dict[str, str]] = field(default_factory=list)
 
 
 class ReadOnlySaarthiRepository:
@@ -474,7 +475,69 @@ class ReadOnlySaarthiRepository:
             ),
             controlled_nuclei_preview=controlled_nuclei_preview,
             phase6_chain_status=phase6_chain_status,
+            recent_worker_jobs=self._load_worker_jobs(
+                connection,
+                tables,
+                orchestration_execution_ids,
+            ),
         )
+
+    def _load_worker_jobs(
+        self,
+        connection: sqlite3.Connection,
+        tables: set[str],
+        execution_ids: list[str],
+    ) -> list[dict[str, str]]:
+        """Load recent restricted-worker states without mutating the database."""
+
+        if (
+            "restricted_worker_jobs" not in tables
+            or not execution_ids
+        ):
+            return []
+        placeholders = ",".join("?" for _ in execution_ids)
+        rows = connection.execute(
+            f"""
+            SELECT job_id, execution_id, tool_name, adapter_name, state,
+                   approval_actor, manifest_sha256, updated_at
+            FROM restricted_worker_jobs
+            WHERE execution_id IN ({placeholders})
+            ORDER BY updated_at DESC
+            LIMIT 25
+            """,
+            execution_ids,
+        ).fetchall()
+        return [
+            {
+                "job_id": safe_tui_plain_text(row["job_id"], max_length=80),
+                "execution_id": safe_tui_plain_text(
+                    row["execution_id"],
+                    max_length=80,
+                ),
+                "tool_name": safe_tui_plain_text(
+                    row["tool_name"],
+                    max_length=40,
+                ),
+                "adapter_name": safe_tui_plain_text(
+                    row["adapter_name"],
+                    max_length=40,
+                ),
+                "state": safe_tui_plain_text(
+                    row["state"],
+                    max_length=40,
+                ).upper(),
+                "approval_actor": safe_tui_plain_text(
+                    row["approval_actor"] or "—",
+                    max_length=40,
+                ),
+                "manifest_sha256": safe_tui_plain_text(
+                    row["manifest_sha256"],
+                    max_length=64,
+                ),
+                "updated_at": compact_timestamp(str(row["updated_at"])),
+            }
+            for row in rows
+        ]
 
     def _evidence_types(
         self,
@@ -3506,9 +3569,25 @@ def worker_rows(
     phase6 = snapshot.phase6_chain_status
     nuclei_status = phase6.get("nuclei", "APPROVAL REQUIRED")
     sqlmap_status = phase6.get("sqlmap", "APPROVAL REQUIRED")
+    latest_jobs: dict[str, dict[str, str]] = {}
+    for job in snapshot.recent_worker_jobs:
+        latest_jobs.setdefault(job.get("tool_name", ""), job)
     rows: list[tuple[str, str, str, str]] = []
 
     for tool, mode, gate, default_state in WORKER_DEFINITIONS:
+        job = latest_jobs.get(tool)
+        if job is not None:
+            actor = job.get("approval_actor", "—")
+            job_gate = "Approved" if actor != "—" else "Awaiting approval"
+            rows.append(
+                (
+                    tool,
+                    f"{job.get('adapter_name', 'unbound')} adapter",
+                    job_gate,
+                    job.get("state", "UNKNOWN"),
+                )
+            )
+            continue
         state = default_state
         if tool == "nuclei":
             state = nuclei_status
