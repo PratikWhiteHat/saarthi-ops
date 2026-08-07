@@ -116,7 +116,9 @@ async def test_typed_url_runs_full_assessment(tmp_path, monkeypatch):
         url_input = app.query_one("#target-url-input", Input)
         url_input.focus()
         url_input.value = "https://app.example.com/item?id=1"
-        await pilot.press("enter")
+        await pilot.press("enter")  # submit URL -> confirmation modal
+        await pilot.pause()
+        await pilot.press("y")  # confirm launch
         await app.workers.wait_for_complete()
         await pilot.pause()
 
@@ -152,6 +154,28 @@ async def test_invalid_url_is_rejected(tmp_path, monkeypatch):
         url_input.focus()
         url_input.value = "not-a-url"
         await pilot.press("enter")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+
+        assert app._validation_running is False
+        assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_cancelling_confirmation_does_not_launch(tmp_path, monkeypatch):
+    path = _init_db(tmp_path)
+    calls: list[str] = []
+    captured: dict = {}
+    _install_stubs(monkeypatch, calls, captured)
+
+    app = SaarthiDashboard(database_path=path)
+    async with app.run_test() as pilot:
+        url_input = app.query_one("#target-url-input", Input)
+        url_input.focus()
+        url_input.value = "https://app.example.com/item?id=1"
+        await pilot.press("enter")  # submit URL -> confirmation modal
+        await pilot.pause()
+        await pilot.press("n")  # cancel
         await app.workers.wait_for_complete()
         await pilot.pause()
 

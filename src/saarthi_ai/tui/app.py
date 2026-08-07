@@ -15,7 +15,9 @@ from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.containers import Grid, Horizontal, Vertical
 from textual.reactive import reactive
+from textual.screen import ModalScreen
 from textual.widgets import (
+    Button,
     DataTable,
     Footer,
     Input,
@@ -4801,6 +4803,84 @@ def build_scope_lines(
     return scope_lines
 
 
+class ConfirmAssessmentScreen(ModalScreen[bool]):
+    """Confirm before launching a real active + intrusive assessment."""
+
+    DEFAULT_CSS = """
+    ConfirmAssessmentScreen {
+        align: center middle;
+    }
+    #confirm-dialog {
+        width: 74;
+        height: auto;
+        border: thick $warning;
+        background: $surface;
+        padding: 1 2;
+    }
+    #confirm-title {
+        text-style: bold;
+        color: $warning;
+    }
+    #confirm-body {
+        margin: 1 0;
+    }
+    #confirm-buttons {
+        align-horizontal: center;
+        height: auto;
+        margin-top: 1;
+    }
+    #confirm-buttons Button {
+        margin: 0 1;
+    }
+    """
+
+    BINDINGS = [
+        ("escape", "cancel", "Cancel"),
+        ("n", "cancel", "Cancel"),
+        ("y", "confirm", "Launch"),
+    ]
+
+    def __init__(self, url: str) -> None:
+        super().__init__()
+        self._url = url
+
+    def compose(self) -> ComposeResult:
+        host = urlsplit(self._url).hostname or self._url
+        with Vertical(id="confirm-dialog"):
+            yield Label("⚠  LAUNCH FULL ASSESSMENT?", id="confirm-title")
+            yield Static(
+                f"Target : {self._url}\n"
+                f"Host   : {host}\n\n"
+                "This runs REAL active + intrusive testing:\n"
+                "  • Recon (DNS, subdomains, HTTP, crawl, JS)\n"
+                "  • Phase 6 safe validators\n"
+                "  • Nuclei scan + SQLMap (confirmed-PoC)\n\n"
+                "Proceed only on a target you are authorized to test.\n"
+                "[Y] Launch   ·   [N]/[Esc] Cancel",
+                id="confirm-body",
+            )
+            with Horizontal(id="confirm-buttons"):
+                yield Button(
+                    "Launch",
+                    variant="error",
+                    id="confirm-launch",
+                )
+                yield Button(
+                    "Cancel",
+                    variant="primary",
+                    id="confirm-cancel",
+                )
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        self.dismiss(event.button.id == "confirm-launch")
+
+    def action_confirm(self) -> None:
+        self.dismiss(True)
+
+    def action_cancel(self) -> None:
+        self.dismiss(False)
+
+
 class SaarthiDashboard(App[None]):
     CSS_PATH = "styles.tcss"
     TITLE = "Saarthi OPS"
@@ -5088,7 +5168,7 @@ class SaarthiDashboard(App[None]):
         self._start_full_assessment(url)
 
     def _start_full_assessment(self, url: str) -> None:
-        """Run recon -> Phase 6 -> real nuclei + SQLMap for a typed URL."""
+        """Validate a typed URL, then ask the operator to confirm launch."""
 
         parsed = urlsplit(url)
         if parsed.scheme.lower() not in {"http", "https"} or not parsed.hostname:
@@ -5106,8 +5186,32 @@ class SaarthiDashboard(App[None]):
             )
             return
 
+        self.push_screen(
+            ConfirmAssessmentScreen(url),
+            lambda confirmed: self._launch_full_assessment(
+                url,
+                bool(confirmed),
+            ),
+        )
+
+    def _launch_full_assessment(self, url: str, confirmed: bool) -> None:
+        """Start the assessment worker once the operator has confirmed."""
+
+        if not confirmed:
+            self.notify("Full assessment cancelled.")
+            return
+
+        if self._validation_running:
+            self.notify(
+                "A run is already in progress.",
+                severity="warning",
+            )
+            return
+
         self._validation_running = True
-        self.notify(f"Starting full assessment for {parsed.hostname}…")
+        self.notify(
+            f"Starting full assessment for {urlsplit(url).hostname}…"
+        )
         self._append_validation_line(
             f"[INF] Operator launched full assessment for: {url}"
         )
