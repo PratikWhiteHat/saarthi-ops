@@ -22,6 +22,14 @@ from saarthi_ai.assessments.scope import (
 from saarthi_ai.attack_hypothesis import (
     AttackHypothesisGenerationRequest,
 )
+from saarthi_ai.automation.auto_validation import (
+    AutoValidationError,
+    run_automatic_validation,
+)
+from saarthi_ai.automation.chain_config import (
+    ChainConfigError,
+    build_auto_validation_config_from_chain,
+)
 from saarthi_ai.blind_validation.models import (
     BlindValidationRequest,
     CallbackProtocol,
@@ -53,7 +61,11 @@ from saarthi_ai.execution.sqlmap_adapter import (
     SqlmapPostContentType,
     SqlmapPreviewRequest,
 )
-from saarthi_ai.execution.tool_runner import ToolRunnerError, run_tool
+from saarthi_ai.execution.tool_runner import (
+    ToolOutputEvent,
+    ToolRunnerError,
+    run_tool,
+)
 from saarthi_ai.llm import (
     OllamaUnavailableError,
     SaarthiOllamaClient,
@@ -3945,6 +3957,38 @@ def workflow_run(
             ),
         ),
     ] = False,
+    auto_validate: Annotated[
+        bool,
+        typer.Option(
+            "--auto-validate",
+            help=(
+                "After the chain, execute real Nuclei and SQLmap against "
+                "the chain target end-to-end (no preview-only stop). "
+                "SQLmap runs only when --intrusive is set."
+            ),
+        ),
+    ] = False,
+    confirmed_poc: Annotated[
+        bool,
+        typer.Option(
+            "--confirmed-poc",
+            help=(
+                "With --auto-validate, add read-only SQLmap identity proof "
+                "switches. Requires --intrusive. Detection evasion and "
+                "OS/SQL/file switches always stay blocked."
+            ),
+        ),
+    ] = False,
+    dump_row: Annotated[
+        bool,
+        typer.Option(
+            "--dump-row",
+            help=(
+                "With --confirmed-poc, permit a bounded single-row "
+                "--dump (--start=1 --stop=1) as evidence of reachability."
+            ),
+        ),
+    ] = False,
 ) -> None:
     """Run Phase 3A-4A, then the permission-gated safe Phase 6C chain."""
 
@@ -3975,6 +4019,27 @@ def workflow_run(
             "--execute-nuclei."
         )
         raise typer.Exit(code=1)
+    if confirmed_poc and not auto_validate:
+        console.print(
+            "[bold yellow]--confirmed-poc requires --auto-validate.[/bold "
+            "yellow] Confirmed-PoC only affects the real SQLmap run."
+        )
+        raise typer.Exit(code=1)
+    if dump_row and not confirmed_poc:
+        console.print(
+            "[bold yellow]--dump-row requires --confirmed-poc.[/bold yellow]"
+        )
+        raise typer.Exit(code=1)
+    if confirmed_poc and not intrusive:
+        console.print(
+            "[bold yellow]--confirmed-poc requires --intrusive.[/bold yellow]"
+        )
+        raise typer.Exit(code=1)
+    if auto_validate and not intrusive:
+        console.print(
+            "[yellow]Note:[/yellow] --auto-validate without --intrusive "
+            "runs Nuclei only; SQLmap needs --intrusive."
+        )
 
     database = get_database()
 
@@ -4115,3 +4180,67 @@ def workflow_run(
         f"Parent execution: {result.context.parent_execution_id}"
     )
     console.print(f"Final state: {overall_status.value}")
+
+    if not auto_validate:
+        return
+
+    console.print()
+    console.print(
+        "[bold]Executing chain-derived Nuclei + SQLmap validation...[/bold]"
+    )
+
+    try:
+        derived = build_auto_validation_config_from_chain(
+            database,
+            approved=True,
+            orchestration_id=context.orchestration_id,
+            confirmed_poc=confirmed_poc,
+            single_row_dump=dump_row,
+            evidence_root=evidence_root / "auto-validation",
+        )
+    except ChainConfigError as exc:
+        console.print(
+            f"[bold red]Auto-validation could not start:[/bold red] {exc}"
+        )
+        raise typer.Exit(code=1) from exc
+
+    console.print(f"Target: {derived.target_url}")
+    console.print("Allowed hosts: " + ", ".join(derived.allowed_hosts))
+    if derived.sqlmap_parameters:
+        console.print(
+            "SQLmap parameters: " + ", ".join(derived.sqlmap_parameters)
+        )
+    else:
+        console.print(
+            "SQLmap parameters: none "
+            "(intrusive testing not authorized; Nuclei-only run)"
+        )
+
+    def _emit_output(event: ToolOutputEvent) -> None:
+        console.print(
+            f"[{event.tool_name}:{event.stream}] {event.line}",
+            markup=False,
+            highlight=False,
+        )
+
+    def _emit_log(message: str) -> None:
+        console.print(message, markup=False, highlight=False)
+
+    try:
+        validation = run_automatic_validation(
+            derived.config,
+            on_output=_emit_output,
+            on_log=_emit_log,
+        )
+    except (AutoValidationError, ToolRunnerError) as exc:
+        console.print(
+            f"[bold red]Auto-validation failed:[/bold red] {exc}"
+        )
+        raise typer.Exit(code=1) from exc
+
+    console.print(
+        "[bold green]Auto-validation complete.[/bold green] "
+        f"Nuclei exit={validation.nuclei.get('exit_code')}, "
+        f"SQLmap runs={len(validation.sqlmap)}."
+    )
+    console.print(f"Evidence: {validation.evidence_path}")
