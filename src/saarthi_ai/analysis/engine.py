@@ -332,3 +332,113 @@ async def analyze_run(
         num_predict=num_predict,
     )
     return content
+
+
+# --- Real-time, per-phase advisory -------------------------------------------
+
+MAX_PHASE_TOOL_LINES = 14
+MAX_PHASE_SIGNALS = 10
+MAX_PHASE_TOKENS = 400
+
+PHASE_ADVISOR_SYSTEM_PROMPT = (
+    "You are the operator's live AI co-pilot during an AUTHORIZED VAPT. A "
+    "single phase just finished. From ONLY its evidence, give 2-4 short, "
+    "specific, actionable suggestions: what's notable, what to investigate "
+    "next, and concrete attack angles worth trying (name parameters, paths, "
+    "headers, endpoints where possible). Terse bullet points, no preamble, "
+    "no fabrication. If nothing actionable, say 'nothing notable' in one line."
+)
+
+
+@dataclass(frozen=True)
+class PhaseDigest:
+    """Bounded evidence summary for a single completed phase."""
+
+    phase_code: str
+    phase_name: str
+    state: str
+    target: str
+    findings: tuple[str, ...] = ()
+    signals: tuple[str, ...] = ()
+    tool_lines: tuple[str, ...] = ()
+
+
+def gather_phase_digest(
+    database: SaarthiDatabase,
+    execution: ExecutionRecord,
+    *,
+    target: str,
+) -> PhaseDigest:
+    """Assemble a bounded digest for one completed child execution."""
+
+    meta = _metadata(execution)
+    findings: list[str] = []
+    tool_lines: list[str] = []
+
+    for event in database.list_audit_events(execution.execution_id):
+        if event.event_type is AuditEventType.FINDING_CREATED:
+            detail = _compact_metadata(event.details or {})
+            findings.append(
+                event.message + (f" ({detail})" if detail else "")
+            )
+        elif event.event_type in (
+            AuditEventType.TOOL_OUTPUT,
+            AuditEventType.TOOL_COMPLETED,
+            AuditEventType.TOOL_FAILED,
+        ):
+            tool_lines.append(event.message[:200])
+
+    signals: list[str] = []
+    for evidence in database.list_evidence(execution.execution_id):
+        signal = _compact_metadata(evidence.metadata or {})
+        if signal:
+            signals.append(f"{evidence.evidence_type.value}: {signal}")
+
+    return PhaseDigest(
+        phase_code=str(meta.get("phase_code", "?")),
+        phase_name=str(meta.get("phase_name", "")),
+        state=execution.state.value,
+        target=target,
+        findings=tuple(findings),
+        signals=tuple(signals[:MAX_PHASE_SIGNALS]),
+        tool_lines=tuple(tool_lines[-MAX_PHASE_TOOL_LINES:]),
+    )
+
+
+def build_phase_prompt(digest: PhaseDigest) -> str:
+    """Render a single-phase digest as the advisor user message."""
+
+    lines = [
+        f"Target: {digest.target}",
+        f"Phase {digest.phase_code} ({digest.phase_name}) — {digest.state}.",
+    ]
+    if digest.findings:
+        lines += ["Findings:"]
+        lines += [f"  - {item}" for item in digest.findings]
+    if digest.signals:
+        lines += ["Observed signals:"]
+        lines += [f"  - {item}" for item in digest.signals]
+    if digest.tool_lines:
+        lines += ["Tool output:"]
+        lines += [f"  - {item}" for item in digest.tool_lines]
+    if not (digest.findings or digest.signals or digest.tool_lines):
+        lines += ["(no notable evidence recorded for this phase)"]
+    lines += ["", "Give your live suggestions for this phase."]
+    return "\n".join(lines)
+
+
+async def suggest_for_phase(
+    client: SaarthiOllamaClient,
+    digest: PhaseDigest,
+    *,
+    num_predict: int = MAX_PHASE_TOKENS,
+) -> str:
+    """Ask the local model for live suggestions about one phase."""
+
+    prompt = build_phase_prompt(digest)
+    content, _thinking = await client.chat(
+        [Message(role="user", content=prompt)],
+        system_prompt=PHASE_ADVISOR_SYSTEM_PROMPT,
+        num_predict=num_predict,
+    )
+    return content

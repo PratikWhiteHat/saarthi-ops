@@ -109,3 +109,59 @@ async def test_analyze_run_uses_analyst_prompt_and_longer_output(tmp_path):
     assert captured["system_prompt"] == ANALYST_SYSTEM_PROMPT
     assert captured["num_predict"] > 150
     assert "SQL injection confirmed" in captured["user"]
+
+
+def _child_execution(database):
+
+    child = database.list_executions(limit=50)
+    child = [
+        e
+        for e in child
+        if (e.metadata or {}).get("execution_role") == "orchestration_child"
+    ][0]
+    return child
+
+
+def test_gather_phase_digest_and_prompt(tmp_path):
+    from saarthi_ai.analysis import build_phase_prompt, gather_phase_digest
+
+    database = _seed_run(tmp_path)
+    child = _child_execution(database)
+
+    digest = gather_phase_digest(
+        database, child, target="https://app.example.com/item?id=1"
+    )
+
+    assert digest.phase_code == "6C-sqlmap"
+    assert any("SQL injection confirmed" in f for f in digest.findings)
+
+    prompt = build_phase_prompt(digest)
+    assert "6C-sqlmap" in prompt
+    assert "SQL injection confirmed" in prompt
+    assert "live suggestions" in prompt
+
+
+@pytest.mark.asyncio
+async def test_suggest_for_phase_uses_advisor_prompt(tmp_path):
+    from saarthi_ai.analysis import gather_phase_digest, suggest_for_phase
+    from saarthi_ai.analysis.engine import PHASE_ADVISOR_SYSTEM_PROMPT
+
+    database = _seed_run(tmp_path)
+    child = _child_execution(database)
+    digest = gather_phase_digest(
+        database, child, target="https://app.example.com/item?id=1"
+    )
+
+    captured = {}
+
+    class FakeClient:
+        async def chat(self, messages, *, system_prompt=None, num_predict=150):
+            captured["system_prompt"] = system_prompt
+            captured["num_predict"] = num_predict
+            return "- Try enumerating databases on `id`.", None
+
+    text = await suggest_for_phase(FakeClient(), digest)
+
+    assert "enumerating databases" in text
+    assert captured["system_prompt"] == PHASE_ADVISOR_SYSTEM_PROMPT
+    assert captured["num_predict"] > 150

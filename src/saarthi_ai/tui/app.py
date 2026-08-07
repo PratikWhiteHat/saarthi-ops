@@ -4908,6 +4908,7 @@ class SaarthiDashboard(App[None]):
         ("V", "run_validation_dump", "Run +1-row dump"),
         ("u", "focus_url", "URL"),
         ("a", "ai_analyze", "AI Analyze"),
+        ("A", "toggle_ai_live", "AI live"),
         ("h", "help", "Help"),
     ]
 
@@ -4926,6 +4927,9 @@ class SaarthiDashboard(App[None]):
         # TARGET & AUTHORIZE bar while the run is active.
         self._run_target: str | None = None
         self._analysis_running = False
+        # Live AI co-pilot: comments on each phase as the assessment runs.
+        self._ai_live_enabled = True
+        self._ai_observer_running = False
         self._live_validation_lines: list[str] = []
         # Snapshot of every line currently in the activity log (DB audit
         # events + live tool lines), used to append only new lines instead
@@ -5235,7 +5239,7 @@ class SaarthiDashboard(App[None]):
         self.notify(
             "R refresh · U focus URL (Enter = full assessment) · "
             "V nuclei+sqlmap on chain target · shift+V +1-row dump · "
-            "A AI-analyze latest run · P phases · T tools · Q quit",
+            "a AI-analyze run · shift+A live AI on/off · P phases · Q quit",
             timeout=7,
         )
 
@@ -5350,6 +5354,131 @@ class SaarthiDashboard(App[None]):
 
     def _finish_analysis(self) -> None:
         self._analysis_running = False
+
+    def action_toggle_ai_live(self) -> None:
+        """Toggle the live per-phase AI co-pilot for assessments."""
+
+        self._ai_live_enabled = not self._ai_live_enabled
+        state = "ON" if self._ai_live_enabled else "OFF"
+        self.notify(f"Live AI co-pilot {state}.")
+
+    def _start_ai_observer(self, orchestration_id: str) -> None:
+        """Start the live AI observer for a just-created orchestration."""
+
+        if not self._ai_live_enabled or self._ai_observer_running:
+            return
+        self._ai_observer_running = True
+        self.run_worker(
+            lambda: self._run_ai_observer_worker(orchestration_id),
+            name="ai-observer",
+            group="ai-observer",
+            thread=True,
+            exclusive=True,
+        )
+
+    def _finish_ai_observer(self) -> None:
+        self._ai_observer_running = False
+
+    def _run_ai_observer_worker(self, orchestration_id: str) -> None:
+        """Comment on each phase as it completes, then a final triage."""
+
+        import asyncio
+        import time
+
+        from saarthi_ai.analysis import (
+            analyze_run,
+            gather_phase_digest,
+            gather_run_digest,
+            suggest_for_phase,
+        )
+        from saarthi_ai.config import get_settings
+        from saarthi_ai.llm.ollama_client import (
+            OllamaUnavailableError,
+            SaarthiOllamaClient,
+        )
+        from saarthi_ai.persistence.database import SaarthiDatabase
+
+        def log(line: str) -> None:
+            self.call_from_thread(self._append_validation_line, line)
+
+        try:
+            database = SaarthiDatabase(self.repository.database_path)
+            client = SaarthiOllamaClient(get_settings())
+        except Exception:
+            self.call_from_thread(self._finish_ai_observer)
+            return
+
+        log("[AI] Live co-pilot watching the assessment…")
+        seen: set[str] = set()
+        commented = 0
+        max_comments = 30
+        llm_ok = True
+        target = ""
+        deadline = time.monotonic() + 2400.0
+
+        while time.monotonic() < deadline:
+            running = self._validation_running
+            try:
+                executions = database.list_executions(limit=1_000)
+            except Exception:
+                executions = []
+
+            children = []
+            for execution in executions:
+                meta = execution.metadata or {}
+                if meta.get("orchestration_id") != orchestration_id:
+                    continue
+                role = meta.get("execution_role")
+                if role == "orchestration_parent" and execution.targets:
+                    target = target or str(execution.targets[0])
+                elif role == "orchestration_child":
+                    children.append(execution)
+
+            children.sort(key=lambda item: item.created_at)
+            for child in children:
+                if child.execution_id in seen:
+                    continue
+                if child.state.value not in ("completed", "failed"):
+                    continue
+                seen.add(child.execution_id)
+                if not llm_ok or commented >= max_comments:
+                    continue
+                try:
+                    digest = gather_phase_digest(
+                        database, child, target=target
+                    )
+                    text = asyncio.run(suggest_for_phase(client, digest))
+                except OllamaUnavailableError:
+                    log("[AI] Ollama unavailable — live suggestions paused.")
+                    llm_ok = False
+                    continue
+                except Exception:
+                    continue
+                commented += 1
+                header = f"{digest.phase_code} {digest.phase_name}".strip()
+                log(f"[AI] ▸ {header}:")
+                for line in text.splitlines():
+                    if line.strip():
+                        log(f"[AI]   {line.strip()}")
+
+            if not running:
+                break
+            time.sleep(3.0)
+
+        if llm_ok and commented:
+            try:
+                run_digest = gather_run_digest(
+                    database, orchestration_id=orchestration_id
+                )
+                text = asyncio.run(analyze_run(client, run_digest))
+                log("[AI] ══ Final triage ══")
+                for line in text.splitlines():
+                    if line.strip():
+                        log(f"[AI] {line.strip()}")
+            except Exception:
+                pass
+
+        self.call_from_thread(self._finish_ai_observer)
 
     def action_run_validation(self) -> None:
         """Run nuclei + SQLMap from the chain with confirmed-PoC proof."""
@@ -5516,6 +5645,10 @@ class SaarthiDashboard(App[None]):
 
             log_line(
                 f"[INF] Orchestration {context.orchestration_id} created."
+            )
+            self.call_from_thread(
+                self._start_ai_observer,
+                context.orchestration_id,
             )
             self.call_from_thread(self._set_run_stage, "Recon (3A–4A)")
             log_line("[INF] Running recon pipeline (Phase 3A-4A)…")

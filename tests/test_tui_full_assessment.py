@@ -115,6 +115,7 @@ async def test_typed_url_runs_full_assessment(tmp_path, monkeypatch):
     async with app.run_test() as pilot:
         url_input = app.query_one("#target-url-input", Input)
         url_input.focus()
+        app._ai_live_enabled = False  # deterministic: no live observer
         url_input.value = "https://app.example.com/item?id=1"
         await pilot.press("enter")  # submit URL -> confirmation modal
         await pilot.pause()
@@ -151,6 +152,7 @@ async def test_authorize_button_runs_full_assessment(tmp_path, monkeypatch):
     app = SaarthiDashboard(database_path=path)
     async with app.run_test() as pilot:
         url_input = app.query_one("#target-url-input", Input)
+        app._ai_live_enabled = False  # deterministic: no live observer
         url_input.value = "https://app.example.com/item?id=1"
         await pilot.click("#authorize-button")  # -> confirmation modal
         await pilot.pause()
@@ -200,6 +202,7 @@ async def test_cancelling_confirmation_does_not_launch(tmp_path, monkeypatch):
     async with app.run_test() as pilot:
         url_input = app.query_one("#target-url-input", Input)
         url_input.focus()
+        app._ai_live_enabled = False  # deterministic: no live observer
         url_input.value = "https://app.example.com/item?id=1"
         await pilot.press("enter")  # submit URL -> confirmation modal
         await pilot.pause()
