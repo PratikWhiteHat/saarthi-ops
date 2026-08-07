@@ -105,6 +105,7 @@ def build_auto_validation_config_from_chain(
     single_row_dump: bool = False,
     adaptive: bool = True,
     allow_waf_bypass: bool = False,
+    verify_findings: bool = True,
     evidence_root: Path = DEFAULT_EVIDENCE_ROOT,
     nuclei_templates_path: str | None = None,
     max_sqlmap_candidates: int = MAX_DERIVED_SQLMAP_CANDIDATES,
@@ -193,6 +194,7 @@ def build_auto_validation_config_from_chain(
         # WAF bypass is an intrusive evasion technique: only when the
         # engagement authorized intrusive testing and the caller opted in.
         allow_waf_bypass=allow_waf_bypass and intrusive_allowed,
+        verify_findings=verify_findings,
     )
 
     return ChainDerivedValidation(

@@ -17,6 +17,10 @@ from saarthi_ai.automation.adaptive import (
     AdaptationEvent,
     run_tool_adaptively,
 )
+from saarthi_ai.automation.verification import (
+    VerifiedFinding,
+    verify_findings,
+)
 from saarthi_ai.execution.tool_runner import (
     NUCLEI_PROFILE,
     SQLMAP_PROFILE,
@@ -146,6 +150,10 @@ class AutoValidationConfig:
     # on WAF detection. Authorized targets only; OS/SQL/file switches never.
     allow_waf_bypass: bool = False
 
+    # Auto-verify each finding (re-run the exact nuclei template in-scope,
+    # classify sqlmap) to label CONFIRMED / LIKELY / FALSE_POSITIVE.
+    verify_findings: bool = False
+
 
 @dataclass(frozen=True)
 class AutomaticValidationResult:
@@ -157,6 +165,7 @@ class AutomaticValidationResult:
     evidence_path: str
     nuclei: dict[str, Any]
     sqlmap: tuple[dict[str, Any], ...]
+    verified_findings: tuple[dict[str, Any], ...] = ()
 
 
 def _normalize_host(host: str) -> str:
@@ -669,6 +678,50 @@ def run_automatic_validation(
             summarized_result
         )
 
+    verified_findings: list[dict[str, Any]] = []
+    if config.verify_findings:
+        emit_log(
+            "[Saarthi] Verifying findings (false-positive filter)..."
+        )
+
+        def _record_verified(item: VerifiedFinding) -> None:
+            emit_log(
+                f"[verify] {item.source_tool} {item.identifier} @ "
+                f"{item.target}: {item.verdict.value} — {item.reason}"
+            )
+
+        for finding in verify_findings(
+            nuclei_result.stdout,
+            tuple(sqlmap_results),
+            allowed_hosts=config.allowed_hosts,
+            runner=run_tool,
+            on_progress=_record_verified,
+        ):
+            verified_findings.append(
+                {
+                    "source_tool": finding.source_tool,
+                    "identifier": finding.identifier,
+                    "target": finding.target,
+                    "severity": finding.severity,
+                    "verdict": finding.verdict.value,
+                    "reason": finding.reason,
+                }
+            )
+
+        confirmed_count = sum(
+            1 for f in verified_findings if f["verdict"] == "confirmed"
+        )
+        false_positive_count = sum(
+            1
+            for f in verified_findings
+            if f["verdict"] == "false_positive"
+        )
+        emit_log(
+            f"[Saarthi] Verification: {confirmed_count} confirmed, "
+            f"{false_positive_count} false-positive, "
+            f"{len(verified_findings)} checked."
+        )
+
     completed = datetime.now(UTC)
 
     payload: dict[str, Any] = {
@@ -730,6 +783,7 @@ def run_automatic_validation(
             nuclei_result
         ),
         "sqlmap": sqlmap_results,
+        "verified_findings": verified_findings,
     }
 
     checksum_payload = json.dumps(
@@ -761,4 +815,5 @@ def run_automatic_validation(
         evidence_path=str(evidence_path),
         nuclei=payload["nuclei"],
         sqlmap=tuple(sqlmap_results),
+        verified_findings=tuple(verified_findings),
     )

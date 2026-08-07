@@ -34,8 +34,9 @@ ANALYST_SYSTEM_PROMPT = (
     "like a likely false positive.\n"
     "3. Suggested next manual steps or plausible chains.\n"
     "4. Remediation notes.\n"
-    "If the evidence is thin or shows nothing exploitable, say so plainly. "
-    "Do not fabricate exploitation detail."
+    "Prefer findings marked CONFIRMED by verification; treat FALSE_POSITIVE "
+    "as noise and exclude it. If the evidence is thin or shows nothing "
+    "exploitable, say so plainly. Do not fabricate exploitation detail."
 )
 
 
@@ -56,6 +57,7 @@ class RunDigest:
     failures: tuple[str, ...] = ()
     evidence_counts: dict[str, int] = field(default_factory=dict)
     evidence_signals: tuple[str, ...] = ()
+    verified_findings: tuple[str, ...] = ()
     nuclei_summary: str | None = None
     sqlmap_summary: str | None = None
 
@@ -115,7 +117,7 @@ def _compact_metadata(metadata: dict) -> str:
 def _read_auto_validation(
     orchestration_id: str,
     evidence_root: Path,
-) -> tuple[str | None, str | None]:
+) -> tuple[str | None, str | None, list[str]]:
     """Summarize nuclei/sqlmap output from the auto-validation evidence."""
 
     pattern = str(
@@ -127,12 +129,12 @@ def _read_auto_validation(
     )
     files = sorted(glob.glob(pattern))
     if not files:
-        return None, None
+        return None, None, []
 
     try:
         payload = json.loads(Path(files[-1]).read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
-        return None, None
+        return None, None, []
 
     nuclei = payload.get("nuclei", {}) or {}
     stdout = nuclei.get("stdout", "") or ""
@@ -184,7 +186,15 @@ def _read_auto_validation(
     if sqlmap_summary:
         sqlmap_summary = "  - " + sqlmap_summary
 
-    return nuclei_summary, sqlmap_summary
+    verified = payload.get("verified_findings", []) or []
+    verified_lines = [
+        f"{item.get('verdict')}: {item.get('source_tool')} "
+        f"{item.get('identifier')} @ {item.get('target')}"
+        for item in verified
+        if isinstance(item, dict)
+    ][:MAX_FINDINGS]
+
+    return nuclei_summary, sqlmap_summary, verified_lines
 
 
 def gather_run_digest(
@@ -253,9 +263,10 @@ def gather_run_digest(
                 )
 
     nuclei_summary = sqlmap_summary = None
+    verified_lines: list[str] = []
     if isinstance(oid, str) and oid:
-        nuclei_summary, sqlmap_summary = _read_auto_validation(
-            oid, evidence_root
+        nuclei_summary, sqlmap_summary, verified_lines = (
+            _read_auto_validation(oid, evidence_root)
         )
 
     return RunDigest(
@@ -268,6 +279,7 @@ def gather_run_digest(
         failures=tuple(failures[:MAX_FAILURES]),
         evidence_counts=dict(evidence_counts),
         evidence_signals=tuple(evidence_signals[:MAX_EVIDENCE_SIGNALS]),
+        verified_findings=tuple(verified_lines),
         nuclei_summary=nuclei_summary,
         sqlmap_summary=sqlmap_summary,
     )
@@ -297,6 +309,14 @@ def build_analysis_prompt(digest: RunDigest) -> str:
     lines += [f"  - {item}" for item in digest.findings] or [
         "  - none recorded"
     ]
+
+    if digest.verified_findings:
+        lines += [
+            "",
+            "Verified findings (auto re-checked; prefer CONFIRMED, "
+            "treat FALSE_POSITIVE as noise):",
+        ]
+        lines += [f"  - {item}" for item in digest.verified_findings]
 
     if digest.evidence_signals:
         lines += ["", "Observation signals:"]
