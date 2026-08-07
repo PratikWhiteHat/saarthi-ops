@@ -400,3 +400,111 @@ async def test_nuclei_timeout_is_optional_and_chain_continues(
     assert snapshot.orchestration_status == "partial"
     assert snapshot.outcome_counts["failed"] == 1
     assert snapshot.evidence_count > 0
+
+
+@pytest.mark.asyncio
+async def test_safe_chain_continues_when_a_validator_fails(
+    database: SaarthiDatabase,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    import saarthi_ai.persistence.phase6_chain_workflow as chain_module
+
+    async def failing_observation(*args, **kwargs):
+        raise RuntimeError("simulated validator failure")
+
+    monkeypatch.setattr(
+        chain_module,
+        "run_tracked_controlled_validation_observation",
+        failing_observation,
+    )
+
+    context = create_orchestration(
+        database,
+        assessment_name="Fail-soft validators",
+        target_url="https://example.com/?id=1",
+        active_testing_allowed=True,
+    )
+
+    result = await run_phase6_safe_chain(
+        database,
+        context,
+        evidence_root=tmp_path / "evidence",
+        explicitly_approved=True,
+        nuclei_preview_approved=False,
+        sqlmap_preview_approved=False,
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(200, text="<html></html>")
+        ),
+    )
+
+    validator_results = [
+        item
+        for item in result.phase_results
+        if item.phase is OrchestrationPhase.SAFE_VALIDATOR
+    ]
+    # Every validator was attempted despite failures (loop never aborted).
+    assert len(validator_results) == len(SAFE_VALIDATOR_ACTIONS)
+    assert all(item.failed for item in validator_results)
+    assert all(
+        item.metrics.get("continued_after_failure") is True
+        for item in validator_results
+    )
+
+
+@pytest.mark.asyncio
+async def test_safe_chain_continues_when_hypothesis_engine_fails(
+    database: SaarthiDatabase,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    import saarthi_ai.persistence.phase6_chain_workflow as chain_module
+
+    def failing_hypotheses(*args, **kwargs):
+        raise RuntimeError("simulated hypothesis failure")
+
+    monkeypatch.setattr(
+        chain_module,
+        "create_tracked_attack_hypotheses",
+        failing_hypotheses,
+    )
+
+    context = create_orchestration(
+        database,
+        assessment_name="Fail-soft hypothesis",
+        target_url="https://example.com/?id=1",
+        active_testing_allowed=True,
+    )
+
+    result = await run_phase6_safe_chain(
+        database,
+        context,
+        evidence_root=tmp_path / "evidence",
+        explicitly_approved=True,
+        nuclei_preview_approved=False,
+        sqlmap_preview_approved=False,
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(
+                200,
+                headers={"content-type": "text/html"},
+                text="<html><form><input name='id'></form></html>",
+            )
+        ),
+    )
+
+    hypothesis_results = [
+        item
+        for item in result.phase_results
+        if item.phase is OrchestrationPhase.ATTACK_HYPOTHESIS
+    ]
+    assert len(hypothesis_results) == 1
+    assert hypothesis_results[0].failed
+
+    # Downstream safe validators still ran after the 6A failure.
+    validator_results = [
+        item
+        for item in result.phase_results
+        if item.phase is OrchestrationPhase.SAFE_VALIDATOR
+    ]
+    assert len(validator_results) == len(SAFE_VALIDATOR_ACTIONS)
+    assert all(item.completed for item in validator_results)

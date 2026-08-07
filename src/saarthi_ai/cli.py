@@ -4106,6 +4106,7 @@ def workflow_run(
         NucleiPreparationWorkflowError,
         NucleiExecutionWorkflowError,
         SqlmapHandoffWorkflowError,
+        ControlledValidationObservationWorkflowError,
         ToolRunnerError,
         ValueError,
     ) as exc:

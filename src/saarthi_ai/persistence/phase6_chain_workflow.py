@@ -203,63 +203,94 @@ async def run_phase6_safe_chain(
         active_testing_allowed=False,
         previous_execution_id=previous_execution_id,
     )
-    database.transition_execution(
-        hypothesis_child.execution_id,
-        ExecutionState.VALIDATED,
-        actor=actor,
-        reason="Phase 6A evidence sources validated.",
-    )
-    database.transition_execution(
-        hypothesis_child.execution_id,
-        ExecutionState.PLANNED,
-        actor=actor,
-        reason="Phase 6A non-executing hypothesis generation planned.",
-    )
-    database.transition_execution(
-        hypothesis_child.execution_id,
-        ExecutionState.RUNNING,
-        actor=actor,
-        reason="Phase 6A evidence analysis started.",
-    )
-    hypotheses = create_tracked_attack_hypotheses(
-        database,
-        AttackHypothesisGenerationRequest(
-            execution_id=hypothesis_child.execution_id,
-            target_url=context.target_url,
-            authorized=True,
-            max_hypotheses=20,
-        ),
-        actor=actor,
-        evidence_root=evidence_root / "attack-hypotheses",
-        source_execution_ids=prior_execution_ids,
-    )
-    database.transition_execution(
-        hypothesis_child.execution_id,
-        ExecutionState.ANALYZING,
-        actor=actor,
-        reason="Phase 6A hypotheses are ready for review.",
-    )
-    database.transition_execution(
-        hypothesis_child.execution_id,
-        ExecutionState.COMPLETED,
-        actor=actor,
-        reason="Phase 6A non-executing hypothesis generation completed.",
-    )
-    results.append(
-        OrchestrationPhaseResult(
-            phase=OrchestrationPhase.ATTACK_HYPOTHESIS,
-            execution_id=hypothesis_child.execution_id,
-            evidence_id=hypotheses.evidence.evidence_id,
-            evidence_path=hypotheses.evidence.path,
-            metrics={
-                "hypothesis_count": len(
-                    hypotheses.hypothesis_set.hypotheses
-                ),
-                "executed": False,
-                "network_activity": False,
+    try:
+        database.transition_execution(
+            hypothesis_child.execution_id,
+            ExecutionState.VALIDATED,
+            actor=actor,
+            reason="Phase 6A evidence sources validated.",
+        )
+        database.transition_execution(
+            hypothesis_child.execution_id,
+            ExecutionState.PLANNED,
+            actor=actor,
+            reason="Phase 6A non-executing hypothesis generation planned.",
+        )
+        database.transition_execution(
+            hypothesis_child.execution_id,
+            ExecutionState.RUNNING,
+            actor=actor,
+            reason="Phase 6A evidence analysis started.",
+        )
+        hypotheses = create_tracked_attack_hypotheses(
+            database,
+            AttackHypothesisGenerationRequest(
+                execution_id=hypothesis_child.execution_id,
+                target_url=context.target_url,
+                authorized=True,
+                max_hypotheses=20,
+            ),
+            actor=actor,
+            evidence_root=evidence_root / "attack-hypotheses",
+            source_execution_ids=prior_execution_ids,
+        )
+        database.transition_execution(
+            hypothesis_child.execution_id,
+            ExecutionState.ANALYZING,
+            actor=actor,
+            reason="Phase 6A hypotheses are ready for review.",
+        )
+        database.transition_execution(
+            hypothesis_child.execution_id,
+            ExecutionState.COMPLETED,
+            actor=actor,
+            reason=(
+                "Phase 6A non-executing hypothesis generation completed."
+            ),
+        )
+        results.append(
+            OrchestrationPhaseResult(
+                phase=OrchestrationPhase.ATTACK_HYPOTHESIS,
+                execution_id=hypothesis_child.execution_id,
+                evidence_id=hypotheses.evidence.evidence_id,
+                evidence_path=hypotheses.evidence.path,
+                metrics={
+                    "hypothesis_count": len(
+                        hypotheses.hypothesis_set.hypotheses
+                    ),
+                    "executed": False,
+                    "network_activity": False,
+                },
+            )
+        )
+    except Exception as exc:
+        # Fail-soft: a hypothesis-engine failure never aborts Phase 6.
+        database.add_audit_event(
+            context.parent_execution_id,
+            event_type=AuditEventType.TOOL_FAILED,
+            actor=actor,
+            message=(
+                "[6A][orchestrator] Attack-hypothesis engine failed; "
+                "continuing with Phase 6."
+            ),
+            details={
+                "phase_code": OrchestrationPhase.ATTACK_HYPOTHESIS.value,
+                "outcome": OrchestrationPhaseOutcome.FAILED.value,
+                "child_execution_id": hypothesis_child.execution_id,
+                "error": str(exc),
+                "continued_after_failure": True,
             },
         )
-    )
+        results.append(
+            OrchestrationPhaseResult(
+                phase=OrchestrationPhase.ATTACK_HYPOTHESIS,
+                outcome=OrchestrationPhaseOutcome.FAILED,
+                required=False,
+                execution_id=hypothesis_child.execution_id,
+                error_summary=str(exc)[:2_000],
+                metrics={"continued_after_failure": True},
+            )
+        )
     previous_execution_id = hypothesis_child.execution_id
 
     if nuclei_preview_approved:
@@ -547,44 +578,77 @@ async def run_phase6_safe_chain(
             reversible=True,
             requested_requests=1,
         )
-        create_tracked_controlled_validation_plan(
-            database,
-            validation,
-            actor=actor,
-            evidence_root=evidence_root / "plans" / action.value,
-        )
-        observation = (
-            await run_tracked_controlled_validation_observation(
+        try:
+            create_tracked_controlled_validation_plan(
                 database,
-                ControlledValidationExecutionRequest(
-                    validation=validation,
-                    method="GET",
-                    timeout_seconds=8.0,
-                    max_response_bytes=65_536,
-                    follow_redirects=False,
-                    headers=(),
-                    body=None,
-                ),
+                validation,
                 actor=actor,
-                evidence_root=(
-                    evidence_root / "observations" / action.value
-                ),
-                transport=transport,
+                evidence_root=evidence_root / "plans" / action.value,
             )
-        )
-        results.append(
-            OrchestrationPhaseResult(
-                phase=OrchestrationPhase.SAFE_VALIDATOR,
-                execution_id=child.execution_id,
-                evidence_id=observation.evidence.evidence_id,
-                evidence_path=observation.evidence.path,
-                metrics={
+            observation = (
+                await run_tracked_controlled_validation_observation(
+                    database,
+                    ControlledValidationExecutionRequest(
+                        validation=validation,
+                        method="GET",
+                        timeout_seconds=8.0,
+                        max_response_bytes=65_536,
+                        follow_redirects=False,
+                        headers=(),
+                        body=None,
+                    ),
+                    actor=actor,
+                    evidence_root=(
+                        evidence_root / "observations" / action.value
+                    ),
+                    transport=transport,
+                )
+            )
+            results.append(
+                OrchestrationPhaseResult(
+                    phase=OrchestrationPhase.SAFE_VALIDATOR,
+                    execution_id=child.execution_id,
+                    evidence_id=observation.evidence.evidence_id,
+                    evidence_path=observation.evidence.path,
+                    metrics={
+                        "action": action.value,
+                        "method": "GET",
+                        "request_budget": 1,
+                    },
+                )
+            )
+        except Exception as exc:
+            # Fail-soft: one validator's failure never aborts the loop.
+            database.add_audit_event(
+                context.parent_execution_id,
+                event_type=AuditEventType.TOOL_FAILED,
+                actor=actor,
+                message=(
+                    f"[6C][orchestrator] Validator {action.value} "
+                    "failed; continuing to the next validator."
+                ),
+                details={
+                    "phase_code": OrchestrationPhase.SAFE_VALIDATOR.value,
                     "action": action.value,
-                    "method": "GET",
-                    "request_budget": 1,
+                    "outcome": OrchestrationPhaseOutcome.FAILED.value,
+                    "child_execution_id": child.execution_id,
+                    "error": str(exc),
+                    "continued_after_failure": True,
                 },
             )
-        )
+            results.append(
+                OrchestrationPhaseResult(
+                    phase=OrchestrationPhase.SAFE_VALIDATOR,
+                    outcome=OrchestrationPhaseOutcome.FAILED,
+                    required=False,
+                    execution_id=child.execution_id,
+                    error_summary=str(exc)[:2_000],
+                    metrics={
+                        "action": action.value,
+                        "continued_after_failure": True,
+                    },
+                )
+            )
         previous_execution_id = child.execution_id
 
     return Phase6ChainResult(

@@ -264,7 +264,7 @@ def test_initial_recon_chains_dns_and_subdomains(
     ]
 
 
-def test_initial_recon_failure_marks_parent_failed(
+def test_initial_recon_dns_failure_continues(
     database: SaarthiDatabase,
     tmp_path: Path,
     monkeypatch,
@@ -274,10 +274,38 @@ def test_initial_recon_failure_marks_parent_failed(
     def failing_dns(*args, **kwargs):
         raise RuntimeError("simulated DNS failure")
 
+    def fake_subdomains(
+        database,
+        execution_id,
+        domain,
+        *,
+        actor,
+        evidence_root,
+    ):
+        return type(
+            "SubdomainResult",
+            (),
+            {
+                "evidence": type(
+                    "Evidence",
+                    (),
+                    {
+                        "evidence_id": "evidence-subdomains",
+                        "path": str(evidence_root / "subdomains.json"),
+                    },
+                )()
+            },
+        )()
+
     monkeypatch.setattr(
         workflow_module,
         "run_tracked_dns_collection",
         failing_dns,
+    )
+    monkeypatch.setattr(
+        workflow_module,
+        "run_tracked_subdomain_collection",
+        fake_subdomains,
     )
 
     context = create_orchestration(
@@ -287,24 +315,20 @@ def test_initial_recon_failure_marks_parent_failed(
         active_testing_allowed=True,
     )
 
-    with pytest.raises(
-        RuntimeError,
-        match="simulated DNS failure",
-    ):
-        workflow_module.run_initial_recon(
-            database,
-            context,
-            evidence_root=tmp_path / "workflow-evidence",
-        )
-
-    parent = database.get_execution(
-        context.parent_execution_id
+    # Fail-soft: the DNS failure is recorded and 3B still runs.
+    result = workflow_module.run_initial_recon(
+        database,
+        context,
+        evidence_root=tmp_path / "workflow-evidence",
     )
 
-    assert parent.state is ExecutionState.FAILED
-    assert "simulated DNS failure" in (
-        parent.failure_reason or ""
-    )
+    assert result.dns.failed
+    assert "simulated DNS failure" in (result.dns.error_summary or "")
+    assert result.subdomains.completed
+    assert result.subdomains.evidence_id == "evidence-subdomains"
+
+    parent = database.get_execution(context.parent_execution_id)
+    assert parent.state is ExecutionState.RUNNING
 
 
 def test_recon_pipeline_adds_http_intelligence_child(
@@ -439,7 +463,7 @@ def test_recon_pipeline_adds_http_intelligence_child(
     assert parent.state is ExecutionState.RUNNING
 
 
-def test_phase_3c_failure_marks_parent_failed(
+def test_phase_3c_failure_continues(
     database: SaarthiDatabase,
     tmp_path: Path,
     monkeypatch,
@@ -488,24 +512,20 @@ def test_phase_3c_failure_marks_parent_failed(
         active_testing_allowed=True,
     )
 
-    with pytest.raises(
-        RuntimeError,
-        match="simulated Phase 3C failure",
-    ):
-        workflow_module.run_recon_pipeline(
-            database,
-            context,
-            evidence_root=tmp_path / "workflow-evidence",
-        )
-
-    parent = database.get_execution(
-        context.parent_execution_id
+    # Fail-soft: the 3C failure is recorded and the pipeline continues.
+    result = workflow_module.run_recon_pipeline(
+        database,
+        context,
+        evidence_root=tmp_path / "workflow-evidence",
     )
 
-    assert parent.state is ExecutionState.FAILED
+    assert result.http_intelligence.failed
     assert "simulated Phase 3C failure" in (
-        parent.failure_reason or ""
+        result.http_intelligence.error_summary or ""
     )
+
+    parent = database.get_execution(context.parent_execution_id)
+    assert parent.state is ExecutionState.RUNNING
 
 
 def test_discovery_pipeline_adds_crawl_child(
@@ -625,7 +645,7 @@ def test_discovery_pipeline_adds_crawl_child(
     )
 
 
-def test_phase_3d_failure_marks_parent_failed(
+def test_phase_3d_failure_continues(
     database: SaarthiDatabase,
     tmp_path: Path,
     monkeypatch,
@@ -656,18 +676,24 @@ def test_phase_3d_failure_marks_parent_failed(
         (),
         {
             "context": fake_context,
-            "dns": object(),
-            "subdomains": object(),
-            "http_intelligence": type(
-                "PhaseResult",
-                (),
-                {
-                    "execution_id": "execution-http",
-                    "evidence_path": str(
-                        tmp_path / "http-intelligence.json"
-                    ),
-                },
-            )(),
+            "dns": OrchestrationPhaseResult(
+                phase=OrchestrationPhase.DNS,
+                execution_id="execution-dns",
+                evidence_id="evidence-dns",
+                evidence_path=str(tmp_path / "dns.json"),
+            ),
+            "subdomains": OrchestrationPhaseResult(
+                phase=OrchestrationPhase.SUBDOMAINS,
+                execution_id="execution-sub",
+                evidence_id="evidence-sub",
+                evidence_path=str(tmp_path / "sub.json"),
+            ),
+            "http_intelligence": OrchestrationPhaseResult(
+                phase=OrchestrationPhase.HTTP_INTELLIGENCE,
+                execution_id="execution-http",
+                evidence_id="evidence-http",
+                evidence_path=str(tmp_path / "http-intelligence.json"),
+            ),
         },
     )()
 
@@ -687,24 +713,20 @@ def test_phase_3d_failure_marks_parent_failed(
         ),
     )
 
-    with pytest.raises(
-        RuntimeError,
-        match="simulated Phase 3D failure",
-    ):
-        workflow_module.run_discovery_pipeline(
-            database,
-            context,
-            evidence_root=tmp_path / "workflow-evidence",
-        )
-
-    parent = database.get_execution(
-        context.parent_execution_id
+    # Fail-soft: the 3D failure is recorded and the pipeline continues.
+    result = workflow_module.run_discovery_pipeline(
+        database,
+        context,
+        evidence_root=tmp_path / "workflow-evidence",
     )
 
-    assert parent.state is ExecutionState.FAILED
+    assert result.crawl.failed
     assert "simulated Phase 3D failure" in (
-        parent.failure_reason or ""
+        result.crawl.error_summary or ""
     )
+
+    parent = database.get_execution(context.parent_execution_id)
+    assert parent.state is ExecutionState.RUNNING
 
 
 def test_intelligence_pipeline_adds_javascript_child(
@@ -842,7 +864,7 @@ def test_intelligence_pipeline_adds_javascript_child(
     )
 
 
-def test_phase_3e_failure_marks_parent_failed(
+def test_phase_3e_failure_continues(
     database: SaarthiDatabase,
     tmp_path: Path,
     monkeypatch,
@@ -873,9 +895,24 @@ def test_phase_3e_failure_marks_parent_failed(
         (),
         {
             "context": fake_context,
-            "dns": object(),
-            "subdomains": object(),
-            "http_intelligence": object(),
+            "dns": OrchestrationPhaseResult(
+                phase=OrchestrationPhase.DNS,
+                execution_id="execution-dns",
+                evidence_id="evidence-dns",
+                evidence_path=str(tmp_path / "dns.json"),
+            ),
+            "subdomains": OrchestrationPhaseResult(
+                phase=OrchestrationPhase.SUBDOMAINS,
+                execution_id="execution-sub",
+                evidence_id="evidence-sub",
+                evidence_path=str(tmp_path / "sub.json"),
+            ),
+            "http_intelligence": OrchestrationPhaseResult(
+                phase=OrchestrationPhase.HTTP_INTELLIGENCE,
+                execution_id="execution-http",
+                evidence_id="evidence-http",
+                evidence_path=str(tmp_path / "http-intelligence.json"),
+            ),
             "crawl": OrchestrationPhaseResult(
                 phase=OrchestrationPhase.CRAWL,
                 execution_id="execution-crawl",
@@ -916,24 +953,20 @@ def test_phase_3e_failure_marks_parent_failed(
         failing_javascript,
     )
 
-    with pytest.raises(
-        RuntimeError,
-        match="simulated Phase 3E failure",
-    ):
-        workflow_module.run_intelligence_pipeline(
-            database,
-            context,
-            evidence_root=tmp_path / "workflow-evidence",
-        )
-
-    parent = database.get_execution(
-        context.parent_execution_id
+    # Fail-soft: the 3E failure is recorded and the pipeline continues.
+    result = workflow_module.run_intelligence_pipeline(
+        database,
+        context,
+        evidence_root=tmp_path / "workflow-evidence",
     )
 
-    assert parent.state is ExecutionState.FAILED
+    assert result.javascript.failed
     assert "simulated Phase 3E failure" in (
-        parent.failure_reason or ""
+        result.javascript.error_summary or ""
     )
+
+    parent = database.get_execution(context.parent_execution_id)
+    assert parent.state is ExecutionState.RUNNING
 
 
 def test_child_cannot_escalate_active_testing_permission(

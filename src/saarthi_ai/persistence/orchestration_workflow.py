@@ -23,7 +23,6 @@ from saarthi_ai.orchestration.models import (
 from saarthi_ai.persistence.crawl_workflow import run_tracked_crawl
 from saarthi_ai.persistence.database import SaarthiDatabase
 from saarthi_ai.persistence.direct_check_workflow import (
-    DirectCheckWorkflowError,
     run_tracked_direct_check,
 )
 from saarthi_ai.persistence.dns_workflow import (
@@ -246,6 +245,83 @@ def create_phase_execution(
     )
 
 
+def _record_phase_failure(
+    database: SaarthiDatabase,
+    context: OrchestrationContext,
+    *,
+    phase: OrchestrationPhase,
+    child_execution_id: str | None,
+    exc: Exception,
+    required: bool,
+    actor: str,
+    metrics: dict[str, int | float | str | bool | None] | None = None,
+) -> OrchestrationPhaseResult:
+    """Record a phase failure as a FAILED result and continue the workflow.
+
+    Fail-soft: the failing child execution is already marked failed by its
+    tracked workflow; here we only log an audit event and return a FAILED
+    phase result so the orchestrator jumps to the next phase instead of
+    aborting the whole run.
+    """
+
+    try:
+        database.add_audit_event(
+            context.parent_execution_id,
+            event_type=AuditEventType.TOOL_FAILED,
+            actor=actor,
+            message=(
+                f"[{phase.value}][orchestrator] Phase failed; "
+                "continuing to the next phase."
+            ),
+            details={
+                "orchestration_id": context.orchestration_id,
+                "phase": phase.value,
+                "required": required,
+                "outcome": OrchestrationPhaseOutcome.FAILED.value,
+                "child_execution_id": child_execution_id,
+                "error": str(exc),
+                "continued_after_failure": True,
+            },
+        )
+    except Exception:
+        # Audit logging must never turn a soft failure into a hard abort.
+        pass
+
+    combined_metrics: dict[str, int | float | str | bool | None] = {
+        "continued_after_failure": True,
+    }
+    if metrics:
+        combined_metrics.update(metrics)
+
+    return OrchestrationPhaseResult(
+        phase=phase,
+        outcome=OrchestrationPhaseOutcome.FAILED,
+        required=required,
+        execution_id=child_execution_id,
+        error_summary=str(exc)[:2_000],
+        metrics=combined_metrics,
+    )
+
+
+def _skip_dependent_phase(
+    phase: OrchestrationPhase,
+    *,
+    dependency_phase: str,
+    required: bool,
+) -> OrchestrationPhaseResult:
+    """Skip a phase whose upstream dependency produced no evidence."""
+
+    return OrchestrationPhaseResult(
+        phase=phase,
+        outcome=OrchestrationPhaseOutcome.SKIPPED,
+        required=required,
+        reason=(
+            f"Skipped because upstream {dependency_phase} evidence is "
+            "unavailable after an earlier failure."
+        ),
+    )
+
+
 def run_initial_recon(
     database: SaarthiDatabase,
     context: OrchestrationContext,
@@ -274,6 +350,7 @@ def run_initial_recon(
         update={"status": OrchestrationStatus.RUNNING}
     )
 
+    dns_child = None
     try:
         dns_child = create_phase_execution(
             database,
@@ -282,7 +359,6 @@ def run_initial_recon(
             phase_name="DNS Intelligence",
             active_testing_allowed=False,
         )
-
         dns_result = run_tracked_dns_collection(
             database,
             dns_child.execution_id,
@@ -290,16 +366,37 @@ def run_initial_recon(
             actor=actor,
             evidence_root=evidence_root / "dns",
         )
+        dns_phase = OrchestrationPhaseResult(
+            phase=OrchestrationPhase.DNS,
+            execution_id=dns_child.execution_id,
+            evidence_id=dns_result.evidence.evidence_id,
+            evidence_path=dns_result.evidence.path,
+        )
+    except Exception as exc:
+        dns_phase = _record_phase_failure(
+            database,
+            running_context,
+            phase=OrchestrationPhase.DNS,
+            child_execution_id=(
+                dns_child.execution_id if dns_child else None
+            ),
+            exc=exc,
+            required=True,
+            actor=actor,
+        )
 
+    subdomain_child = None
+    try:
         subdomain_child = create_phase_execution(
             database,
             running_context,
             phase=OrchestrationPhase.SUBDOMAINS,
             phase_name="Subdomain Enumeration",
             active_testing_allowed=False,
-            previous_execution_id=dns_child.execution_id,
+            previous_execution_id=(
+                dns_child.execution_id if dns_child else None
+            ),
         )
-
         subdomain_result = run_tracked_subdomain_collection(
             database,
             subdomain_child.execution_id,
@@ -307,31 +404,30 @@ def run_initial_recon(
             actor=actor,
             evidence_root=evidence_root / "subdomains",
         )
-
-        return InitialReconResult(
-            context=running_context,
-            dns=OrchestrationPhaseResult(
-                phase=OrchestrationPhase.DNS,
-                execution_id=dns_child.execution_id,
-                evidence_id=dns_result.evidence.evidence_id,
-                evidence_path=dns_result.evidence.path,
-            ),
-            subdomains=OrchestrationPhaseResult(
-                phase=OrchestrationPhase.SUBDOMAINS,
-                execution_id=subdomain_child.execution_id,
-                evidence_id=subdomain_result.evidence.evidence_id,
-                evidence_path=subdomain_result.evidence.path,
-            ),
+        subdomain_phase = OrchestrationPhaseResult(
+            phase=OrchestrationPhase.SUBDOMAINS,
+            execution_id=subdomain_child.execution_id,
+            evidence_id=subdomain_result.evidence.evidence_id,
+            evidence_path=subdomain_result.evidence.path,
         )
-
     except Exception as exc:
-        fail_execution_safely(
+        subdomain_phase = _record_phase_failure(
             database,
-            running_context.parent_execution_id,
+            running_context,
+            phase=OrchestrationPhase.SUBDOMAINS,
+            child_execution_id=(
+                subdomain_child.execution_id if subdomain_child else None
+            ),
+            exc=exc,
+            required=True,
             actor=actor,
-            reason=f"Initial orchestration failed: {exc}",
         )
-        raise
+
+    return InitialReconResult(
+        context=running_context,
+        dns=dns_phase,
+        subdomains=subdomain_phase,
+    )
 
 
 def run_recon_pipeline(
@@ -350,44 +446,55 @@ def run_recon_pipeline(
         actor=actor,
     )
 
-    try:
-        http_child = create_phase_execution(
-            database,
-            initial.context,
-            phase=OrchestrationPhase.HTTP_INTELLIGENCE,
-            phase_name="Live Host Intelligence",
-            active_testing_allowed=True,
-            previous_execution_id=initial.subdomains.execution_id,
+    if not initial.subdomains.evidence_path:
+        http_phase = _skip_dependent_phase(
+            OrchestrationPhase.HTTP_INTELLIGENCE,
+            dependency_phase="Phase 3B subdomain",
+            required=True,
         )
-
-        http_result = run_tracked_http_intelligence(
-            database,
-            http_child.execution_id,
-            Path(initial.subdomains.evidence_path),
-            actor=actor,
-            evidence_root=evidence_root / "http-intelligence",
-        )
-
-        return ReconPipelineResult(
-            context=initial.context,
-            dns=initial.dns,
-            subdomains=initial.subdomains,
-            http_intelligence=OrchestrationPhaseResult(
+    else:
+        http_child = None
+        try:
+            http_child = create_phase_execution(
+                database,
+                initial.context,
+                phase=OrchestrationPhase.HTTP_INTELLIGENCE,
+                phase_name="Live Host Intelligence",
+                active_testing_allowed=True,
+                previous_execution_id=initial.subdomains.execution_id,
+            )
+            http_result = run_tracked_http_intelligence(
+                database,
+                http_child.execution_id,
+                Path(initial.subdomains.evidence_path),
+                actor=actor,
+                evidence_root=evidence_root / "http-intelligence",
+            )
+            http_phase = OrchestrationPhaseResult(
                 phase=OrchestrationPhase.HTTP_INTELLIGENCE,
                 execution_id=http_child.execution_id,
                 evidence_id=http_result.evidence.evidence_id,
                 evidence_path=http_result.evidence.path,
-            ),
-        )
+            )
+        except Exception as exc:
+            http_phase = _record_phase_failure(
+                database,
+                initial.context,
+                phase=OrchestrationPhase.HTTP_INTELLIGENCE,
+                child_execution_id=(
+                    http_child.execution_id if http_child else None
+                ),
+                exc=exc,
+                required=True,
+                actor=actor,
+            )
 
-    except Exception as exc:
-        fail_execution_safely(
-            database,
-            initial.context.parent_execution_id,
-            actor=actor,
-            reason=f"Phase 3C orchestration failed: {exc}",
-        )
-        raise
+    return ReconPipelineResult(
+        context=initial.context,
+        dns=initial.dns,
+        subdomains=initial.subdomains,
+        http_intelligence=http_phase,
+    )
 
 
 def run_discovery_pipeline(
@@ -406,47 +513,58 @@ def run_discovery_pipeline(
         actor=actor,
     )
 
-    try:
-        crawl_child = create_phase_execution(
-            database,
-            recon.context,
-            phase=OrchestrationPhase.CRAWL,
-            phase_name="Crawling and URL Intelligence",
-            active_testing_allowed=True,
-            previous_execution_id=(
-                recon.http_intelligence.execution_id
-            ),
+    if not recon.http_intelligence.evidence_path:
+        crawl_phase = _skip_dependent_phase(
+            OrchestrationPhase.CRAWL,
+            dependency_phase="Phase 3C live-host",
+            required=True,
         )
-
-        crawl_result = run_tracked_crawl(
-            database,
-            crawl_child.execution_id,
-            Path(recon.http_intelligence.evidence_path),
-            actor=actor,
-            evidence_root=evidence_root / "crawling",
-        )
-
-        return DiscoveryPipelineResult(
-            context=recon.context,
-            dns=recon.dns,
-            subdomains=recon.subdomains,
-            http_intelligence=recon.http_intelligence,
-            crawl=OrchestrationPhaseResult(
+    else:
+        crawl_child = None
+        try:
+            crawl_child = create_phase_execution(
+                database,
+                recon.context,
+                phase=OrchestrationPhase.CRAWL,
+                phase_name="Crawling and URL Intelligence",
+                active_testing_allowed=True,
+                previous_execution_id=(
+                    recon.http_intelligence.execution_id
+                ),
+            )
+            crawl_result = run_tracked_crawl(
+                database,
+                crawl_child.execution_id,
+                Path(recon.http_intelligence.evidence_path),
+                actor=actor,
+                evidence_root=evidence_root / "crawling",
+            )
+            crawl_phase = OrchestrationPhaseResult(
                 phase=OrchestrationPhase.CRAWL,
                 execution_id=crawl_child.execution_id,
                 evidence_id=crawl_result.evidence.evidence_id,
                 evidence_path=crawl_result.evidence.path,
-            ),
-        )
+            )
+        except Exception as exc:
+            crawl_phase = _record_phase_failure(
+                database,
+                recon.context,
+                phase=OrchestrationPhase.CRAWL,
+                child_execution_id=(
+                    crawl_child.execution_id if crawl_child else None
+                ),
+                exc=exc,
+                required=True,
+                actor=actor,
+            )
 
-    except Exception as exc:
-        fail_execution_safely(
-            database,
-            recon.context.parent_execution_id,
-            actor=actor,
-            reason=f"Phase 3D orchestration failed: {exc}",
-        )
-        raise
+    return DiscoveryPipelineResult(
+        context=recon.context,
+        dns=recon.dns,
+        subdomains=recon.subdomains,
+        http_intelligence=recon.http_intelligence,
+        crawl=crawl_phase,
+    )
 
 
 def run_intelligence_pipeline(
@@ -465,22 +583,22 @@ def run_intelligence_pipeline(
         actor=actor,
     )
 
-    try:
-        crawl_evidence_path = Path(
-            discovery.crawl.evidence_path or ""
+    if not discovery.crawl.evidence_path:
+        javascript_phase: OrchestrationPhaseResult = _skip_dependent_phase(
+            OrchestrationPhase.JAVASCRIPT,
+            dependency_phase="Phase 3D crawl",
+            required=False,
         )
-        javascript_asset_count = count_crawl_javascript_assets(
-            crawl_evidence_path
-        )
+    else:
+        javascript_child = None
+        try:
+            crawl_evidence_path = Path(discovery.crawl.evidence_path)
+            javascript_asset_count = count_crawl_javascript_assets(
+                crawl_evidence_path
+            )
 
-        if javascript_asset_count == 0:
-            return IntelligencePipelineResult(
-                context=discovery.context,
-                dns=discovery.dns,
-                subdomains=discovery.subdomains,
-                http_intelligence=discovery.http_intelligence,
-                crawl=discovery.crawl,
-                javascript=OrchestrationPhaseResult(
+            if javascript_asset_count == 0:
+                javascript_phase = OrchestrationPhaseResult(
                     phase=OrchestrationPhase.JAVASCRIPT,
                     outcome=OrchestrationPhaseOutcome.SKIPPED,
                     required=False,
@@ -488,57 +606,65 @@ def run_intelligence_pipeline(
                         "Phase 3E skipped because Phase 3D "
                         "discovered no JavaScript assets."
                     ),
+                    metrics={"input_javascript_count": 0},
+                )
+            else:
+                javascript_child = create_phase_execution(
+                    database,
+                    discovery.context,
+                    phase=OrchestrationPhase.JAVASCRIPT,
+                    phase_name="JavaScript Intelligence",
+                    active_testing_allowed=True,
+                    previous_execution_id=discovery.crawl.execution_id,
+                )
+                javascript_result = (
+                    run_tracked_javascript_intelligence(
+                        database,
+                        javascript_child.execution_id,
+                        crawl_evidence_path,
+                        actor=actor,
+                        evidence_root=(
+                            evidence_root / "javascript-intelligence"
+                        ),
+                    )
+                )
+                javascript_phase = OrchestrationPhaseResult(
+                    phase=OrchestrationPhase.JAVASCRIPT,
+                    required=False,
+                    execution_id=javascript_child.execution_id,
+                    evidence_id=(
+                        javascript_result.evidence.evidence_id
+                    ),
+                    evidence_path=javascript_result.evidence.path,
                     metrics={
-                        "input_javascript_count": 0,
+                        "input_javascript_count": (
+                            javascript_asset_count
+                        ),
                     },
+                )
+        except Exception as exc:
+            javascript_phase = _record_phase_failure(
+                database,
+                discovery.context,
+                phase=OrchestrationPhase.JAVASCRIPT,
+                child_execution_id=(
+                    javascript_child.execution_id
+                    if javascript_child
+                    else None
                 ),
+                exc=exc,
+                required=False,
+                actor=actor,
             )
 
-        javascript_child = create_phase_execution(
-            database,
-            discovery.context,
-            phase=OrchestrationPhase.JAVASCRIPT,
-            phase_name="JavaScript Intelligence",
-            active_testing_allowed=True,
-            previous_execution_id=discovery.crawl.execution_id,
-        )
-
-        javascript_result = run_tracked_javascript_intelligence(
-            database,
-            javascript_child.execution_id,
-            crawl_evidence_path,
-            actor=actor,
-            evidence_root=evidence_root / "javascript-intelligence",
-        )
-
-        return IntelligencePipelineResult(
-            context=discovery.context,
-            dns=discovery.dns,
-            subdomains=discovery.subdomains,
-            http_intelligence=discovery.http_intelligence,
-            crawl=discovery.crawl,
-            javascript=OrchestrationPhaseResult(
-                phase=OrchestrationPhase.JAVASCRIPT,
-                required=False,
-                execution_id=javascript_child.execution_id,
-                evidence_id=javascript_result.evidence.evidence_id,
-                evidence_path=javascript_result.evidence.path,
-                metrics={
-                    "input_javascript_count": (
-                        javascript_asset_count
-                    ),
-                },
-            ),
-        )
-
-    except Exception as exc:
-        fail_execution_safely(
-            database,
-            discovery.context.parent_execution_id,
-            actor=actor,
-            reason=f"Phase 3E orchestration failed: {exc}",
-        )
-        raise
+    return IntelligencePipelineResult(
+        context=discovery.context,
+        dns=discovery.dns,
+        subdomains=discovery.subdomains,
+        http_intelligence=discovery.http_intelligence,
+        crawl=discovery.crawl,
+        javascript=javascript_phase,
+    )
 
 
 def run_assessment_pipeline(
@@ -576,39 +702,65 @@ def run_assessment_pipeline(
     )
 
     try:
-        security_headers_child = create_phase_execution(
-            database,
-            intelligence.context,
-            phase=OrchestrationPhase.SECURITY_HEADERS,
-            phase_name="Security Headers",
-            active_testing_allowed=False,
-            previous_execution_id=(
-                intelligence.javascript.execution_id
-                or intelligence.crawl.execution_id
-            ),
-        )
-
-        security_headers_result = run_tracked_direct_check(
-            database,
-            DirectCheckRequest(
+        security_headers_child = None
+        try:
+            security_headers_child = create_phase_execution(
+                database,
+                intelligence.context,
+                phase=OrchestrationPhase.SECURITY_HEADERS,
+                phase_name="Security Headers",
+                active_testing_allowed=False,
+                previous_execution_id=(
+                    intelligence.javascript.execution_id
+                    or intelligence.crawl.execution_id
+                    or intelligence.http_intelligence.execution_id
+                    or intelligence.subdomains.execution_id
+                    or intelligence.dns.execution_id
+                ),
+            )
+            security_headers_result = run_tracked_direct_check(
+                database,
+                DirectCheckRequest(
+                    execution_id=security_headers_child.execution_id,
+                    target_url=intelligence.context.target_url,
+                    check_id="security-headers",
+                    authorized=True,
+                    active_testing=False,
+                    explicitly_approved=True,
+                    requested_method="GET",
+                    requested_requests=1,
+                    metadata={
+                        "orchestration_id": (
+                            intelligence.context.orchestration_id
+                        ),
+                        "phase": "4A-security-headers",
+                    },
+                ),
+                actor=actor,
+                evidence_root=evidence_root / "security-headers",
+            )
+            security_headers_phase_result = OrchestrationPhaseResult(
+                phase=OrchestrationPhase.SECURITY_HEADERS,
                 execution_id=security_headers_child.execution_id,
-                target_url=intelligence.context.target_url,
-                check_id="security-headers",
-                authorized=True,
-                active_testing=False,
-                explicitly_approved=True,
-                requested_method="GET",
-                requested_requests=1,
-                metadata={
-                    "orchestration_id": (
-                        intelligence.context.orchestration_id
-                    ),
-                    "phase": "4A-security-headers",
-                },
-            ),
-            actor=actor,
-            evidence_root=evidence_root / "security-headers",
-        )
+                evidence_id=(
+                    security_headers_result.evidence.evidence_id
+                ),
+                evidence_path=security_headers_result.evidence.path,
+            )
+        except Exception as exc:
+            security_headers_phase_result = _record_phase_failure(
+                database,
+                intelligence.context,
+                phase=OrchestrationPhase.SECURITY_HEADERS,
+                child_execution_id=(
+                    security_headers_child.execution_id
+                    if security_headers_child
+                    else None
+                ),
+                exc=exc,
+                required=True,
+                actor=actor,
+            )
 
         cors_child = create_phase_execution(
             database,
@@ -616,7 +768,11 @@ def run_assessment_pipeline(
             phase=OrchestrationPhase.CORS,
             phase_name="CORS Configuration",
             active_testing_allowed=True,
-            previous_execution_id=security_headers_child.execution_id,
+            previous_execution_id=(
+                security_headers_child.execution_id
+                if security_headers_child
+                else None
+            ),
         )
 
         try:
@@ -649,7 +805,7 @@ def run_assessment_pipeline(
                 evidence_id=cors_result.evidence.evidence_id,
                 evidence_path=cors_result.evidence.path,
             )
-        except DirectCheckWorkflowError as exc:
+        except Exception as exc:
             cors_phase_result = OrchestrationPhaseResult(
                 phase=OrchestrationPhase.CORS,
                 outcome=OrchestrationPhaseOutcome.FAILED,
@@ -687,22 +843,15 @@ def run_assessment_pipeline(
             http_intelligence=intelligence.http_intelligence,
             crawl=intelligence.crawl,
             javascript=intelligence.javascript,
-            security_headers=OrchestrationPhaseResult(
-                phase=OrchestrationPhase.SECURITY_HEADERS,
-                execution_id=security_headers_child.execution_id,
-                evidence_id=security_headers_result.evidence.evidence_id,
-                evidence_path=security_headers_result.evidence.path,
-            ),
+            security_headers=security_headers_phase_result,
             cors=cors_phase_result,
         )
 
         final_status = assessment_result.calculated_status
 
-        if final_status is OrchestrationStatus.FAILED:
-            raise OrchestrationWorkflowError(
-                "Required orchestration phases did not complete."
-            )
-
+        # Fail-soft: a failed phase never aborts the run. The parent
+        # execution completes and the degraded status is surfaced so the
+        # workflow jumps ahead to Phase 6 instead of stopping.
         parent = database.get_execution(
             intelligence.context.parent_execution_id
         )
@@ -761,7 +910,10 @@ def run_assessment_pipeline(
                 "orchestration_status": final_status.value,
                 "phase_outcomes": phase_outcomes,
                 "outcome_counts": outcome_counts,
-                "required_phase_failure": False,
+                "required_phase_failure": any(
+                    phase.required and phase.failed
+                    for phase in assessment_result.phase_results
+                ),
             },
         )
 
