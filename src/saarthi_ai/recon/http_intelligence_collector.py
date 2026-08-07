@@ -417,18 +417,19 @@ def collect_http_intelligence(
 
             progress_callback(record)
 
+        from saarthi_ai.automation.adaptive import run_tool_adaptively
+
         try:
-            if progress_callback is None:
-                tool_result = run_tool(
-                    PD_HTTPX_PROFILE,
-                    arguments,
-                )
-            else:
-                tool_result = run_tool(
-                    PD_HTTPX_PROFILE,
-                    arguments,
-                    on_output=emit_progress,
-                )
+            tool_result = run_tool_adaptively(
+                PD_HTTPX_PROFILE,
+                arguments,
+                allow_waf_bypass=False,
+                on_output=(
+                    emit_progress if progress_callback is not None else None
+                ),
+                forward_aborted_output=False,
+                runner=run_tool,
+            )
         except ToolRunnerError as exc:
             raise HttpIntelligenceCollectionError(str(exc)) from exc
 

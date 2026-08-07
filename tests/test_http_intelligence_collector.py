@@ -101,7 +101,7 @@ def test_collect_http_intelligence_parses_and_filters(
     monkeypatch.setattr(
         http_intelligence_collector,
         "run_tool",
-        lambda profile, arguments: tool_result(stdout),
+        lambda profile, arguments, **_kw: tool_result(stdout),
     )
 
     result = collect_http_intelligence(
@@ -178,7 +178,7 @@ def test_httpx_timeout_raises(
     monkeypatch.setattr(
         http_intelligence_collector,
         "run_tool",
-        lambda profile, arguments: ToolRunResult(
+        lambda profile, arguments, **_kw: ToolRunResult(
             tool_name="projectdiscovery-httpx",
             executable="/approved/httpx",
             arguments=tuple(arguments),
@@ -245,6 +245,7 @@ def test_httpx_streams_only_parsed_in_scope_records(
         arguments,
         *,
         on_output=None,
+        abort_check=None,
     ):
         if on_output is not None:
             on_output(

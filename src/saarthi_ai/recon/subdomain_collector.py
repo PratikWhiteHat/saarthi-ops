@@ -189,18 +189,17 @@ def _run_passive_tool(
             0,
         )
 
+    from saarthi_ai.automation.adaptive import run_tool_adaptively
+
     try:
-        if progress_callback is None:
-            result = run_tool(
-                profile,
-                arguments,
-            )
-        else:
-            result = run_tool(
-                profile,
-                arguments,
-                on_output=progress_callback,
-            )
+        result = run_tool_adaptively(
+            profile,
+            arguments,
+            allow_waf_bypass=False,
+            on_output=progress_callback,
+            forward_aborted_output=False,
+            runner=run_tool,
+        )
     except ToolRunnerError as exc:
         return (
             ToolExecutionSummary(

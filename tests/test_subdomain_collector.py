@@ -65,7 +65,7 @@ def test_collect_subdomains_merges_all_sources(
     def fake_resolve(profile):
         return f"/approved/{profile.name}"
 
-    def fake_run(profile, arguments):
+    def fake_run(profile, arguments, **_kw):
         if profile.name == "subfinder":
             return tool_result(
                 "subfinder",
@@ -158,7 +158,7 @@ def test_missing_local_tool_is_recorded(
 
         return f"/approved/{profile.name}"
 
-    def fake_run(profile, arguments):
+    def fake_run(profile, arguments, **_kw):
         return tool_result(
             profile.name,
             "",
@@ -204,7 +204,7 @@ def test_provider_timeout_is_recorded(
     def fake_resolve(profile):
         return f"/approved/{profile.name}"
 
-    def fake_run(profile, arguments):
+    def fake_run(profile, arguments, **_kw):
         if profile.name == "amass":
             return tool_result(
                 "amass",
@@ -289,7 +289,7 @@ def test_out_of_scope_results_are_rejected(
     monkeypatch.setattr(
         subdomain_collector,
         "run_tool",
-        lambda profile, arguments: tool_result(
+        lambda profile, arguments, **_kw: tool_result(
             profile.name,
             "api.example.com\nexample.com.attacker.test\n",
         ),
@@ -330,6 +330,7 @@ def test_collect_subdomains_forwards_tool_output_callback(
         arguments,
         *,
         on_output=None,
+        abort_check=None,
     ):
         if on_output is not None:
             on_output(

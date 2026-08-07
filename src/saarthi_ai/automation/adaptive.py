@@ -32,10 +32,20 @@ SAFE_TAMPER_SCRIPTS = "space2comment,between,randomcase"
 ALLOWED_ADAPTIVE_SET_FLAGS: dict[str, frozenset[str]] = {
     "sqlmap": frozenset({"--delay", "--timeout", "--retries", "--tamper"}),
     "nuclei": frozenset({"-rate-limit", "-timeout", "-retries"}),
+    "projectdiscovery-httpx": frozenset(
+        {"-rate-limit", "-threads", "-timeout", "-retries"}
+    ),
+    "projectdiscovery-katana": frozenset(
+        {"-rate-limit", "-concurrency", "-parallelism", "-timeout"}
+    ),
+    "subfinder": frozenset({"-rate-limit", "-timeout"}),
 }
 ALLOWED_ADAPTIVE_ADD_FLAGS: dict[str, frozenset[str]] = {
     "sqlmap": frozenset({"--random-agent"}),
     "nuclei": frozenset(),
+    "projectdiscovery-httpx": frozenset(),
+    "projectdiscovery-katana": frozenset(),
+    "subfinder": frozenset(),
 }
 # WAF-bypass flags gated behind allow_waf_bypass.
 WAF_BYPASS_FLAGS = frozenset({"--tamper", "--random-agent"})
@@ -89,6 +99,26 @@ _PATTERNS: dict[str, list[tuple[AdaptiveCondition, re.Pattern[str]]]] = {
         ),
     ],
 }
+
+# ProjectDiscovery / Go tools share the same runtime error vocabulary.
+_GO_TOOL_PATTERNS = [
+    (
+        AdaptiveCondition.RATE_LIMITED,
+        re.compile(r"429|too many requests|rate.?limit", re.IGNORECASE),
+    ),
+    (
+        AdaptiveCondition.CONNECTION_RESET,
+        re.compile(
+            r"connection reset|connection refused|i/o timeout|"
+            r"context deadline exceeded|no route to host|"
+            r"could not resolve|dial tcp",
+            re.IGNORECASE,
+        ),
+    ),
+]
+_PATTERNS["projectdiscovery-httpx"] = _GO_TOOL_PATTERNS
+_PATTERNS["projectdiscovery-katana"] = _GO_TOOL_PATTERNS
+_PATTERNS["subfinder"] = _GO_TOOL_PATTERNS
 
 
 @dataclass(frozen=True)
@@ -183,6 +213,65 @@ def plan_adaptation(
                 "Connection unstable → raise timeout/retries",
             )
 
+    if tool_name == "projectdiscovery-httpx":
+        if condition in (
+            AdaptiveCondition.RATE_LIMITED,
+            AdaptiveCondition.WAF,
+        ):
+            return Adaptation(
+                condition,
+                {"-rate-limit": "5", "-threads": "5", "-timeout": "15"},
+                (),
+                "Rate-limited → throttle httpx",
+            )
+        if condition is AdaptiveCondition.CONNECTION_RESET:
+            return Adaptation(
+                condition,
+                {"-timeout": "20", "-retries": "3"},
+                (),
+                "Connection unstable → raise timeout/retries",
+            )
+
+    if tool_name == "projectdiscovery-katana":
+        if condition in (
+            AdaptiveCondition.RATE_LIMITED,
+            AdaptiveCondition.WAF,
+        ):
+            return Adaptation(
+                condition,
+                {
+                    "-rate-limit": "5",
+                    "-concurrency": "5",
+                    "-parallelism": "2",
+                    "-timeout": "15",
+                },
+                (),
+                "Rate-limited → throttle katana",
+            )
+        if condition is AdaptiveCondition.CONNECTION_RESET:
+            return Adaptation(
+                condition,
+                {"-timeout": "20"},
+                (),
+                "Connection unstable → raise timeout",
+            )
+
+    if tool_name == "subfinder":
+        if condition is AdaptiveCondition.RATE_LIMITED:
+            return Adaptation(
+                condition,
+                {"-rate-limit": "5", "-timeout": "20"},
+                (),
+                "Provider rate-limit → back off",
+            )
+        if condition is AdaptiveCondition.CONNECTION_RESET:
+            return Adaptation(
+                condition,
+                {"-timeout": "30"},
+                (),
+                "Connection unstable → raise timeout",
+            )
+
     return None
 
 
@@ -255,29 +344,44 @@ def run_tool_adaptively(
     max_attempts: int = 3,
     on_output: Callable[[ToolOutputEvent], None] | None = None,
     on_adapt: Callable[[AdaptationEvent], None] | None = None,
+    forward_aborted_output: bool = True,
+    runner: Callable[..., ToolRunResult] = run_tool,
 ) -> ToolRunResult:
-    """Run a tool, adapting and relaunching it when a condition is detected."""
+    """Run a tool, adapting and relaunching it when a condition is detected.
+
+    ``forward_aborted_output`` controls whether ``on_output`` sees the output
+    of attempts that get aborted for adaptation. Keep it True for live
+    log streaming (nuclei/sqlmap). Set it False for callers that parse output
+    incrementally (the recon collectors), so only the final, clean attempt's
+    output reaches them and records are not double-counted on a relaunch.
+    """
 
     arguments = list(base_arguments)
     result: ToolRunResult | None = None
 
     for attempt in range(1, max_attempts + 1):
         holder: dict[str, AdaptiveCondition | None] = {"condition": None}
+        buffer: list[ToolOutputEvent] = []
         is_last = attempt == max_attempts
 
         def watch(
             event: ToolOutputEvent,
             _holder: dict[str, AdaptiveCondition | None] = holder,
             _is_last: bool = is_last,
+            _buffer: list[ToolOutputEvent] = buffer,
         ) -> None:
             if _holder["condition"] is None and not _is_last:
                 detected = detect_condition(profile.name, event.line)
                 if detected is not None:
                     _holder["condition"] = detected
-            if on_output is not None:
+            if on_output is None:
+                return
+            if forward_aborted_output:
                 on_output(event)
+            else:
+                _buffer.append(event)
 
-        result = run_tool(
+        result = runner(
             profile,
             arguments,
             on_output=watch,
@@ -285,6 +389,16 @@ def run_tool_adaptively(
         )
 
         condition = holder["condition"]
+
+        # When not forwarding live, only replay a clean (non-aborted) attempt.
+        if (
+            not forward_aborted_output
+            and on_output is not None
+            and condition is None
+        ):
+            for event in buffer:
+                on_output(event)
+
         if condition is None:
             return result
 

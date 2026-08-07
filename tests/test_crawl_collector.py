@@ -150,7 +150,7 @@ def test_collect_crawl_intelligence_parses_and_filters(
     monkeypatch.setattr(
         crawl_collector,
         "run_tool",
-        lambda profile, arguments: tool_result(stdout),
+        lambda profile, arguments, **_kw: tool_result(stdout),
     )
 
     result = collect_crawl_intelligence(
@@ -272,7 +272,7 @@ def test_katana_timeout_raises(
     monkeypatch.setattr(
         crawl_collector,
         "run_tool",
-        lambda profile, arguments: ToolRunResult(
+        lambda profile, arguments, **_kw: ToolRunResult(
             tool_name="projectdiscovery-katana",
             executable="/approved/katana",
             arguments=tuple(arguments),
@@ -311,7 +311,7 @@ def test_katana_nonzero_exit_raises(
     monkeypatch.setattr(
         crawl_collector,
         "run_tool",
-        lambda profile, arguments: ToolRunResult(
+        lambda profile, arguments, **_kw: ToolRunResult(
             tool_name="projectdiscovery-katana",
             executable="/approved/katana",
             arguments=tuple(arguments),
@@ -350,7 +350,7 @@ def test_katana_execution_uses_bounded_arguments(
         lambda profile: "/approved/katana",
     )
 
-    def fake_run_tool(profile, arguments):
+    def fake_run_tool(profile, arguments, **_kw):
         captured["profile"] = profile
         captured["arguments"] = arguments
         return tool_result("")

@@ -570,18 +570,19 @@ def collect_crawl_intelligence(
             if record is not None:
                 progress_callback(record)
 
+        from saarthi_ai.automation.adaptive import run_tool_adaptively
+
         try:
-            if progress_callback is None:
-                tool_result = run_tool(
-                    KATANA_PROFILE,
-                    arguments,
-                )
-            else:
-                tool_result = run_tool(
-                    KATANA_PROFILE,
-                    arguments,
-                    on_output=emit_progress,
-                )
+            tool_result = run_tool_adaptively(
+                KATANA_PROFILE,
+                arguments,
+                allow_waf_bypass=False,
+                on_output=(
+                    emit_progress if progress_callback is not None else None
+                ),
+                forward_aborted_output=False,
+                runner=run_tool,
+            )
         except ToolRunnerError as exc:
             raise CrawlCollectionError(str(exc)) from exc
 

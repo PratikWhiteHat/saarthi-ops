@@ -155,3 +155,31 @@ def test_run_tool_adaptively_no_bypass_never_uses_evasion(tmp_path):
     for event in events:
         assert "--random-agent" not in event.arguments
         assert not any(a.startswith("--tamper") for a in event.arguments)
+
+
+def test_forward_aborted_output_false_suppresses_aborted_attempt(tmp_path):
+    # Only the final, clean attempt's output should reach on_output.
+    profile = _fake_tool(
+        tmp_path,
+        "import sys, time\n"
+        "if any(a == '--random-agent' for a in sys.argv):\n"
+        "    print('final-data', flush=True); sys.exit(0)\n"
+        f"print({WAF_LINE!r}, flush=True)\n"
+        "print('leaked-partial', flush=True)\n"
+        "time.sleep(2)\n",
+    )
+
+    lines: list[str] = []
+    run_tool_adaptively(
+        profile,
+        ["-u", "http://target.test/?id=1", "-p", "id"],
+        allow_waf_bypass=True,
+        max_attempts=3,
+        on_output=lambda event: lines.append(event.line),
+        forward_aborted_output=False,
+    )
+
+    joined = " ".join(lines)
+    assert "final-data" in joined
+    assert "leaked-partial" not in joined  # aborted attempt suppressed
+    assert "WAF/IPS" not in joined
