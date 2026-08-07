@@ -4803,11 +4803,11 @@ def build_scope_lines(
     return scope_lines
 
 
-class ConfirmAssessmentScreen(ModalScreen[bool]):
-    """Confirm before launching a real active + intrusive assessment."""
+class ConfirmScanScreen(ModalScreen[bool]):
+    """Confirm before launching any real active/intrusive scan."""
 
     DEFAULT_CSS = """
-    ConfirmAssessmentScreen {
+    ConfirmScanScreen {
         align: center middle;
     }
     #confirm-dialog {
@@ -4840,25 +4840,15 @@ class ConfirmAssessmentScreen(ModalScreen[bool]):
         ("y", "confirm", "Launch"),
     ]
 
-    def __init__(self, url: str) -> None:
+    def __init__(self, title: str, body: str) -> None:
         super().__init__()
-        self._url = url
+        self._title = title
+        self._body = body
 
     def compose(self) -> ComposeResult:
-        host = urlsplit(self._url).hostname or self._url
         with Vertical(id="confirm-dialog"):
-            yield Label("⚠  LAUNCH FULL ASSESSMENT?", id="confirm-title")
-            yield Static(
-                f"Target : {self._url}\n"
-                f"Host   : {host}\n\n"
-                "This runs REAL active + intrusive testing:\n"
-                "  • Recon (DNS, subdomains, HTTP, crawl, JS)\n"
-                "  • Phase 6 safe validators\n"
-                "  • Nuclei scan + SQLMap (confirmed-PoC)\n\n"
-                "Proceed only on a target you are authorized to test.\n"
-                "[Y] Launch   ·   [N]/[Esc] Cancel",
-                id="confirm-body",
-            )
+            yield Label(self._title, id="confirm-title")
+            yield Static(self._body, id="confirm-body")
             with Horizontal(id="confirm-buttons"):
                 yield Button(
                     "Launch",
@@ -5186,8 +5176,18 @@ class SaarthiDashboard(App[None]):
             )
             return
 
+        body = (
+            f"Target : {url}\n"
+            f"Host   : {parsed.hostname}\n\n"
+            "This runs REAL active + intrusive testing:\n"
+            "  • Recon (DNS, subdomains, HTTP, crawl, JS)\n"
+            "  • Phase 6 safe validators\n"
+            "  • Nuclei scan + SQLMap (confirmed-PoC)\n\n"
+            "Proceed only on a target you are authorized to test.\n"
+            "[Y] Launch   ·   [N]/[Esc] Cancel"
+        )
         self.push_screen(
-            ConfirmAssessmentScreen(url),
+            ConfirmScanScreen("⚠  LAUNCH FULL ASSESSMENT?", body),
             lambda confirmed: self._launch_full_assessment(
                 url,
                 bool(confirmed),
@@ -5374,6 +5374,94 @@ class SaarthiDashboard(App[None]):
         confirmed_poc: bool,
         single_row_dump: bool,
     ) -> None:
+        """Derive the chain target, then ask the operator to confirm."""
+
+        if self._validation_running:
+            self.notify(
+                "A validation run is already in progress.",
+                severity="warning",
+            )
+            return
+
+        from saarthi_ai.automation.chain_config import ChainConfigError
+
+        try:
+            derived = self._derive_chain_validation(
+                confirmed_poc=confirmed_poc,
+                single_row_dump=single_row_dump,
+            )
+        except ChainConfigError as error:
+            self._append_validation_line(f"[ERR] {error}")
+            self.notify(str(error), severity="error")
+            return
+        except Exception as error:  # defensive: surface, never crash
+            self._append_validation_line(
+                f"[ERR] Could not read the workflow chain: {error}"
+            )
+            self.notify(
+                "Could not read the workflow chain.",
+                severity="error",
+            )
+            return
+
+        params = (
+            ", ".join(derived.sqlmap_parameters)
+            if derived.sqlmap_parameters
+            else "none (nuclei-only)"
+        )
+        dump_note = (
+            "single-row --dump ENABLED"
+            if derived.config.sqlmap_poc_single_row_dump
+            else "identity proof only (no data dump)"
+        )
+        body = (
+            f"Target : {derived.target_url}\n"
+            f"Hosts  : {', '.join(derived.config.allowed_hosts)}\n"
+            f"SQLMap : {params}\n"
+            f"Mode   : confirmed-PoC · {dump_note}\n\n"
+            "This runs REAL Nuclei + SQLMap against the chain target.\n"
+            "Proceed only on a target you are authorized to test.\n"
+            "[Y] Run   ·   [N]/[Esc] Cancel"
+        )
+        self.push_screen(
+            ConfirmScanScreen("⚠  RUN NUCLEI + SQLMAP?", body),
+            lambda confirmed: self._launch_validation(
+                derived,
+                bool(confirmed),
+            ),
+        )
+
+    def _derive_chain_validation(
+        self,
+        *,
+        confirmed_poc: bool,
+        single_row_dump: bool,
+    ):
+        """Read the latest chain and build a run config (main thread)."""
+
+        from saarthi_ai.automation.chain_config import (
+            build_auto_validation_config_from_chain,
+        )
+        from saarthi_ai.persistence.database import SaarthiDatabase
+
+        database = SaarthiDatabase(self.repository.database_path)
+        return build_auto_validation_config_from_chain(
+            database,
+            approved=True,
+            confirmed_poc=confirmed_poc,
+            single_row_dump=single_row_dump,
+            evidence_root=(
+                Path.cwd() / "evidence" / "automatic-validation"
+            ),
+        )
+
+    def _launch_validation(self, derived, confirmed: bool) -> None:
+        """Start the validation worker once the operator has confirmed."""
+
+        if not confirmed:
+            self.notify("Validation cancelled.")
+            return
+
         if self._validation_running:
             self.notify(
                 "A validation run is already in progress.",
@@ -5383,7 +5471,7 @@ class SaarthiDashboard(App[None]):
 
         self._validation_running = True
         label = "Nuclei + SQLMap"
-        if single_row_dump:
+        if derived.config.sqlmap_poc_single_row_dump:
             label += " (+1-row dump)"
 
         self.notify(f"Launching {label} from the Phase 6 chain…")
@@ -5392,37 +5480,24 @@ class SaarthiDashboard(App[None]):
         )
 
         self.run_worker(
-            lambda: self._run_validation_worker(
-                confirmed_poc=confirmed_poc,
-                single_row_dump=single_row_dump,
-            ),
+            lambda: self._run_validation_worker(derived),
             name="auto-validation",
             group="auto-validation",
             thread=True,
             exclusive=True,
         )
 
-    def _run_validation_worker(
-        self,
-        *,
-        confirmed_poc: bool,
-        single_row_dump: bool,
-    ) -> None:
-        """Derive config from the chain and run nuclei+SQLMap in a thread."""
+    def _run_validation_worker(self, derived) -> None:
+        """Run nuclei+SQLMap for a pre-derived chain config in a thread."""
 
         from saarthi_ai.automation.auto_validation import (
             AutoValidationError,
             run_automatic_validation,
         )
-        from saarthi_ai.automation.chain_config import (
-            ChainConfigError,
-            build_auto_validation_config_from_chain,
-        )
         from saarthi_ai.execution.tool_runner import (
             ToolOutputEvent,
             ToolRunnerError,
         )
-        from saarthi_ai.persistence.database import SaarthiDatabase
 
         def log_line(line: str) -> None:
             self.call_from_thread(self._append_validation_line, line)
@@ -5435,24 +5510,6 @@ class SaarthiDashboard(App[None]):
                 severity="error",
             )
             self.call_from_thread(self._finish_validation)
-
-        try:
-            database = SaarthiDatabase(self.repository.database_path)
-            derived = build_auto_validation_config_from_chain(
-                database,
-                approved=True,
-                confirmed_poc=confirmed_poc,
-                single_row_dump=single_row_dump,
-                evidence_root=(
-                    Path.cwd() / "evidence" / "automatic-validation"
-                ),
-            )
-        except ChainConfigError as error:
-            fail(str(error))
-            return
-        except Exception as error:  # defensive: never wedge the run flag
-            fail(f"Could not derive chain config: {error}")
-            return
 
         log_line(f"[INF] Target (chain) : {derived.target_url}")
         log_line(

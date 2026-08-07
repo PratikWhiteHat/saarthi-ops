@@ -76,6 +76,8 @@ async def test_pressing_v_launches_chain_validation(tmp_path, monkeypatch):
     app = SaarthiDashboard(database_path=path)
     async with app.run_test() as pilot:
         await pilot.press("v")
+        await pilot.pause()  # confirmation modal mounts
+        await pilot.press("y")  # confirm launch
         await app.workers.wait_for_complete()
         await pilot.pause()
 
@@ -105,11 +107,34 @@ async def test_shift_v_enables_single_row_dump(tmp_path, monkeypatch):
     app = SaarthiDashboard(database_path=path)
     async with app.run_test() as pilot:
         await pilot.press("V")
+        await pilot.pause()  # confirmation modal mounts
+        await pilot.press("y")  # confirm launch
         await app.workers.wait_for_complete()
         await pilot.pause()
 
         assert captured["config"].sqlmap_confirmed_poc is True
         assert captured["config"].sqlmap_poc_single_row_dump is True
+
+
+@pytest.mark.asyncio
+async def test_cancelling_v_does_not_run(tmp_path, monkeypatch):
+    path = _seed_chain(tmp_path)
+    captured: dict = {}
+    monkeypatch.setattr(
+        "saarthi_ai.automation.auto_validation.run_automatic_validation",
+        _fake_run_factory(captured),
+    )
+
+    app = SaarthiDashboard(database_path=path)
+    async with app.run_test() as pilot:
+        await pilot.press("v")
+        await pilot.pause()  # confirmation modal mounts
+        await pilot.press("n")  # cancel
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+
+        assert app._validation_running is False
+        assert "config" not in captured
 
 
 @pytest.mark.asyncio
