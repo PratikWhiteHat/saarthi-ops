@@ -7,6 +7,7 @@ from hashlib import sha256
 
 import httpx
 
+from saarthi_ai.config import tls_verify
 from saarthi_ai.controlled_validation.api_exposure import (
     ApiExposureValidationResult,
     analyze_api_exposure_surface,
@@ -173,6 +174,7 @@ async def execute_bounded_observation(
             follow_redirects=False,
             trust_env=False,
             transport=transport,
+            verify=tls_verify(),
             headers=request_headers,
         ) as client:
             async with client.stream(

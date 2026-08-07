@@ -10,6 +10,7 @@ from uuid import uuid4
 import httpx
 from pydantic import BaseModel, Field
 
+from saarthi_ai.config import tls_verify
 from saarthi_ai.execution.tool_runner import (
     AMASS_PROFILE,
     ASSETFINDER_PROFILE,
@@ -268,6 +269,7 @@ def _collect_certificate_transparency(
     active_client = client or httpx.Client(
         timeout=httpx.Timeout(20.0),
         follow_redirects=False,
+        verify=tls_verify(),
         headers={
             "User-Agent": ("Saarthi-OPS/0.1 passive-subdomain-collector"),
             "Accept": "application/json",

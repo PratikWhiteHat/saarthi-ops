@@ -14,6 +14,7 @@ from uuid import uuid4
 
 import httpx
 
+from saarthi_ai.config import tls_verify
 from saarthi_ai.recon.dns_collector import (
     DnsCollectionError,
     normalize_domain,
@@ -751,6 +752,7 @@ async def collect_javascript_intelligence(
         timeout=timeout,
         limits=limits,
         transport=transport,
+        verify=tls_verify(),
         headers={
             "User-Agent": (
                 "Saarthi-OPS/0.1 "

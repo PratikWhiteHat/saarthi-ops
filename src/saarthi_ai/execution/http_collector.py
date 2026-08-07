@@ -16,6 +16,7 @@ from saarthi_ai.assessments.scope import (
     normalize_url,
     validate_assessment,
 )
+from saarthi_ai.config import tls_verify
 from saarthi_ai.execution.http_models import (
     HttpMetadataCollectionRequest,
     HttpMetadataCollectionResponse,
@@ -295,6 +296,7 @@ async def collect_http_metadata(
             follow_redirects=False,
             trust_env=False,
             transport=transport,
+            verify=tls_verify(),
             headers={
                 "User-Agent": "Saarthi-AI/0.4 authorized-vapt",
                 "Accept": "*/*",

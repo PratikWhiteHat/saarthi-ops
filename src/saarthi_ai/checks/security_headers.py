@@ -7,6 +7,8 @@ from dataclasses import dataclass
 
 import httpx
 
+from saarthi_ai.config import tls_verify
+
 RECOMMENDED_SECURITY_HEADERS = {
     "content-security-policy",
     "strict-transport-security",
@@ -363,6 +365,7 @@ async def run_security_headers_check(
         client = httpx.AsyncClient(
             timeout=httpx.Timeout(timeout_seconds),
             follow_redirects=False,
+            verify=tls_verify(),
         )
 
     try:

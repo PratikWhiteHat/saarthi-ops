@@ -4,6 +4,8 @@ from dataclasses import dataclass
 
 import httpx
 
+from saarthi_ai.config import tls_verify
+
 TEST_ORIGIN = "https://saarthi.invalid"
 NULL_ORIGIN = "null"
 PREFLIGHT_METHOD = "POST"
@@ -261,6 +263,7 @@ async def run_cors_check(
         client = httpx.AsyncClient(
             timeout=httpx.Timeout(timeout_seconds),
             follow_redirects=False,
+            verify=tls_verify(),
         )
 
     probes: list[CorsProbeResult] = []
