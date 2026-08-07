@@ -34,6 +34,14 @@ from saarthi_ai.controlled_validation.validator_registry import (
 
 DEFAULT_DB_PATH = Path.home() / ".saarthi" / "saarthi.db"
 
+# Real-time activity feed limits. The dashboard streams every tool and
+# phase audit event across the whole orchestration; these bound how much
+# scrollback is retained in memory and in the on-screen log widget.
+MAX_ACTIVITY_EVENTS = 2000
+MAX_LIVE_VALIDATION_LINES = 2000
+MAX_ACTIVITY_LOG_LINES = MAX_ACTIVITY_EVENTS + MAX_LIVE_VALIDATION_LINES + 100
+DASHBOARD_REFRESH_SECONDS = 0.5
+
 
 @dataclass(frozen=True)
 class DashboardSnapshot:
@@ -2612,7 +2620,7 @@ class ReadOnlySaarthiRepository:
             FROM "{table}"
             WHERE "{execution_column}" IN ({placeholders})
             {order_sql}
-            LIMIT 200
+            LIMIT {MAX_ACTIVITY_EVENTS}
             """,
             tuple(normalized_ids),
         ).fetchall()
@@ -2741,7 +2749,8 @@ class ReadOnlySaarthiRepository:
 
         order_sql = f'ORDER BY "{timestamp_column}" DESC' if timestamp_column else ""
         rows = connection.execute(
-            f'SELECT * FROM "{table}" {where_sql} {order_sql} LIMIT 12',
+            f'SELECT * FROM "{table}" {where_sql} {order_sql} '
+            f"LIMIT {MAX_ACTIVITY_EVENTS}",
             parameters,
         ).fetchall()
 
@@ -4899,6 +4908,10 @@ class SaarthiDashboard(App[None]):
         self.repository = ReadOnlySaarthiRepository(database_path)
         self._validation_running = False
         self._live_validation_lines: list[str] = []
+        # Snapshot of every line currently in the activity log (DB audit
+        # events + live tool lines), used to append only new lines instead
+        # of clearing and redrawing the whole log on each refresh.
+        self._rendered_lines: list[str] = []
 
     def compose(self) -> ComposeResult:
         with Grid(id="hero"):
@@ -4966,12 +4979,16 @@ class SaarthiDashboard(App[None]):
         with Vertical(classes="panel", id="activity-panel"):
             with Horizontal(id="activity-heading"):
                 yield Label("[ 5. ACTIVITY LOG (LIVE) ]", classes="panel-title")
-                yield Label("LATEST 200 EVENTS", id="activity-caption")
+                yield Label(
+                    "LIVE · ALL PHASES + TOOLS",
+                    id="activity-caption",
+                )
             yield RichLog(
                 id="activity-log",
                 highlight=False,
                 markup=False,
-                max_lines=250,
+                max_lines=MAX_ACTIVITY_LOG_LINES,
+                auto_scroll=True,
                 wrap=False,
             )
 
@@ -4989,7 +5006,7 @@ class SaarthiDashboard(App[None]):
         self._configure_tables()
         self.set_interval(1.0, self._update_runtime)
         self.set_interval(
-            1.0,
+            DASHBOARD_REFRESH_SECONDS,
             self._refresh_snapshot_silently,
         )
         self.action_refresh()
@@ -5081,12 +5098,7 @@ class SaarthiDashboard(App[None]):
                 item["status"],
             )
 
-        activity = self.query_one("#activity-log", RichLog)
-        activity.clear()
-        for line in snapshot.recent_activity:
-            activity.write(build_activity_text(line))
-        for live_line in self._live_validation_lines:
-            activity.write(live_line)
+        self._sync_activity_log(snapshot.recent_activity)
 
     def _refresh_snapshot_silently(self) -> None:
         """Reload local state without creating notification noise."""
@@ -5565,15 +5577,52 @@ class SaarthiDashboard(App[None]):
 
     def _append_validation_line(self, line: str) -> None:
         self._live_validation_lines.append(line)
-        if len(self._live_validation_lines) > 200:
-            del self._live_validation_lines[:-200]
+        if len(self._live_validation_lines) > MAX_LIVE_VALIDATION_LINES:
+            del self._live_validation_lines[:-MAX_LIVE_VALIDATION_LINES]
 
         if self.is_mounted:
             try:
                 self.query_one("#activity-log", RichLog).write(line)
+                # Keep the render cursor in sync so the next refresh appends
+                # only new DB events rather than redrawing the whole log.
+                self._rendered_lines.append(line)
             except Exception:
                 # The log widget may be unavailable mid-teardown.
                 return
+
+    def _sync_activity_log(self, activity_lines: list[str]) -> None:
+        """Append only new activity to the live log (no clear/flicker).
+
+        The desired log is the DB audit events for the whole orchestration
+        (every phase and tool) followed by the live tool lines. When the log
+        only grew, write just the new tail; otherwise (reset / scrollback
+        rolled over / new run) redraw once.
+        """
+
+        try:
+            log = self.query_one("#activity-log", RichLog)
+        except Exception:
+            return
+
+        desired = list(activity_lines) + list(self._live_validation_lines)
+        activity_count = len(activity_lines)
+
+        def write_at(index: int, text: str) -> None:
+            if index < activity_count:
+                log.write(build_activity_text(text))
+            else:
+                log.write(text)
+
+        previous = self._rendered_lines
+        if desired[: len(previous)] == previous:
+            for index in range(len(previous), len(desired)):
+                write_at(index, desired[index])
+        else:
+            log.clear()
+            for index, text in enumerate(desired):
+                write_at(index, text)
+
+        self._rendered_lines = desired
 
     def _finish_validation(self) -> None:
         self._validation_running = False

@@ -1,0 +1,59 @@
+"""Tests for the real-time, append-only activity log streaming."""
+
+from __future__ import annotations
+
+import pytest
+
+from saarthi_ai.tui.app import (
+    MAX_LIVE_VALIDATION_LINES,
+    SaarthiDashboard,
+)
+
+
+@pytest.mark.asyncio
+async def test_activity_log_appends_incrementally(tmp_path):
+    # Missing DB -> demo snapshot; we drive the sync helper directly.
+    app = SaarthiDashboard(database_path=tmp_path / "missing.db")
+    async with app.run_test() as pilot:
+        await pilot.pause()
+
+        # Growing activity is tracked as append-only.
+        app._sync_activity_log(["a", "b"])
+        assert app._rendered_lines[-2:] == ["a", "b"]
+
+        app._sync_activity_log(["a", "b", "c"])
+        assert app._rendered_lines == ["a", "b", "c"]
+
+        # A live tool line is appended after the DB activity.
+        app._append_validation_line("[INF] live tool line")
+        assert app._rendered_lines[-1] == "[INF] live tool line"
+
+        # A subsequent refresh with unchanged DB activity keeps the live
+        # line at the tail (no duplication, no reset).
+        app._sync_activity_log(["a", "b", "c"])
+        assert app._rendered_lines == [
+            "a",
+            "b",
+            "c",
+            "[INF] live tool line",
+        ]
+
+        # A new DB activity set that is not a prefix triggers a full redraw.
+        app._sync_activity_log(["x", "y"])
+        assert app._rendered_lines == ["x", "y", "[INF] live tool line"]
+
+
+@pytest.mark.asyncio
+async def test_live_validation_lines_are_capped(tmp_path):
+    app = SaarthiDashboard(database_path=tmp_path / "missing.db")
+    async with app.run_test() as pilot:
+        await pilot.pause()
+
+        for index in range(MAX_LIVE_VALIDATION_LINES + 50):
+            app._append_validation_line(f"line-{index}")
+
+        assert len(app._live_validation_lines) == MAX_LIVE_VALIDATION_LINES
+        # The newest line is retained; the oldest are trimmed.
+        assert app._live_validation_lines[-1] == (
+            f"line-{MAX_LIVE_VALIDATION_LINES + 49}"
+        )
