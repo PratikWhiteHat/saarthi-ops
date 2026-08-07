@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from rich.markup import escape as escape_markup
 from rich.text import Text
@@ -17,6 +18,7 @@ from textual.reactive import reactive
 from textual.widgets import (
     DataTable,
     Footer,
+    Input,
     Label,
     ProgressBar,
     RichLog,
@@ -4811,6 +4813,7 @@ class SaarthiDashboard(App[None]):
         ("e", "focus_executions", "Evidence"),
         ("v", "run_validation", "Run Nuclei+SQLMap"),
         ("V", "run_validation_dump", "Run +1-row dump"),
+        ("u", "focus_url", "URL"),
         ("h", "help", "Help"),
     ]
 
@@ -4874,6 +4877,13 @@ class SaarthiDashboard(App[None]):
                 "NO RAW SHELL · [v] RUN NUCLEI+SQLMAP (CHAIN-DERIVED) · "
                 "[V] +1-ROW POC DUMP",
                 id="workers-note",
+            )
+            yield Input(
+                placeholder=(
+                    "Authorized URL → Enter: full assessment "
+                    "(recon → Phase 6 → nuclei + sqlmap)"
+                ),
+                id="target-url-input",
             )
 
         with Vertical(classes="panel", id="activity-panel"):
@@ -5044,9 +5054,10 @@ class SaarthiDashboard(App[None]):
 
     def action_help(self) -> None:
         self.notify(
-            "R refresh · P phases · T tools · E executions · "
-            "V run nuclei+sqlmap (chain) · shift+V +1-row dump · Q quit",
-            timeout=6,
+            "R refresh · U focus URL (Enter = full assessment) · "
+            "V nuclei+sqlmap on chain target · shift+V +1-row dump · "
+            "P phases · T tools · E executions · Q quit",
+            timeout=7,
         )
 
     def action_run_validation(self) -> None:
@@ -5064,6 +5075,194 @@ class SaarthiDashboard(App[None]):
             confirmed_poc=True,
             single_row_dump=True,
         )
+
+    def action_focus_url(self) -> None:
+        self.query_one("#target-url-input", Input).focus()
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        if event.input.id != "target-url-input":
+            return
+
+        url = event.value.strip()
+        event.input.value = ""
+        self._start_full_assessment(url)
+
+    def _start_full_assessment(self, url: str) -> None:
+        """Run recon -> Phase 6 -> real nuclei + SQLMap for a typed URL."""
+
+        parsed = urlsplit(url)
+        if parsed.scheme.lower() not in {"http", "https"} or not parsed.hostname:
+            self.notify(
+                "Enter an absolute http(s) URL, e.g. "
+                "https://target/path?id=1",
+                severity="error",
+            )
+            return
+
+        if self._validation_running:
+            self.notify(
+                "A run is already in progress.",
+                severity="warning",
+            )
+            return
+
+        self._validation_running = True
+        self.notify(f"Starting full assessment for {parsed.hostname}…")
+        self._append_validation_line(
+            f"[INF] Operator launched full assessment for: {url}"
+        )
+
+        self.run_worker(
+            lambda: self._run_full_assessment_worker(url),
+            name="full-assessment",
+            group="auto-validation",
+            thread=True,
+            exclusive=True,
+        )
+
+    def _run_full_assessment_worker(self, url: str) -> None:
+        """Create a chain for the URL, run recon + Phase 6, then scan."""
+
+        import asyncio
+
+        from saarthi_ai.automation.auto_validation import (
+            AutoValidationError,
+            run_automatic_validation,
+        )
+        from saarthi_ai.automation.chain_config import (
+            ChainConfigError,
+            build_auto_validation_config_from_chain,
+        )
+        from saarthi_ai.execution.tool_runner import (
+            ToolOutputEvent,
+            ToolRunnerError,
+        )
+        from saarthi_ai.persistence.database import SaarthiDatabase
+        from saarthi_ai.persistence.orchestration_workflow import (
+            create_orchestration,
+            run_assessment_pipeline,
+        )
+        from saarthi_ai.persistence.phase6_chain_workflow import (
+            run_phase6_safe_chain,
+        )
+
+        actor = "saarthi-ops-tui"
+
+        def log_line(line: str) -> None:
+            self.call_from_thread(self._append_validation_line, line)
+
+        def fail(message: str) -> None:
+            log_line(f"[ERR] {message}")
+            self.call_from_thread(
+                self.notify,
+                message,
+                severity="error",
+            )
+            self.call_from_thread(self._finish_validation)
+
+        try:
+            database = SaarthiDatabase(self.repository.database_path)
+            context = create_orchestration(
+                database,
+                assessment_name="Saarthi OPS ad-hoc assessment",
+                target_url=url,
+                active_testing_allowed=True,
+                intrusive_testing_allowed=True,
+                rate_limit_per_second=2,
+                actor=actor,
+            )
+            evidence_root = (
+                Path.cwd()
+                / "evidence"
+                / "orchestrations"
+                / context.orchestration_id
+            )
+
+            log_line(
+                f"[INF] Orchestration {context.orchestration_id} created."
+            )
+            log_line("[INF] Running recon pipeline (Phase 3A-4A)…")
+            result = run_assessment_pipeline(
+                database,
+                context,
+                evidence_root=evidence_root,
+                explicitly_approved=True,
+                actor=actor,
+            )
+            for phase in result.phase_results:
+                log_line(
+                    f"[{phase.phase.value}] {phase.outcome.value}"
+                )
+
+            log_line("[INF] Running permission-gated Phase 6 chain…")
+            asyncio.run(
+                run_phase6_safe_chain(
+                    database,
+                    result.context,
+                    evidence_root=evidence_root / "phase6",
+                    explicitly_approved=True,
+                    nuclei_preview_approved=False,
+                    sqlmap_preview_approved=False,
+                    nuclei_execute_approved=False,
+                    actor=actor,
+                )
+            )
+
+            log_line("[INF] Executing real Nuclei + SQLMap validation…")
+            derived = build_auto_validation_config_from_chain(
+                database,
+                approved=True,
+                orchestration_id=context.orchestration_id,
+                confirmed_poc=True,
+                single_row_dump=False,
+                evidence_root=evidence_root / "auto-validation",
+            )
+        except ChainConfigError as error:
+            fail(str(error))
+            return
+        except Exception as error:  # defensive: never wedge the run flag
+            fail(f"Assessment pipeline failed: {error}")
+            return
+
+        log_line(f"[INF] Target        : {derived.target_url}")
+        if derived.sqlmap_parameters:
+            log_line(
+                "[INF] SQLMap params  : "
+                + ", ".join(derived.sqlmap_parameters)
+            )
+        else:
+            log_line("[INF] SQLMap params  : none (Nuclei-only run)")
+
+        def on_output(event: ToolOutputEvent) -> None:
+            self.call_from_thread(
+                self._append_validation_line,
+                f"[{event.tool_name}:{event.stream}] {event.line}",
+            )
+
+        try:
+            validation = run_automatic_validation(
+                derived.config,
+                on_output=on_output,
+                on_log=log_line,
+            )
+        except (AutoValidationError, ToolRunnerError) as error:
+            fail(str(error))
+            return
+        except Exception as error:  # defensive: surface, never crash the TUI
+            fail(f"Validation run failed: {error}")
+            return
+
+        nuclei_exit = validation.nuclei.get("exit_code")
+        log_line(
+            f"[OK ] Full assessment complete. nuclei exit={nuclei_exit}, "
+            f"sqlmap runs={len(validation.sqlmap)}."
+        )
+        log_line(f"[OK ] Evidence: {validation.evidence_path}")
+        self.call_from_thread(
+            self.notify,
+            "Full assessment complete — evidence saved.",
+        )
+        self.call_from_thread(self._finish_validation)
 
     def _start_validation(
         self,
