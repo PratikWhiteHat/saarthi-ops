@@ -142,6 +142,34 @@ async def test_typed_url_runs_full_assessment(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_authorize_button_runs_full_assessment(tmp_path, monkeypatch):
+    path = _init_db(tmp_path)
+    calls: list[str] = []
+    captured: dict = {}
+    _install_stubs(monkeypatch, calls, captured)
+
+    app = SaarthiDashboard(database_path=path)
+    async with app.run_test() as pilot:
+        url_input = app.query_one("#target-url-input", Input)
+        url_input.value = "https://app.example.com/item?id=1"
+        await pilot.click("#authorize-button")  # -> confirmation modal
+        await pilot.pause()
+        await pilot.press("y")  # confirm launch
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+
+        assert app._validation_running is False
+        assert calls == [
+            "create_orchestration",
+            "run_assessment_pipeline",
+            "run_phase6_safe_chain",
+            "build_config",
+            "run_automatic_validation",
+        ]
+        assert captured["target_url"] == "https://app.example.com/item?id=1"
+
+
+@pytest.mark.asyncio
 async def test_invalid_url_is_rejected(tmp_path, monkeypatch):
     path = _init_db(tmp_path)
     calls: list[str] = []

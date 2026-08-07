@@ -4834,6 +4834,8 @@ class ConfirmScanScreen(ModalScreen[bool]):
     }
     """
 
+    AUTO_FOCUS = "#confirm-cancel"
+
     BINDINGS = [
         ("escape", "cancel", "Cancel"),
         ("n", "cancel", "Cancel"),
@@ -4874,6 +4876,9 @@ class ConfirmScanScreen(ModalScreen[bool]):
 class SaarthiDashboard(App[None]):
     CSS_PATH = "styles.tcss"
     TITLE = "Saarthi OPS"
+    # Do not auto-focus the URL field on start, so single-key bindings
+    # (v, V, r, q, u, ...) work immediately. Press 'u' to type a URL.
+    AUTO_FOCUS = None
 
     BINDINGS = [
         ("q", "quit", "Quit"),
@@ -4913,6 +4918,27 @@ class SaarthiDashboard(App[None]):
 
             yield Static(id="runtime-panel")
 
+        with Vertical(classes="panel", id="authorize-panel"):
+            yield Label("[ TARGET & AUTHORIZE ]", classes="panel-title")
+            with Horizontal(id="authorize-row"):
+                yield Input(
+                    placeholder=(
+                        "Authorized target URL, e.g. "
+                        "https://target/path?id=1"
+                    ),
+                    id="target-url-input",
+                )
+                yield Button(
+                    "AUTHORIZE & RUN ▶",
+                    variant="success",
+                    id="authorize-button",
+                )
+            yield Static(
+                "Authorize runs ALL phases: recon → Phase 6 → "
+                "nuclei + sqlmap   ·   [u] focus URL",
+                id="authorize-note",
+            )
+
         with Grid(id="top-grid"):
             with Vertical(classes="panel", id="scope-panel"):
                 yield Label("[ 1. PROJECT & SCOPE ]", classes="panel-title")
@@ -4937,28 +4963,9 @@ class SaarthiDashboard(App[None]):
             yield Label("[ 4. RECENT EXECUTIONS ]", classes="panel-title")
             yield DataTable(id="executions-table")
 
-        with Vertical(classes="panel", id="workers-panel"):
-            yield Label(
-                "[ 5. RESTRICTED EXECUTION WORKERS ]",
-                classes="panel-title",
-            )
-            yield DataTable(id="workers-table")
-            yield Static(
-                "NO RAW SHELL · [v] RUN NUCLEI+SQLMAP (CHAIN-DERIVED) · "
-                "[V] +1-ROW POC DUMP",
-                id="workers-note",
-            )
-            yield Input(
-                placeholder=(
-                    "Authorized URL → Enter: full assessment "
-                    "(recon → Phase 6 → nuclei + sqlmap)"
-                ),
-                id="target-url-input",
-            )
-
         with Vertical(classes="panel", id="activity-panel"):
             with Horizontal(id="activity-heading"):
-                yield Label("[ 6. ACTIVITY LOG (LIVE) ]", classes="panel-title")
+                yield Label("[ 5. ACTIVITY LOG (LIVE) ]", classes="panel-title")
                 yield Label("LATEST 200 EVENTS", id="activity-caption")
             yield RichLog(
                 id="activity-log",
@@ -5015,14 +5022,6 @@ class SaarthiDashboard(App[None]):
         executions.add_column("Status", width=12)
         executions.cursor_type = "row"
         executions.zebra_stripes = True
-
-        workers = self.query_one("#workers-table", DataTable)
-        workers.add_column("Tool", width=12)
-        workers.add_column("Execution Mode", width=31)
-        workers.add_column("Approval", width=16)
-        workers.add_column("Worker State", width=28)
-        workers.cursor_type = "row"
-        workers.zebra_stripes = True
 
     def _update_runtime(self) -> None:
         now = datetime.now()
@@ -5081,11 +5080,6 @@ class SaarthiDashboard(App[None]):
                 item["findings"],
                 item["status"],
             )
-
-        workers = self.query_one("#workers-table", DataTable)
-        workers.clear()
-        for row in worker_rows(snapshot):
-            workers.add_row(*row)
 
         activity = self.query_one("#activity-log", RichLog)
         activity.clear()
@@ -5155,6 +5149,15 @@ class SaarthiDashboard(App[None]):
 
         url = event.value.strip()
         event.input.value = ""
+        self._start_full_assessment(url)
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id != "authorize-button":
+            return
+
+        url_input = self.query_one("#target-url-input", Input)
+        url = url_input.value.strip()
+        url_input.value = ""
         self._start_full_assessment(url)
 
     def _start_full_assessment(self, url: str) -> None:

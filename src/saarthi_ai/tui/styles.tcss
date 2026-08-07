@@ -138,15 +138,31 @@ DataTable > .datatable--odd-row {
     margin-bottom: 1;
 }
 
-#workers-panel {
-    height: 8;
+#authorize-panel {
+    height: 7;
     margin-bottom: 1;
+    border: round #37e9a2;
 }
 
-#workers-note {
+#authorize-row {
+    height: 3;
+    margin-top: 1;
+}
+
+#target-url-input {
+    width: 1fr;
+    margin-right: 1;
+}
+
+#authorize-button {
+    width: auto;
+    min-width: 22;
+}
+
+#authorize-note {
     height: 1;
-    color: #d8b65f;
-    text-align: center;
+    color: #37e9a2;
+    text-align: left;
 }
 
 #activity-panel {
