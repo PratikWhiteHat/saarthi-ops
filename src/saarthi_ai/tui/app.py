@@ -4809,6 +4809,8 @@ class SaarthiDashboard(App[None]):
         ("p", "focus_phases", "Phases"),
         ("t", "focus_tools", "Tools"),
         ("e", "focus_executions", "Evidence"),
+        ("v", "run_validation", "Run Nuclei+SQLMap"),
+        ("V", "run_validation_dump", "Run +1-row dump"),
         ("h", "help", "Help"),
     ]
 
@@ -4817,6 +4819,8 @@ class SaarthiDashboard(App[None]):
     def __init__(self, database_path: Path = DEFAULT_DB_PATH) -> None:
         super().__init__()
         self.repository = ReadOnlySaarthiRepository(database_path)
+        self._validation_running = False
+        self._live_validation_lines: list[str] = []
 
     def compose(self) -> ComposeResult:
         with Grid(id="hero"):
@@ -4867,7 +4871,8 @@ class SaarthiDashboard(App[None]):
             )
             yield DataTable(id="workers-table")
             yield Static(
-                "NO RAW SHELL · SQLMAP LAUNCHER NOT IMPLEMENTED",
+                "NO RAW SHELL · [v] RUN NUCLEI+SQLMAP (CHAIN-DERIVED) · "
+                "[V] +1-ROW POC DUMP",
                 id="workers-note",
             )
 
@@ -5006,6 +5011,8 @@ class SaarthiDashboard(App[None]):
         activity.clear()
         for line in snapshot.recent_activity:
             activity.write(build_activity_text(line))
+        for live_line in self._live_validation_lines:
+            activity.write(live_line)
 
     def _refresh_snapshot_silently(self) -> None:
         """Reload local state without creating notification noise."""
@@ -5037,9 +5044,177 @@ class SaarthiDashboard(App[None]):
 
     def action_help(self) -> None:
         self.notify(
-            "R refresh · P phases · T tools · E executions · Q quit",
-            timeout=5,
+            "R refresh · P phases · T tools · E executions · "
+            "V run nuclei+sqlmap (chain) · shift+V +1-row dump · Q quit",
+            timeout=6,
         )
+
+    def action_run_validation(self) -> None:
+        """Run nuclei + SQLMap from the chain with confirmed-PoC proof."""
+
+        self._start_validation(
+            confirmed_poc=True,
+            single_row_dump=False,
+        )
+
+    def action_run_validation_dump(self) -> None:
+        """Run nuclei + SQLMap and permit a bounded single-row dump."""
+
+        self._start_validation(
+            confirmed_poc=True,
+            single_row_dump=True,
+        )
+
+    def _start_validation(
+        self,
+        *,
+        confirmed_poc: bool,
+        single_row_dump: bool,
+    ) -> None:
+        if self._validation_running:
+            self.notify(
+                "A validation run is already in progress.",
+                severity="warning",
+            )
+            return
+
+        self._validation_running = True
+        label = "Nuclei + SQLMap"
+        if single_row_dump:
+            label += " (+1-row dump)"
+
+        self.notify(f"Launching {label} from the Phase 6 chain…")
+        self._append_validation_line(
+            f"[INF] Operator launched chain-derived validation: {label}."
+        )
+
+        self.run_worker(
+            lambda: self._run_validation_worker(
+                confirmed_poc=confirmed_poc,
+                single_row_dump=single_row_dump,
+            ),
+            name="auto-validation",
+            group="auto-validation",
+            thread=True,
+            exclusive=True,
+        )
+
+    def _run_validation_worker(
+        self,
+        *,
+        confirmed_poc: bool,
+        single_row_dump: bool,
+    ) -> None:
+        """Derive config from the chain and run nuclei+SQLMap in a thread."""
+
+        from saarthi_ai.automation.auto_validation import (
+            AutoValidationError,
+            run_automatic_validation,
+        )
+        from saarthi_ai.automation.chain_config import (
+            ChainConfigError,
+            build_auto_validation_config_from_chain,
+        )
+        from saarthi_ai.execution.tool_runner import (
+            ToolOutputEvent,
+            ToolRunnerError,
+        )
+        from saarthi_ai.persistence.database import SaarthiDatabase
+
+        def log_line(line: str) -> None:
+            self.call_from_thread(self._append_validation_line, line)
+
+        def fail(message: str) -> None:
+            log_line(f"[ERR] {message}")
+            self.call_from_thread(
+                self.notify,
+                message,
+                severity="error",
+            )
+            self.call_from_thread(self._finish_validation)
+
+        try:
+            database = SaarthiDatabase(self.repository.database_path)
+            derived = build_auto_validation_config_from_chain(
+                database,
+                approved=True,
+                confirmed_poc=confirmed_poc,
+                single_row_dump=single_row_dump,
+                evidence_root=(
+                    Path.cwd() / "evidence" / "automatic-validation"
+                ),
+            )
+        except ChainConfigError as error:
+            fail(str(error))
+            return
+        except Exception as error:  # defensive: never wedge the run flag
+            fail(f"Could not derive chain config: {error}")
+            return
+
+        log_line(f"[INF] Target (chain) : {derived.target_url}")
+        log_line(
+            f"[INF] Allowed hosts  : {', '.join(derived.allowed_hosts)}"
+        )
+        if derived.sqlmap_parameters:
+            log_line(
+                "[INF] SQLMap params  : "
+                + ", ".join(derived.sqlmap_parameters)
+            )
+        else:
+            log_line(
+                "[INF] SQLMap params  : none "
+                "(intrusive testing not authorized; nuclei-only run)"
+            )
+
+        def on_output(event: ToolOutputEvent) -> None:
+            self.call_from_thread(
+                self._append_validation_line,
+                f"[{event.tool_name}:{event.stream}] {event.line}",
+            )
+
+        try:
+            result = run_automatic_validation(
+                derived.config,
+                on_output=on_output,
+                on_log=log_line,
+            )
+        except (AutoValidationError, ToolRunnerError) as error:
+            fail(str(error))
+            return
+        except Exception as error:  # defensive: surface, never crash the TUI
+            fail(f"Validation run failed: {error}")
+            return
+
+        nuclei_exit = result.nuclei.get("exit_code")
+        log_line(
+            f"[OK ] Completed. nuclei exit={nuclei_exit}, "
+            f"sqlmap runs={len(result.sqlmap)}."
+        )
+        log_line(f"[OK ] Evidence: {result.evidence_path}")
+        self.call_from_thread(
+            self.notify,
+            (
+                "Validation complete — evidence saved "
+                f"({len(result.sqlmap)} SQLMap runs)."
+            ),
+        )
+        self.call_from_thread(self._finish_validation)
+
+    def _append_validation_line(self, line: str) -> None:
+        self._live_validation_lines.append(line)
+        if len(self._live_validation_lines) > 200:
+            del self._live_validation_lines[:-200]
+
+        if self.is_mounted:
+            try:
+                self.query_one("#activity-log", RichLog).write(line)
+            except Exception:
+                # The log widget may be unavailable mid-teardown.
+                return
+
+    def _finish_validation(self) -> None:
+        self._validation_running = False
+        self.snapshot = self.repository.load()
 
 
 def run() -> None:
