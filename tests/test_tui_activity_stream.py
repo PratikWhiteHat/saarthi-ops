@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pytest
+from textual.widgets import ProgressBar, Static
 
 from saarthi_ai.tui.app import (
     MAX_LIVE_VALIDATION_LINES,
@@ -41,6 +42,32 @@ async def test_activity_log_appends_incrementally(tmp_path):
         # A new DB activity set that is not a prefix triggers a full redraw.
         app._sync_activity_log(["x", "y"])
         assert app._rendered_lines == ["x", "y", "[INF] live tool line"]
+
+
+@pytest.mark.asyncio
+async def test_run_overlay_shows_running_stage(tmp_path):
+    app = SaarthiDashboard(database_path=tmp_path / "missing.db")
+    async with app.run_test() as pilot:
+        await pilot.pause()
+
+        progress = app.query_one("#phase-progress", ProgressBar)
+        summary = app.query_one("#orchestration-summary", Static)
+
+        # Idle: determinate progress bar.
+        assert progress.total is not None
+
+        # A live run makes progress indeterminate and status RUNNING.
+        app._validation_running = True
+        app._set_run_stage("Nuclei + SQLMap")
+        await pilot.pause()
+        assert progress.total is None
+        assert "RUNNING · Nuclei + SQLMap" in str(summary.render())
+
+        # Finishing restores the determinate bar and idle status.
+        app._validation_running = False
+        app._set_run_stage(None)
+        await pilot.pause()
+        assert progress.total is not None
 
 
 @pytest.mark.asyncio

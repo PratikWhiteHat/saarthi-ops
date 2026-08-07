@@ -4907,6 +4907,11 @@ class SaarthiDashboard(App[None]):
         super().__init__()
         self.repository = ReadOnlySaarthiRepository(database_path)
         self._validation_running = False
+        # Label of the current operator-launched stage (recon / Phase 6 /
+        # nuclei+sqlmap). None when idle. Drives the live-run overlay so the
+        # header never shows "COMPLETED / 100%" while nuclei/sqlmap (an
+        # untracked post-assessment step) is still executing.
+        self._run_stage: str | None = None
         self._live_validation_lines: list[str] = []
         # Snapshot of every line currently in the activity log (DB audit
         # events + live tool lines), used to append only new lines instead
@@ -5042,6 +5047,13 @@ class SaarthiDashboard(App[None]):
 
     def _update_runtime(self) -> None:
         now = datetime.now()
+        if self._validation_running:
+            status_line = (
+                "[bold yellow]● RUN : "
+                f"{self._run_stage or 'running'}[/bold yellow]"
+            )
+        else:
+            status_line = "[dim]○ IDLE[/dim]"
         runtime = (
             "[cyan]HOST[/cyan] : saarthi-ops.local\n"
             "[cyan]USER[/cyan] : operator\n"
@@ -5050,9 +5062,13 @@ class SaarthiDashboard(App[None]):
             "────────────────────────\n"
             f"[bold cyan]{now:%H:%M:%S}[/bold cyan]  "
             f"{now:%Y-%m-%d}\n"
-            "UTC+04:00"
+            f"{status_line}"
         )
         self.query_one("#runtime-panel", Static).update(runtime)
+        # Keep the live-run overlay applied even when the DB (and thus the
+        # snapshot) is static, e.g. while nuclei/sqlmap runs after the parent
+        # execution has already been marked completed.
+        self._apply_run_overlay()
 
     def watch_snapshot(self, snapshot: DashboardSnapshot) -> None:
         if self.is_mounted:
@@ -5069,7 +5085,10 @@ class SaarthiDashboard(App[None]):
                 build_orchestration_summary_lines(snapshot)
             )
         )
-        self.query_one("#phase-progress", ProgressBar).update(progress=snapshot.phase_progress)
+        self.query_one("#phase-progress", ProgressBar).update(
+            total=100,
+            progress=snapshot.phase_progress,
+        )
 
         phase_table = self.query_one("#phase-table", DataTable)
         phase_table.clear()
@@ -5099,6 +5118,53 @@ class SaarthiDashboard(App[None]):
             )
 
         self._sync_activity_log(snapshot.recent_activity)
+        self._apply_run_overlay()
+
+    def _set_run_stage(self, stage: str | None) -> None:
+        """Set the live-run stage label and refresh the overlay."""
+
+        self._run_stage = stage
+        self._update_runtime()
+
+    def _apply_run_overlay(self) -> None:
+        """Reflect an in-progress operator run in the header.
+
+        While a run is active the phase progress pulses (indeterminate) and
+        the overall status reads RUNNING · <stage>, so the header can never
+        claim COMPLETED while nuclei/sqlmap is still executing.
+        """
+
+        if not self.is_mounted:
+            return
+
+        try:
+            progress = self.query_one("#phase-progress", ProgressBar)
+            summary = self.query_one("#orchestration-summary", Static)
+        except Exception:
+            return
+
+        if self._run_stage is None:
+            # Idle: restore the determinate progress bar.
+            progress.update(
+                total=100,
+                progress=self.snapshot.phase_progress,
+            )
+            return
+
+        # Indeterminate pulse while the run is live.
+        progress.update(total=None)
+
+        lines = build_orchestration_summary_lines(self.snapshot)
+        overridden = [
+            (
+                "Overall Status       : "
+                f"[bold yellow]RUNNING · {self._run_stage}[/bold yellow]"
+            )
+            if line.startswith("Overall Status")
+            else line
+            for line in lines
+        ]
+        summary.update("\n".join(overridden))
 
     def _refresh_snapshot_silently(self) -> None:
         """Reload local state without creating notification noise."""
@@ -5224,6 +5290,7 @@ class SaarthiDashboard(App[None]):
             return
 
         self._validation_running = True
+        self._set_run_stage("Starting…")
         self.notify(
             f"Starting full assessment for {urlsplit(url).hostname}…"
         )
@@ -5300,6 +5367,7 @@ class SaarthiDashboard(App[None]):
             log_line(
                 f"[INF] Orchestration {context.orchestration_id} created."
             )
+            self.call_from_thread(self._set_run_stage, "Recon (3A–4A)")
             log_line("[INF] Running recon pipeline (Phase 3A-4A)…")
             result = run_assessment_pipeline(
                 database,
@@ -5313,6 +5381,7 @@ class SaarthiDashboard(App[None]):
                     f"[{phase.phase.value}] {phase.outcome.value}"
                 )
 
+            self.call_from_thread(self._set_run_stage, "Phase 6 chain")
             log_line("[INF] Running permission-gated Phase 6 chain…")
             asyncio.run(
                 run_phase6_safe_chain(
@@ -5327,6 +5396,10 @@ class SaarthiDashboard(App[None]):
                 )
             )
 
+            self.call_from_thread(
+                self._set_run_stage,
+                "Nuclei + SQLMap",
+            )
             log_line("[INF] Executing real Nuclei + SQLMap validation…")
             derived = build_auto_validation_config_from_chain(
                 database,
@@ -5489,6 +5562,7 @@ class SaarthiDashboard(App[None]):
         if derived.config.sqlmap_poc_single_row_dump:
             label += " (+1-row dump)"
 
+        self._set_run_stage(label)
         self.notify(f"Launching {label} from the Phase 6 chain…")
         self._append_validation_line(
             f"[INF] Operator launched chain-derived validation: {label}."
@@ -5626,7 +5700,9 @@ class SaarthiDashboard(App[None]):
 
     def _finish_validation(self) -> None:
         self._validation_running = False
+        self._run_stage = None
         self.snapshot = self.repository.load()
+        self._update_runtime()
 
 
 def run() -> None:
