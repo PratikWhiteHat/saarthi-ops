@@ -65,6 +65,10 @@ from saarthi_ai.persistence.nuclei_preview_workflow import (
 from saarthi_ai.persistence.orchestration_workflow import (
     create_phase_execution,
 )
+from saarthi_ai.persistence.restricted_worker_jobs import (
+    approve_worker_job,
+    create_worker_job,
+)
 from saarthi_ai.persistence.sqlmap_handoff_workflow import (
     create_sqlmap_handoff,
 )
@@ -456,6 +460,29 @@ async def run_phase6_safe_chain(
             actor=actor,
             evidence_root=evidence_root / "sqlmap-handoff",
         )
+        worker_job = create_worker_job(
+            database,
+            child.execution_id,
+            tool_name="sqlmap",
+            adapter_name="unbound",
+            target_display=preview.preview.target_display_url,
+            purpose=(
+                "Track the approved SQLmap external-result handoff. "
+                "This job contains no executable command or arguments."
+            ),
+            timeout_seconds=preview.preview.timeout_seconds,
+            rate_limit_per_second=1,
+            actor=actor,
+        )
+        worker_job = approve_worker_job(
+            database,
+            worker_job.job_id,
+            actor=actor,
+            reason=(
+                "Operator-approved SQLmap preview and external-result "
+                "handoff; dispatch remains disabled."
+            ),
+        )
         results.append(
             OrchestrationPhaseResult(
                 phase=OrchestrationPhase.SQLMAP_PREVIEW,
@@ -469,10 +496,17 @@ async def run_phase6_safe_chain(
                     "handoff_id": handoff.handoff_id,
                     "result_inbox": handoff.result_inbox,
                     "status": "awaiting_external_result",
+                    "worker_job_id": worker_job.job_id,
+                    "worker_job_state": worker_job.state.value,
+                    "worker_adapter": worker_job.adapter_name,
+                    "worker_dispatch_enabled": False,
+                    "worker_manifest_sha256": (
+                        worker_job.manifest_sha256
+                    ),
                 },
                 reason=(
-                    "Approved asynchronous handoff persisted; "
-                    "SQLmap was not executed by Saarthi."
+                    "Approved restricted-worker record and asynchronous "
+                    "handoff persisted; SQLmap dispatch remains disabled."
                 ),
             )
         )

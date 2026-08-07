@@ -174,7 +174,19 @@ async def test_approved_previews_are_persisted_but_not_executed(
     assert snapshot.phase6_chain_status["nuclei"] == "PREVIEW READY"
     assert snapshot.phase6_chain_status["sqlmap"] == "AWAITING RESULT"
     assert sqlmap.metrics["status"] == "awaiting_external_result"
+    assert sqlmap.metrics["worker_job_state"] == "approved"
+    assert sqlmap.metrics["worker_adapter"] == "unbound"
+    assert sqlmap.metrics["worker_dispatch_enabled"] is False
+    assert len(sqlmap.metrics["worker_manifest_sha256"]) == 64
     assert Path(sqlmap.evidence_path or "").is_file()
+    sqlmap_worker = next(
+        job
+        for job in snapshot.recent_worker_jobs
+        if job["tool_name"] == "sqlmap"
+    )
+    assert sqlmap_worker["state"] == "APPROVED"
+    assert sqlmap_worker["adapter_name"] == "unbound"
+    assert sqlmap_worker["approval_actor"] == "saarthi-phase6-orchestrator"
     assert (
         snapshot.phase6_chain_status[
             "browser_attack_surface_validation"
