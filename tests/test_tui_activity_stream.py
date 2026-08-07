@@ -53,21 +53,36 @@ async def test_run_overlay_shows_running_stage(tmp_path):
         progress = app.query_one("#phase-progress", ProgressBar)
         summary = app.query_one("#orchestration-summary", Static)
 
-        # Idle: determinate progress bar.
-        assert progress.total is not None
+        from textual.widgets import Button, Input
 
-        # A live run makes progress indeterminate and status RUNNING.
+        url_input = app.query_one("#target-url-input", Input)
+        button = app.query_one("#authorize-button", Button)
+        note = app.query_one("#authorize-note", Static)
+
+        # Idle: determinate progress bar, editable bar.
+        assert progress.total is not None
+        assert url_input.disabled is False
+
+        # A live run makes progress indeterminate and status RUNNING, and
+        # shows the live target in a locked TARGET & AUTHORIZE bar.
         app._validation_running = True
+        app._run_target = "https://app.example.com/?id=1"
         app._set_run_stage("Nuclei + SQLMap")
         await pilot.pause()
         assert progress.total is None
         assert "RUNNING · Nuclei + SQLMap" in str(summary.render())
+        assert url_input.value == "https://app.example.com/?id=1"
+        assert url_input.disabled is True
+        assert button.disabled is True
+        assert "RUNNING" in str(note.render())
 
-        # Finishing restores the determinate bar and idle status.
-        app._validation_running = False
-        app._set_run_stage(None)
+        # Finishing restores the determinate bar and re-enables the bar.
+        app._finish_validation()
         await pilot.pause()
         assert progress.total is not None
+        assert url_input.value == ""
+        assert url_input.disabled is False
+        assert button.disabled is False
 
 
 @pytest.mark.asyncio

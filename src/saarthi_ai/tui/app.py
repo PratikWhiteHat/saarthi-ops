@@ -42,6 +42,14 @@ MAX_LIVE_VALIDATION_LINES = 2000
 MAX_ACTIVITY_LOG_LINES = MAX_ACTIVITY_EVENTS + MAX_LIVE_VALIDATION_LINES + 100
 DASHBOARD_REFRESH_SECONDS = 0.5
 
+# Idle labels for the TARGET & AUTHORIZE bar (restored when no run is
+# active; overridden with the live target + stage while a run is in flight).
+AUTHORIZE_BUTTON_LABEL = "AUTHORIZE & RUN ▶"
+AUTHORIZE_NOTE_IDLE = (
+    "Authorize runs ALL phases: recon → Phase 6 → "
+    "nuclei + sqlmap   ·   [u] focus URL"
+)
+
 
 @dataclass(frozen=True)
 class DashboardSnapshot:
@@ -4912,6 +4920,9 @@ class SaarthiDashboard(App[None]):
         # header never shows "COMPLETED / 100%" while nuclei/sqlmap (an
         # untracked post-assessment step) is still executing.
         self._run_stage: str | None = None
+        # Target URL of the current operator-launched run, shown in the
+        # TARGET & AUTHORIZE bar while the run is active.
+        self._run_target: str | None = None
         self._live_validation_lines: list[str] = []
         # Snapshot of every line currently in the activity log (DB audit
         # events + live tool lines), used to append only new lines instead
@@ -4947,13 +4958,12 @@ class SaarthiDashboard(App[None]):
                     id="target-url-input",
                 )
                 yield Button(
-                    "AUTHORIZE & RUN ▶",
+                    AUTHORIZE_BUTTON_LABEL,
                     variant="success",
                     id="authorize-button",
                 )
             yield Static(
-                "Authorize runs ALL phases: recon → Phase 6 → "
-                "nuclei + sqlmap   ·   [u] focus URL",
+                AUTHORIZE_NOTE_IDLE,
                 id="authorize-note",
             )
 
@@ -5144,7 +5154,9 @@ class SaarthiDashboard(App[None]):
             return
 
         if self._run_stage is None:
-            # Idle: restore the determinate progress bar.
+            # Idle: restore the determinate progress bar. The authorize bar
+            # is restored once in _finish_validation (not here) so it never
+            # clobbers a URL the operator is typing between runs.
             progress.update(
                 total=100,
                 progress=self.snapshot.phase_progress,
@@ -5153,6 +5165,28 @@ class SaarthiDashboard(App[None]):
 
         # Indeterminate pulse while the run is live.
         progress.update(total=None)
+
+        # Show the live target + stage in the TARGET & AUTHORIZE bar and
+        # lock it while the run is in flight.
+        try:
+            url_input = self.query_one("#target-url-input", Input)
+            button = self.query_one("#authorize-button", Button)
+            note = self.query_one("#authorize-note", Static)
+        except Exception:
+            url_input = button = note = None
+
+        if url_input is not None and button is not None and note is not None:
+            target = self._run_target or ""
+            if url_input.value != target:
+                url_input.value = target
+            url_input.disabled = True
+            button.disabled = True
+            if str(button.label) != "RUNNING…":
+                button.label = "RUNNING…"
+            note.update(
+                f"▶ RUNNING · {self._run_stage}"
+                + (f"  ·  {target}" if target else "")
+            )
 
         lines = build_orchestration_summary_lines(self.snapshot)
         overridden = [
@@ -5290,6 +5324,7 @@ class SaarthiDashboard(App[None]):
             return
 
         self._validation_running = True
+        self._run_target = url
         self._set_run_stage("Starting…")
         self.notify(
             f"Starting full assessment for {urlsplit(url).hostname}…"
@@ -5558,6 +5593,7 @@ class SaarthiDashboard(App[None]):
             return
 
         self._validation_running = True
+        self._run_target = derived.target_url
         label = "Nuclei + SQLMap"
         if derived.config.sqlmap_poc_single_row_dump:
             label += " (+1-row dump)"
@@ -5701,8 +5737,26 @@ class SaarthiDashboard(App[None]):
     def _finish_validation(self) -> None:
         self._validation_running = False
         self._run_stage = None
+        self._run_target = None
+        self._restore_authorize_bar()
         self.snapshot = self.repository.load()
         self._update_runtime()
+
+    def _restore_authorize_bar(self) -> None:
+        """Re-enable and clear the TARGET & AUTHORIZE bar after a run."""
+
+        try:
+            url_input = self.query_one("#target-url-input", Input)
+            button = self.query_one("#authorize-button", Button)
+            note = self.query_one("#authorize-note", Static)
+        except Exception:
+            return
+
+        url_input.value = ""
+        url_input.disabled = False
+        button.disabled = False
+        button.label = AUTHORIZE_BUTTON_LABEL
+        note.update(AUTHORIZE_NOTE_IDLE)
 
 
 def run() -> None:
