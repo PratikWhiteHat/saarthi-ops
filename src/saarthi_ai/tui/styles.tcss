@@ -138,6 +138,17 @@ DataTable > .datatable--odd-row {
     margin-bottom: 1;
 }
 
+#workers-panel {
+    height: 8;
+    margin-bottom: 1;
+}
+
+#workers-note {
+    height: 1;
+    color: #d8b65f;
+    text-align: center;
+}
+
 #activity-panel {
     height: 1fr;
     min-height: 9;

@@ -3470,6 +3470,60 @@ TOOLS = [
     *validator_module_tool_rows(),
 ]
 
+WORKER_DEFINITIONS = (
+    (
+        "nuclei",
+        "Controlled local adapter",
+        "TUI approval",
+        "Configured",
+    ),
+    (
+        "sqlmap",
+        "External handoff + import",
+        "TUI approval",
+        "No launcher",
+    ),
+    (
+        "ffuf",
+        "Restricted execution worker",
+        "TUI approval",
+        "Not configured",
+    ),
+    (
+        "callback",
+        "OAST/callback validator",
+        "TUI approval",
+        "Not configured",
+    ),
+)
+
+
+def worker_rows(
+    snapshot: DashboardSnapshot,
+) -> list[tuple[str, str, str, str]]:
+    """Build truthful execution-worker rows from persisted workflow state."""
+
+    phase6 = snapshot.phase6_chain_status
+    nuclei_status = phase6.get("nuclei", "APPROVAL REQUIRED")
+    sqlmap_status = phase6.get("sqlmap", "APPROVAL REQUIRED")
+    rows: list[tuple[str, str, str, str]] = []
+
+    for tool, mode, gate, default_state in WORKER_DEFINITIONS:
+        state = default_state
+        if tool == "nuclei":
+            state = nuclei_status
+        elif tool == "sqlmap":
+            if sqlmap_status in {"AWAITING RESULT", "IMPORTED"}:
+                gate = "Approved"
+            state = (
+                f"{sqlmap_status} · EXTERNAL"
+                if sqlmap_status != "APPROVAL REQUIRED"
+                else "NO LAUNCHER"
+            )
+        rows.append((tool, mode, gate, state))
+
+    return rows
+
 
 def tool_rows(
     snapshot: DashboardSnapshot,
@@ -4727,9 +4781,20 @@ class SaarthiDashboard(App[None]):
             yield Label("[ 4. RECENT EXECUTIONS ]", classes="panel-title")
             yield DataTable(id="executions-table")
 
+        with Vertical(classes="panel", id="workers-panel"):
+            yield Label(
+                "[ 5. RESTRICTED EXECUTION WORKERS ]",
+                classes="panel-title",
+            )
+            yield DataTable(id="workers-table")
+            yield Static(
+                "NO RAW SHELL · SQLMAP LAUNCHER NOT IMPLEMENTED",
+                id="workers-note",
+            )
+
         with Vertical(classes="panel", id="activity-panel"):
             with Horizontal(id="activity-heading"):
-                yield Label("[ 5. ACTIVITY LOG (LIVE) ]", classes="panel-title")
+                yield Label("[ 6. ACTIVITY LOG (LIVE) ]", classes="panel-title")
                 yield Label("LATEST 200 EVENTS", id="activity-caption")
             yield RichLog(
                 id="activity-log",
@@ -4786,6 +4851,14 @@ class SaarthiDashboard(App[None]):
         executions.add_column("Status", width=12)
         executions.cursor_type = "row"
         executions.zebra_stripes = True
+
+        workers = self.query_one("#workers-table", DataTable)
+        workers.add_column("Tool", width=12)
+        workers.add_column("Execution Mode", width=31)
+        workers.add_column("Approval", width=16)
+        workers.add_column("Worker State", width=28)
+        workers.cursor_type = "row"
+        workers.zebra_stripes = True
 
     def _update_runtime(self) -> None:
         now = datetime.now()
@@ -4844,6 +4917,11 @@ class SaarthiDashboard(App[None]):
                 item["findings"],
                 item["status"],
             )
+
+        workers = self.query_one("#workers-table", DataTable)
+        workers.clear()
+        for row in worker_rows(snapshot):
+            workers.add_row(*row)
 
         activity = self.query_one("#activity-log", RichLog)
         activity.clear()

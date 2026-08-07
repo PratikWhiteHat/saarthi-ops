@@ -3566,3 +3566,38 @@ def test_sqlmap_tui_row_shows_handoff_and_import() -> None:
         "External Result Handoff / Import",
         "6C.1 HANDOFF",
     ) in TOOLS
+
+
+def test_worker_rows_do_not_claim_sqlmap_automatic_execution() -> None:
+    from saarthi_ai.tui.app import demo_snapshot, worker_rows
+
+    snapshot = demo_snapshot()
+    rows = {row[0]: row for row in worker_rows(snapshot)}
+
+    assert rows["sqlmap"] == (
+        "sqlmap",
+        "External handoff + import",
+        "TUI approval",
+        "NO LAUNCHER",
+    )
+    assert rows["ffuf"][-1] == "Not configured"
+    assert rows["callback"][-1] == "Not configured"
+
+
+def test_worker_rows_show_approved_sqlmap_handoff_state() -> None:
+    from dataclasses import replace
+
+    from saarthi_ai.tui.app import demo_snapshot, worker_rows
+
+    snapshot = replace(
+        demo_snapshot(),
+        phase6_chain_status={"sqlmap": "AWAITING RESULT"},
+    )
+    rows = {row[0]: row for row in worker_rows(snapshot)}
+
+    assert rows["sqlmap"] == (
+        "sqlmap",
+        "External handoff + import",
+        "Approved",
+        "AWAITING RESULT · EXTERNAL",
+    )
