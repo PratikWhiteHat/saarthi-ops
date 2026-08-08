@@ -3568,6 +3568,7 @@ TOOLS = [
     ("Saarthi 6D", "Authenticated Workflows (authZ + tokens)", "ENABLED"),
     ("Saarthi 6E", "Exploit Confirmation (impact verdicts)", "ENABLED"),
     ("Saarthi 6F", "Post-Exploitation Simulation (impact projection)", "ENABLED"),
+    ("Saarthi 6G", "Cleanup & Rollback (footprint + reversal)", "ENABLED"),
     *validator_module_tool_rows(),
 ]
 
@@ -5956,6 +5957,40 @@ class SaarthiDashboard(App[None]):
             )
         except Exception as exc:  # non-fatal projection
             log_line(f"[6F] post-exploitation simulation skipped: {exc}")
+
+        # Phase 6G — cleanup & rollback: account for the engagement's footprint
+        # (residual artifacts, live sessions) and plan its reversal.
+        # Deterministic and offline — executes no target-side action; non-fatal.
+        try:
+            from saarthi_ai.orchestration.models import OrchestrationPhase
+            from saarthi_ai.persistence.cleanup_workflow import (
+                run_tracked_cleanup,
+            )
+            from saarthi_ai.persistence.orchestration_workflow import (
+                create_phase_execution,
+            )
+
+            child_6g = create_phase_execution(
+                database,
+                context,
+                phase=OrchestrationPhase.CLEANUP,
+                phase_name="cleanup_rollback",
+                active_testing_allowed=False,
+            )
+            tracked_6g = run_tracked_cleanup(
+                database,
+                child_6g.execution_id,
+                orchestration_id=context.orchestration_id,
+                evidence_root=evidence_root / "cleanup",
+            )
+            manifest_6g = tracked_6g.manifest
+            log_line(
+                f"[OK ] 6G cleanup: {len(manifest_6g.items)} item(s), "
+                f"footprint {manifest_6g.footprint.value}, "
+                f"{manifest_6g.reversible_count} auto-reversible."
+            )
+        except Exception as exc:  # non-fatal manifest
+            log_line(f"[6G] cleanup manifest skipped: {exc}")
 
         self.call_from_thread(
             self.notify,

@@ -71,6 +71,7 @@ class RunDigest:
     authz_summary: str | None = None
     exploit_summary: str | None = None
     post_exploitation_summary: str | None = None
+    cleanup_summary: str | None = None
 
 
 def _metadata(execution: ExecutionRecord) -> dict:
@@ -390,6 +391,32 @@ def _summarize_post_exploitation_evidence(evidence: object) -> str | None:
     return header + ("\n  - " + "\n  - ".join(lines) if lines else "")
 
 
+def _summarize_cleanup_evidence(evidence: object) -> str | None:
+    """Summarize a Phase 6G cleanup-manifest evidence record."""
+
+    path = getattr(evidence, "path", None)
+    if not path:
+        return None
+    try:
+        payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, TypeError):
+        return None
+    items = payload.get("items", []) or []
+    header = (
+        f"footprint {payload.get('footprint', 'no_target_footprint')}; "
+        f"{len(items)} item(s); "
+        f"{payload.get('reversible_count', 0)} auto-reversible, "
+        f"{payload.get('operator_action_count', 0)} operator-action"
+    )
+    lines = [
+        f"{i.get('artifact_type')} -> {i.get('action')} "
+        f"({i.get('reversibility')}) @ {i.get('location')}"
+        for i in items[:12]
+        if isinstance(i, dict)
+    ]
+    return header + ("\n  - " + "\n  - ".join(lines) if lines else "")
+
+
 def gather_run_digest(
     database: SaarthiDatabase,
     *,
@@ -437,6 +464,7 @@ def gather_run_digest(
     authz_summary: str | None = None
     exploit_summary: str | None = None
     post_exploitation_summary: str | None = None
+    cleanup_summary: str | None = None
 
     for execution in [parent, *children]:
         phase_code = _metadata(execution).get("phase_code", "-")
@@ -478,6 +506,10 @@ def gather_run_digest(
                 summary = _summarize_post_exploitation_evidence(evidence)
                 if summary:
                     post_exploitation_summary = summary
+            elif evidence.evidence_type is EvidenceType.CLEANUP_MANIFEST:
+                summary = _summarize_cleanup_evidence(evidence)
+                if summary:
+                    cleanup_summary = summary
 
     nuclei_summary = sqlmap_summary = None
     ghauri_summary = xsstrike_summary = wayback_summary = None
@@ -514,6 +546,7 @@ def gather_run_digest(
         authz_summary=authz_summary,
         exploit_summary=exploit_summary,
         post_exploitation_summary=post_exploitation_summary,
+        cleanup_summary=cleanup_summary,
     )
 
 
@@ -629,6 +662,13 @@ def build_analysis_prompt(digest: RunDigest) -> str:
             "Post-exploitation simulation (6F — impact projection; "
             "capabilities/blast radius, no new active testing):",
             f"  {digest.post_exploitation_summary}",
+        ]
+    if digest.cleanup_summary:
+        lines += [
+            "",
+            "Cleanup & rollback (6G — engagement footprint + residual "
+            "artifacts; no target-side action taken):",
+            f"  {digest.cleanup_summary}",
         ]
 
     if digest.failures:
