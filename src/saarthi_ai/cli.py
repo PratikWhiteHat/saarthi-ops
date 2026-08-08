@@ -432,6 +432,132 @@ def analyze(
     console.print(Markdown(content))
 
 
+@app.command()
+def simulate(
+    orchestration: Annotated[
+        str | None,
+        typer.Option(
+            "--orchestration",
+            help="Orchestration id to project. Defaults to the most recent run.",
+        ),
+    ] = None,
+) -> None:
+    """Phase 6F: project post-exploitation impact from a run's confirmed findings.
+
+    Read-only and offline. Reads the run's persisted 6F simulation, or
+    regenerates it deterministically from the 6E exploit-confirmation result.
+    Executes NOTHING against the target — no approval needed.
+    """
+
+    import json
+    from pathlib import Path
+
+    from saarthi_ai.persistence.models import EvidenceType
+    from saarthi_ai.post_exploitation.simulator import (
+        simulate_post_exploitation,
+    )
+
+    database = get_database()
+    executions = database.list_executions(limit=1_000)  # newest-first
+
+    target_oid = orchestration
+    if target_oid is None:
+        for record in executions:
+            oid = (record.metadata or {}).get("orchestration_id")
+            if oid:
+                target_oid = oid
+                break
+    if target_oid is None:
+        console.print("[bold red]No orchestration run found.[/bold red]")
+        raise typer.Exit(code=1)
+
+    def _read(path: str | None) -> dict | None:
+        if not path:
+            return None
+        try:
+            return json.loads(Path(path).read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return None
+
+    sim_payload: dict | None = None
+    exploit_payload: dict | None = None
+    for record in executions:
+        if (record.metadata or {}).get("orchestration_id") != target_oid:
+            continue
+        for evidence in database.list_evidence(record.execution_id):
+            if (
+                evidence.evidence_type
+                is EvidenceType.POST_EXPLOITATION_SIMULATION
+                and sim_payload is None
+            ):
+                sim_payload = _read(evidence.path)
+            elif (
+                evidence.evidence_type
+                is EvidenceType.EXPLOIT_CONFIRMATION_RESULT
+                and exploit_payload is None
+            ):
+                exploit_payload = _read(evidence.path)
+
+    regenerated = False
+    if sim_payload is None:
+        if exploit_payload is None:
+            console.print(
+                f"[bold red]No 6E/6F evidence[/bold red] for {target_oid!r}. "
+                "Run an assessment first."
+            )
+            raise typer.Exit(code=1)
+        sim_payload = simulate_post_exploitation(
+            exploit_confirmation_payload=exploit_payload
+        ).as_dict()
+        regenerated = True
+
+    scenarios = sim_payload.get("scenarios", []) or []
+    console.print("[bold]Phase 6F — post-exploitation simulation[/bold]")
+    console.print(f"Target        : {sim_payload.get('target', '-')}")
+    console.print(f"Orchestration : {target_oid}")
+    console.print(
+        f"Scenarios     : "
+        f"{sim_payload.get('scenario_count', len(scenarios))} | "
+        f"demonstrated: {sim_payload.get('demonstrated_count', 0)} | "
+        f"highest: {sim_payload.get('highest_severity', 'info')} | "
+        f"widest blast: {sim_payload.get('max_blast_radius', 'single_object')}"
+    )
+    if regenerated:
+        console.print(
+            "[dim](regenerated on the fly from the 6E result; not persisted)"
+            "[/dim]"
+        )
+    console.print(
+        "[dim]Simulation only — projected from confirmed findings; nothing was "
+        "executed against the target.[/dim]"
+    )
+
+    if not scenarios:
+        console.print(
+            "\n[yellow]No post-exploitation scenarios projected.[/yellow]"
+        )
+        raise typer.Exit(code=0)
+
+    table = Table(show_header=True, header_style="bold")
+    table.add_column("Severity")
+    table.add_column("Confidence")
+    table.add_column("Finding")
+    table.add_column("Blast radius")
+    table.add_column("Capabilities")
+    for scenario in scenarios:
+        if not isinstance(scenario, dict):
+            continue
+        table.add_row(
+            str(scenario.get("severity", "-")),
+            str(scenario.get("confidence", "-")),
+            str(scenario.get("kind", "-")),
+            str(scenario.get("blast_radius", "-")),
+            ", ".join(scenario.get("capabilities") or []) or "-",
+        )
+    console.print()
+    console.print(table)
+
+
 @project_app.command("create")
 def project_create(
     name: Annotated[
