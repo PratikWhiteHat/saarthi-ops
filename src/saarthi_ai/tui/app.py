@@ -2956,7 +2956,9 @@ def build_phase6_chain_status(
             return "ANALYZING"
         if state == "failed":
             return "FAILED"
-        return "APPROVAL REQUIRED"
+        # No preview/approval job pending → the tool runs automatically as
+        # part of AUTHORIZE & RUN. Show it as enabled, not approval-gated.
+        return "ENABLED"
 
     def validator_status(action: str) -> str:
         state = child_states.get(action)
@@ -3592,8 +3594,8 @@ def worker_rows(
     """Build truthful execution-worker rows from persisted workflow state."""
 
     phase6 = snapshot.phase6_chain_status
-    nuclei_status = phase6.get("nuclei", "APPROVAL REQUIRED")
-    sqlmap_status = phase6.get("sqlmap", "APPROVAL REQUIRED")
+    nuclei_status = phase6.get("nuclei", "ENABLED")
+    sqlmap_status = phase6.get("sqlmap", "ENABLED")
     latest_jobs: dict[str, dict[str, str]] = {}
     for job in snapshot.recent_worker_jobs:
         latest_jobs.setdefault(job.get("tool_name", ""), job)
@@ -3721,8 +3723,8 @@ def build_orchestration_summary_lines(
         "validator_total",
         str(len(PHASE6_SAFE_ACTIONS)),
     )
-    nuclei_status = phase6.get("nuclei", "APPROVAL REQUIRED")
-    sqlmap_status = phase6.get("sqlmap", "APPROVAL REQUIRED")
+    nuclei_status = phase6.get("nuclei", "ENABLED")
+    sqlmap_status = phase6.get("sqlmap", "ENABLED")
 
     return [
         "[bold cyan]ORCHESTRATION SUMMARY[/bold cyan]",
