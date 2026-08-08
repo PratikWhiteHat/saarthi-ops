@@ -199,6 +199,20 @@ SQLMAP_PROFILE = ToolProfile(
     max_argument_length=4_096,
 )
 
+# wabarc/wayback — archives a page to PUBLIC web archives (IA, archive.today,
+# IPFS, Telegraph, Ghostarchive). Outward-facing / effectively irreversible, so
+# it is opt-in and operator-authorized per run (see execution/wayback_adapter).
+WAYBACK_PROFILE = ToolProfile(
+    name="wayback",
+    executable_candidates=(
+        "/opt/homebrew/bin/wayback",
+        "/usr/local/bin/wayback",
+        str(Path.home() / "go/bin/wayback"),
+        "wayback",
+    ),
+    timeout_seconds=300,
+)
+
 
 def validate_tool_arguments(
     profile: ToolProfile,

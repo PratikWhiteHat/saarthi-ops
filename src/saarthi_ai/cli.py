@@ -1042,6 +1042,138 @@ def recon_dns(
     console.print(f"Evidence path: {result.evidence.path}")
 
 
+@recon_app.command("wayback")
+def recon_wayback(
+    url: Annotated[
+        str,
+        typer.Option(
+            "--url",
+            help="Authorized absolute http(s) URL to archive.",
+        ),
+    ],
+    backends: Annotated[
+        str,
+        typer.Option(
+            "--backends",
+            help="Comma-separated archive backends: ia,is,ph,ga,ip.",
+        ),
+    ] = "ia,is",
+    approved: Annotated[
+        bool,
+        typer.Option(
+            "--approved",
+            help=(
+                "REQUIRED: confirm you authorize PUBLISHING this target to "
+                "public web archives (outward-facing, irreversible)."
+            ),
+        ),
+    ] = False,
+) -> None:
+    """Archive an authorized target to public web archives, with an AI note.
+
+    wayback PUBLISHES the target's pages to third-party archives (Internet
+    Archive, archive.today, IPFS, ...). It is opt-in and requires --approved.
+    """
+
+    import asyncio
+    import hashlib
+    import json
+    from pathlib import Path
+
+    from saarthi_ai.analysis import comment_on_live_output
+    from saarthi_ai.execution.wayback_adapter import (
+        WaybackError,
+        run_wayback_archive,
+    )
+    from saarthi_ai.llm.ollama_client import (
+        OllamaUnavailableError,
+        SaarthiOllamaClient,
+    )
+
+    console.print(
+        "[bold yellow]WARNING:[/bold yellow] wayback PUBLISHES the target to "
+        "public archives (Internet Archive, archive.today, IPFS, ...). This "
+        "is outward-facing and effectively irreversible."
+    )
+    if not approved:
+        console.print(
+            "[bold yellow]Approval required.[/bold yellow] Re-run with "
+            "--approved to confirm external publishing is authorized."
+        )
+        raise typer.Exit(code=1)
+
+    selected = tuple(part.strip() for part in backends.split(",") if part.strip())
+    console.print(
+        f"[bold]Archiving {url} via {', '.join(selected) or '(none)'}...[/bold]"
+    )
+
+    def on_output(event) -> None:
+        console.print(
+            f"[dim][{event.tool_name}:{event.stream}] {event.line}[/dim]"
+        )
+
+    try:
+        result = run_wayback_archive(
+            url,
+            backends=selected,
+            authorized=True,
+            on_output=on_output,
+        )
+    except WaybackError as exc:
+        console.print(f"[bold red]wayback failed:[/bold red] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    console.print()
+    console.print("[bold green]Archive run complete.[/bold green]")
+    console.print(f"Exit code: {result.tool_result.exit_code}")
+    console.print(f"Archived URLs ({len(result.archived_urls)}):")
+    for archived in result.archived_urls:
+        console.print(f"  {archived}")
+
+    # Persist JSON evidence, mirroring the other recon tools.
+    evidence_dir = Path.cwd() / "evidence" / "wayback"
+    evidence_dir.mkdir(parents=True, exist_ok=True)
+    digest = hashlib.sha256(
+        (url + "|" + ",".join(selected)).encode("utf-8")
+    ).hexdigest()[:12]
+    evidence_path = evidence_dir / f"wayback-{digest}.json"
+    evidence_path.write_text(
+        json.dumps(
+            {
+                "target_url": result.target_url,
+                "backends": list(result.backends),
+                "archived_urls": list(result.archived_urls),
+                "exit_code": result.tool_result.exit_code,
+                "timed_out": result.tool_result.timed_out,
+                "stdout_sha256": result.tool_result.stdout_sha256,
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    console.print(f"Evidence path: {evidence_path}")
+
+    # AI note on the result, using the same local model as the other tools.
+    lines = [
+        f"[wayback:stdout] {line}"
+        for line in (result.tool_result.stdout or "").splitlines()
+        if line.strip()
+    ][:40]
+    if not lines:
+        return
+    try:
+        client = SaarthiOllamaClient(get_settings())
+        note = asyncio.run(
+            comment_on_live_output(client, "wayback", url, lines)
+        )
+        console.print()
+        console.print(f"[bold]AI:[/bold] {note}")
+    except OllamaUnavailableError as exc:
+        console.print(f"[dim]AI note unavailable: {exc}[/dim]")
+    except Exception as exc:  # defensive: never fail the run on the AI note
+        console.print(f"[dim]AI note failed: {exc}[/dim]")
+
+
 @recon_app.command("subdomains")
 def recon_subdomains(
     execution_id: Annotated[

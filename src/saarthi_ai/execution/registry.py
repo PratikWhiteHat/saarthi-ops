@@ -43,6 +43,15 @@ TOOL_REGISTRY: dict[str, ToolDefinition] = {
         supported_asset_types=WEB_AND_API,
         timeout_seconds=600,
     ),
+    "wayback": ToolDefinition(
+        name="wayback",
+        description=(
+            "Archive authorized target pages to public web archives "
+            "(opt-in; publishes externally, operator-authorized per run)."
+        ),
+        supported_asset_types=WEB_AND_API,
+        timeout_seconds=300,
+    ),
     "browser-automation": ToolDefinition(
         name="browser-automation",
         description="Perform controlled browser workflow validation.",

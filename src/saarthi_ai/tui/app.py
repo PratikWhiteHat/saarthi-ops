@@ -3537,6 +3537,7 @@ TOOLS = [
     ("httpx", "Live Host & Service Probe", "ENABLED"),
     ("katana", "Web Crawler", "ENABLED"),
     ("Saarthi JS", "JavaScript Intelligence", "ENABLED"),
+    ("wayback", "Web Archiving (opt-in · publishes ext.)", "APPROVAL"),
     ("nuclei", "Controlled Preview / Execution", "APPROVAL"),
     ("sqlmap", "External Result Handoff / Import", "6C.1 HANDOFF"),
     ("ghauri", "Blind SQLi Cross-check", "PHASE 6"),
