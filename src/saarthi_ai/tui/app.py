@@ -4904,11 +4904,9 @@ class SaarthiDashboard(App[None]):
         ("p", "focus_phases", "Phases"),
         ("t", "focus_tools", "Tools"),
         ("e", "focus_executions", "Evidence"),
-        ("v", "run_validation", "Run Nuclei+SQLMap"),
-        ("V", "run_validation_dump", "Run +1-row dump"),
         ("u", "focus_url", "URL"),
         ("a", "ai_analyze", "AI Analyze"),
-        ("A", "toggle_ai_live", "AI live"),
+        ("A", "toggle_ai_live", "AI"),
         ("g", "ai_propose", "AI Propose"),
         ("G", "ai_run_next", "AI Run"),
         ("x", "ai_skip", "AI Skip"),
@@ -5246,8 +5244,8 @@ class SaarthiDashboard(App[None]):
     def action_help(self) -> None:
         self.notify(
             "R refresh · U focus URL (Enter = full assessment) · "
-            "V nuclei+sqlmap on chain target · shift+V +1-row dump · "
-            "a AI-analyze run · shift+A live AI on/off · P phases · Q quit",
+            "a AI analyze · shift+A AI on/off · g AI propose · "
+            "shift+G AI run · x AI skip · P phases · Q quit",
             timeout=7,
         )
 
@@ -6123,7 +6121,7 @@ class SaarthiDashboard(App[None]):
                 comments += 1
                 for entry in note.splitlines():
                     if entry.strip():
-                        log(f"[AI live] {entry.strip()}")
+                        log(f"[AI] {entry.strip()}")
 
         thread = threading.Thread(
             target=loop, name="live-scan-ai", daemon=True
