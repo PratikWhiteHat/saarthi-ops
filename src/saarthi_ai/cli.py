@@ -4772,3 +4772,174 @@ def authenticated_run(
         console.print(f"[dim]AI note unavailable: {exc}[/dim]")
     except Exception as exc:  # defensive: never fail on the AI note
         console.print(f"[dim]AI note failed: {exc}[/dim]")
+
+
+@confirm_app.command("extract")
+def confirm_extract(
+    execution: Annotated[
+        str,
+        typer.Option(
+            "--execution",
+            help="Orchestration id of the run (the 'orchestration-...' id).",
+        ),
+    ],
+    finding: Annotated[
+        str,
+        typer.Option(
+            "--finding",
+            help="finding_id from the Phase 6E exploit-confirmation report.",
+        ),
+    ],
+    approved: Annotated[
+        bool,
+        typer.Option(
+            "--approved",
+            help="REQUIRED: authorize this single-row data extraction.",
+        ),
+    ] = False,
+) -> None:
+    """Phase 6E: approval-gated single-row data extraction for a confirmed finding.
+
+    Reads exactly ONE row via the already-confirmed SQLi to prove data impact.
+    Never automatic — requires --approved. Raw output is shown in the console;
+    the persisted evidence is redacted (proof only, no data).
+    """
+
+    import hashlib
+    import json
+    from pathlib import Path
+
+    from saarthi_ai.exploit_confirmation.extraction import (
+        ExtractionError,
+        run_single_row_extraction,
+    )
+    from saarthi_ai.persistence.models import AuditEventType, EvidenceType
+
+    if not approved:
+        console.print(
+            "[bold yellow]Approval required.[/bold yellow] This reads ONE real "
+            "row from the target's database. Re-run with --approved."
+        )
+        raise typer.Exit(code=1)
+
+    database = get_database()
+    target_finding: dict | None = None
+    child_execution_id: str | None = None
+    for record in database.list_executions(limit=1_000):
+        if (record.metadata or {}).get("orchestration_id") != execution:
+            continue
+        for evidence in database.list_evidence(record.execution_id):
+            if (
+                evidence.evidence_type
+                is EvidenceType.EXPLOIT_CONFIRMATION_RESULT
+                and evidence.path
+            ):
+                try:
+                    payload = json.loads(
+                        Path(evidence.path).read_text(encoding="utf-8")
+                    )
+                except (OSError, json.JSONDecodeError):
+                    continue
+                for item in payload.get("findings", []) or []:
+                    if item.get("finding_id") == finding:
+                        target_finding = item
+                        child_execution_id = record.execution_id
+                        break
+            if target_finding:
+                break
+        if target_finding:
+            break
+
+    if target_finding is None:
+        console.print(
+            f"[bold red]Finding {finding!r} not found[/bold red] in the 6E "
+            f"report for {execution!r}."
+        )
+        raise typer.Exit(code=1)
+
+    kind = target_finding.get("extraction_kind")
+    if kind != "sqli_row":
+        if kind == "idor_object":
+            console.print(
+                "[yellow]IDOR object extraction is not implemented yet; 6E "
+                "already proves this non-extractively (cross-account "
+                "signature match).[/yellow]"
+            )
+        else:
+            console.print(
+                "[yellow]This finding has no data-extraction step.[/yellow]"
+            )
+        raise typer.Exit(code=0)
+
+    url = target_finding.get("target", "")
+    parameter = target_finding.get("parameter")
+    console.print(
+        f"[bold yellow]WARNING:[/bold yellow] extracting ONE real row via "
+        f"confirmed SQLi on '{parameter}' at {url}."
+    )
+
+    def on_output(event) -> None:
+        console.print(
+            f"[dim][{event.tool_name}:{event.stream}] {event.line}[/dim]"
+        )
+
+    out_dir = Path.cwd() / "evidence" / "extractions" / finding
+    out_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        result = run_single_row_extraction(
+            url,
+            parameter,
+            out_dir / "sqlmap-output",
+            authorized=True,
+            on_output=on_output,
+        )
+    except ExtractionError as exc:
+        console.print(f"[bold red]Extraction failed:[/bold red] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    console.print()
+    console.print(
+        f"[bold]{'Row extracted' if result.extracted else 'No row extracted'}"
+        f"[/bold] (exit {result.exit_code})."
+    )
+    console.print(
+        "[dim]Raw output shown above (console only); persisted proof is "
+        "redacted.[/dim]"
+    )
+
+    proof = {
+        "finding_id": finding,
+        "target": url,
+        "parameter": parameter,
+        "extraction_kind": "sqli_row",
+        "extracted": result.extracted,
+        "exit_code": result.exit_code,
+        "stdout_sha256": result.stdout_sha256,
+        "note": "single-row dump; raw data console-only, not persisted",
+    }
+    body = json.dumps(proof, indent=2).encode("utf-8")
+    proof_path = (
+        out_dir / f"extraction-proof-{hashlib.sha256(body).hexdigest()[:12]}.json"
+    )
+    proof_path.write_bytes(body)
+    console.print(f"Redacted proof: {proof_path}")
+
+    if child_execution_id:
+        try:
+            database.add_audit_event(
+                child_execution_id,
+                event_type=AuditEventType.TOOL_COMPLETED,
+                actor="6e-extract",
+                message=(
+                    f"[6E][extract] Operator-approved single-row extraction "
+                    f"on {parameter} @ {url}: extracted={result.extracted}."
+                ),
+                details={
+                    "phase_code": "6E",
+                    "tool": "exploit-confirmation-extract",
+                    "finding_id": finding,
+                    "extracted": result.extracted,
+                },
+            )
+        except Exception:  # audit is best-effort
+            pass
