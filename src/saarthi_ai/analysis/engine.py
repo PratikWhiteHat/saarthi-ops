@@ -70,6 +70,7 @@ class RunDigest:
     archive_summary: str | None = None
     authz_summary: str | None = None
     exploit_summary: str | None = None
+    post_exploitation_summary: str | None = None
 
 
 def _metadata(execution: ExecutionRecord) -> dict:
@@ -359,6 +360,36 @@ def _summarize_exploit_evidence(evidence: object) -> str | None:
     return header + ("\n  - " + "\n  - ".join(lines) if lines else "")
 
 
+def _summarize_post_exploitation_evidence(evidence: object) -> str | None:
+    """Summarize a Phase 6F post-exploitation-simulation evidence record."""
+
+    path = getattr(evidence, "path", None)
+    if not path:
+        return None
+    try:
+        payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, TypeError):
+        return None
+    scenarios = payload.get("scenarios", []) or []
+    header = (
+        f"{payload.get('demonstrated_count', 0)} demonstrated of "
+        f"{len(scenarios)}; highest {payload.get('highest_severity', 'info')}; "
+        f"widest blast {payload.get('max_blast_radius', 'single_object')}"
+    )
+    lines = [
+        f"{s.get('severity')} {s.get('confidence')} {s.get('kind')} -> "
+        f"{s.get('blast_radius')}"
+        + (
+            f" [{', '.join(s.get('capabilities') or [])}]"
+            if s.get("capabilities")
+            else ""
+        )
+        for s in scenarios[:12]
+        if isinstance(s, dict)
+    ]
+    return header + ("\n  - " + "\n  - ".join(lines) if lines else "")
+
+
 def gather_run_digest(
     database: SaarthiDatabase,
     *,
@@ -405,6 +436,7 @@ def gather_run_digest(
     evidence_signals: list[str] = []
     authz_summary: str | None = None
     exploit_summary: str | None = None
+    post_exploitation_summary: str | None = None
 
     for execution in [parent, *children]:
         phase_code = _metadata(execution).get("phase_code", "-")
@@ -439,6 +471,13 @@ def gather_run_digest(
                 summary = _summarize_exploit_evidence(evidence)
                 if summary:
                     exploit_summary = summary
+            elif (
+                evidence.evidence_type
+                is EvidenceType.POST_EXPLOITATION_SIMULATION
+            ):
+                summary = _summarize_post_exploitation_evidence(evidence)
+                if summary:
+                    post_exploitation_summary = summary
 
     nuclei_summary = sqlmap_summary = None
     ghauri_summary = xsstrike_summary = wayback_summary = None
@@ -474,6 +513,7 @@ def gather_run_digest(
         archive_summary=archive_summary,
         authz_summary=authz_summary,
         exploit_summary=exploit_summary,
+        post_exploitation_summary=post_exploitation_summary,
     )
 
 
@@ -582,6 +622,13 @@ def build_analysis_prompt(digest: RunDigest) -> str:
             "",
             "Exploit confirmation (6E — impact verdicts):",
             f"  {digest.exploit_summary}",
+        ]
+    if digest.post_exploitation_summary:
+        lines += [
+            "",
+            "Post-exploitation simulation (6F — impact projection; "
+            "capabilities/blast radius, no new active testing):",
+            f"  {digest.post_exploitation_summary}",
         ]
 
     if digest.failures:

@@ -3559,6 +3559,7 @@ TOOLS = [
     ("Saarthi 6C.7", "API Data-Exposure Surface Validator", "APPROVAL"),
     ("Saarthi 6D", "Authenticated Workflows (authZ + tokens)", "ENABLED"),
     ("Saarthi 6E", "Exploit Confirmation (impact verdicts)", "ENABLED"),
+    ("Saarthi 6F", "Post-Exploitation Simulation (impact projection)", "ENABLED"),
     *validator_module_tool_rows(),
 ]
 
@@ -5911,6 +5912,42 @@ class SaarthiDashboard(App[None]):
             )
         except Exception as exc:  # non-fatal aggregation
             log_line(f"[6E] exploit confirmation skipped: {exc}")
+
+        # Phase 6F — post-exploitation simulation: project the impact of the
+        # findings 6E confirmed (capabilities, blast radius, confidence).
+        # Deterministic and offline — executes nothing against the target;
+        # non-fatal.
+        try:
+            from saarthi_ai.orchestration.models import OrchestrationPhase
+            from saarthi_ai.persistence.orchestration_workflow import (
+                create_phase_execution,
+            )
+            from saarthi_ai.persistence.post_exploitation_workflow import (
+                run_tracked_post_exploitation,
+            )
+
+            child_6f = create_phase_execution(
+                database,
+                context,
+                phase=OrchestrationPhase.POST_EXPLOITATION,
+                phase_name="post_exploitation",
+                active_testing_allowed=False,
+            )
+            tracked_6f = run_tracked_post_exploitation(
+                database,
+                child_6f.execution_id,
+                orchestration_id=context.orchestration_id,
+                evidence_root=evidence_root / "post-exploitation",
+            )
+            result_6f = tracked_6f.result
+            log_line(
+                f"[OK ] 6F post-exploitation: {len(result_6f.scenarios)} "
+                f"scenario(s), {result_6f.demonstrated_count} demonstrated, "
+                f"highest {result_6f.highest_severity.value}, widest blast "
+                f"{result_6f.max_blast_radius.value}."
+            )
+        except Exception as exc:  # non-fatal projection
+            log_line(f"[6F] post-exploitation simulation skipped: {exc}")
 
         self.call_from_thread(
             self.notify,
