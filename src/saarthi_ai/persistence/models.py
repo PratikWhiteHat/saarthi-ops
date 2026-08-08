@@ -68,6 +68,7 @@ class EvidenceType(StrEnum):
     SQLMAP_HANDOFF_MANIFEST = "sqlmap_handoff_manifest"
     SQLMAP_EXTERNAL_RESULT = "sqlmap_external_result"
     AUTHENTICATED_WORKFLOW_RESULT = "authenticated_workflow_result"
+    EXPLOIT_CONFIRMATION_RESULT = "exploit_confirmation_result"
     UPLOAD_VALIDATION_PLAN = "upload_validation_plan"
     UPLOAD_EXTERNAL_RESULT = "upload_external_result"
     TLS_RESULT = "tls_result"
