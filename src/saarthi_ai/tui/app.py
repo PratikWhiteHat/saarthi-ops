@@ -3409,15 +3409,23 @@ BASE_PHASES = [
 ]
 
 
+_PHASE_CODE_PREFIX = re.compile(r"^(\d[A-Z])-")
+
+
 def normalize_phase_code(phase_code: str) -> str:
-    """Normalize orchestration child phase identifiers for the TUI."""
+    """Normalize orchestration child phase identifiers for the TUI.
+
+    Child executions record their phase as the full OrchestrationPhase value
+    (e.g. "6F-post-exploitation", "4A-cors"); collapse any "<NX>-..." suffix
+    back to the "<NX>" roadmap code used in BASE_PHASES so completed phases
+    like 6D/6E/6F are recognized as DONE.
+    """
 
     normalized = phase_code.strip()
 
-    if normalized.startswith("4A-"):
-        return "4A"
-    if normalized.startswith("6C-"):
-        return "6C"
+    match = _PHASE_CODE_PREFIX.match(normalized)
+    if match:
+        return match.group(1)
 
     return normalized
 
