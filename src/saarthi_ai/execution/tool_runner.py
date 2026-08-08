@@ -230,6 +230,23 @@ GHAURI_PROFILE = ToolProfile(
     max_argument_length=4_096,
 )
 
+# XSStrike — reflected/DOM XSS detection. Active testing (injects payloads), so
+# it is operator-authorized like sqlmap/ghauri; the adapter keeps it targeted
+# and non-destructive (single URL, no blind-XSS injection, no site crawl).
+XSSTRIKE_PROFILE = ToolProfile(
+    name="xsstrike",
+    executable_candidates=(
+        str(Path.home() / "bin/xsstrike"),
+        "/opt/homebrew/bin/xsstrike",
+        "/usr/local/bin/xsstrike",
+        "xsstrike",
+    ),
+    timeout_seconds=600,
+    max_output_bytes=2_000_000,
+    max_arguments=48,
+    max_argument_length=8_192,
+)
+
 
 def validate_tool_arguments(
     profile: ToolProfile,

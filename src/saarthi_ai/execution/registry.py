@@ -61,6 +61,15 @@ TOOL_REGISTRY: dict[str, ToolDefinition] = {
         supported_asset_types=WEB_AND_API,
         timeout_seconds=600,
     ),
+    "xsstrike": ToolDefinition(
+        name="xsstrike",
+        description=(
+            "Reflected/DOM XSS detection; operator-authorized, targeted "
+            "(single URL, no blind-XSS injection or site crawl)."
+        ),
+        supported_asset_types=WEB_AND_API,
+        timeout_seconds=600,
+    ),
     "browser-automation": ToolDefinition(
         name="browser-automation",
         description="Perform controlled browser workflow validation.",

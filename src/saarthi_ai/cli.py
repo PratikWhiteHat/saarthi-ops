@@ -1499,6 +1499,114 @@ def recon_javascript_intelligence(
     console.print(f"Evidence path: {result.evidence.path}")
 
 
+@check_app.command("xss")
+def check_xss(
+    url: Annotated[
+        str,
+        typer.Option(
+            "--url",
+            help="Authorized absolute http(s) URL (with parameters) to test.",
+        ),
+    ],
+    data: Annotated[
+        str,
+        typer.Option("--data", help="Optional POST data (e.g. 'q=test')."),
+    ] = "",
+    json_data: Annotated[
+        bool,
+        typer.Option("--json", help="Treat --data as JSON."),
+    ] = False,
+    delay: Annotated[
+        int,
+        typer.Option("--delay", help="Seconds between requests (politeness)."),
+    ] = 0,
+    approved: Annotated[
+        bool,
+        typer.Option(
+            "--approved",
+            help="REQUIRED: confirm authorization for active XSS testing.",
+        ),
+    ] = False,
+) -> None:
+    """Detect reflected/DOM XSS with XSStrike (targeted, non-destructive) + AI.
+
+    XSStrike injects live XSS payloads, so it requires --approved. It scans
+    only the given URL — no site crawl and no blind-XSS injection.
+    """
+
+    import asyncio
+
+    from saarthi_ai.analysis import comment_on_live_output
+    from saarthi_ai.execution.xsstrike_adapter import (
+        XSStrikeError,
+        run_xsstrike_scan,
+    )
+    from saarthi_ai.llm.ollama_client import (
+        OllamaUnavailableError,
+        SaarthiOllamaClient,
+    )
+
+    if not approved:
+        console.print(
+            "[bold yellow]Approval required.[/bold yellow] XSStrike performs "
+            "active XSS testing. Re-run with --approved."
+        )
+        raise typer.Exit(code=1)
+
+    console.print(f"[bold]XSStrike XSS scan[/bold] on {url}...")
+
+    def on_output(event) -> None:
+        console.print(
+            f"[dim][{event.tool_name}:{event.stream}] {event.line}[/dim]"
+        )
+
+    try:
+        result = run_xsstrike_scan(
+            url,
+            data=data or None,
+            json_data=json_data,
+            delay=delay,
+            authorized=True,
+            on_output=on_output,
+        )
+    except XSStrikeError as exc:
+        console.print(f"[bold red]XSStrike failed:[/bold red] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    console.print()
+    verdict = (
+        "[bold green]XSS FOUND[/bold green]"
+        if result.vulnerable
+        else "[bold]no XSS confirmed[/bold]"
+    )
+    console.print(
+        f"XSStrike verdict: {verdict} (max efficiency {result.max_efficiency})"
+    )
+    console.print(f"Exit code: {result.tool_result.exit_code}")
+
+    raw = (result.tool_result.stdout or "") + "\n" + (
+        result.tool_result.stderr or ""
+    )
+    lines = [
+        f"[xsstrike] {line}"
+        for line in raw.splitlines()
+        if line.strip()
+    ][:40]
+    if not lines:
+        return
+    try:
+        client = SaarthiOllamaClient(get_settings())
+        note = asyncio.run(
+            comment_on_live_output(client, "xsstrike", url, lines)
+        )
+        console.print()
+        console.print(f"[bold]AI:[/bold] {note}")
+    except OllamaUnavailableError as exc:
+        console.print(f"[dim]AI note unavailable: {exc}[/dim]")
+    except Exception as exc:  # defensive: never fail on the AI note
+        console.print(f"[dim]AI note failed: {exc}[/dim]")
+
+
 @check_app.command("direct")
 def check_direct(
     execution_id: Annotated[

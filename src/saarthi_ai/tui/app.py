@@ -3542,6 +3542,7 @@ TOOLS = [
     ("nuclei", "Controlled Preview / Execution", "APPROVAL"),
     ("sqlmap", "External Result Handoff / Import", "6C.1 HANDOFF"),
     ("ghauri", "Blind SQLi Cross-check (auto 6C)", "ENABLED"),
+    ("xsstrike", "XSS Detection (reflected/DOM)", "APPROVAL"),
     ("OAST Manager", "Out-of-band Correlation", "PHASE 6"),
     ("Saarthi 6A", "Attack Hypothesis Engine", "ENABLED"),
     ("Saarthi 6B", "Policy & Approval Gate", "APPROVAL"),
