@@ -249,6 +249,11 @@ authenticated_app = typer.Typer(
     help="Run Phase 6D authenticated (cross-account) workflows.",
 )
 
+cleanup_app = typer.Typer(
+    no_args_is_help=True,
+    help="Inspect and reverse the Phase 6G engagement footprint.",
+)
+
 app.add_typer(project_app, name="project")
 app.add_typer(execution_app, name="execution")
 app.add_typer(evidence_app, name="evidence")
@@ -259,6 +264,7 @@ app.add_typer(confirm_app, name="confirm")
 app.add_typer(controlled_app, name="controlled")
 app.add_typer(workflow_app, name="workflow")
 app.add_typer(authenticated_app, name="authenticated")
+app.add_typer(cleanup_app, name="cleanup")
 
 console = Console()
 
@@ -556,6 +562,224 @@ def simulate(
         )
     console.print()
     console.print(table)
+
+
+def _load_cleanup_manifest(database, orchestration: str | None) -> tuple[str, dict]:
+    """Resolve the run and return (orchestration_id, manifest dict).
+
+    Prefers the persisted 6G manifest; regenerates deterministically from the
+    run's evidence when none exists. Read-only.
+    """
+
+    import json
+    from pathlib import Path
+
+    from saarthi_ai.cleanup.planner import build_cleanup_manifest
+    from saarthi_ai.persistence.cleanup_workflow import _gather_run_evidence
+    from saarthi_ai.persistence.models import EvidenceType
+
+    executions = database.list_executions(limit=1_000)  # newest-first
+    target_oid = orchestration
+    if target_oid is None:
+        for record in executions:
+            oid = (record.metadata or {}).get("orchestration_id")
+            if oid:
+                target_oid = oid
+                break
+    if target_oid is None:
+        console.print("[bold red]No orchestration run found.[/bold red]")
+        raise typer.Exit(code=1)
+
+    for record in executions:
+        if (record.metadata or {}).get("orchestration_id") != target_oid:
+            continue
+        for evidence in database.list_evidence(record.execution_id):
+            if (
+                evidence.evidence_type is EvidenceType.CLEANUP_MANIFEST
+                and evidence.path
+            ):
+                try:
+                    return target_oid, json.loads(
+                        Path(evidence.path).read_text(encoding="utf-8")
+                    )
+                except (OSError, json.JSONDecodeError):
+                    pass
+
+    target, records = _gather_run_evidence(database, target_oid)
+    manifest = build_cleanup_manifest(target=target, evidence_records=records)
+    return target_oid, manifest.as_dict()
+
+
+@cleanup_app.command("show")
+def cleanup_show(
+    orchestration: Annotated[
+        str | None,
+        typer.Option(
+            "--orchestration",
+            help="Orchestration id. Defaults to the most recent run.",
+        ),
+    ] = None,
+) -> None:
+    """Phase 6G: show the run's cleanup/rollback manifest (read-only)."""
+
+    database = get_database()
+    target_oid, manifest = _load_cleanup_manifest(database, orchestration)
+    items = manifest.get("items", []) or []
+
+    console.print("[bold]Phase 6G — cleanup & rollback manifest[/bold]")
+    console.print(f"Target        : {manifest.get('target', '-')}")
+    console.print(f"Orchestration : {target_oid}")
+    console.print(
+        f"Footprint     : {manifest.get('footprint', 'no_target_footprint')} | "
+        f"items: {manifest.get('item_count', len(items))} | "
+        f"auto-reversible: {manifest.get('reversible_count', 0)} | "
+        f"operator-action: {manifest.get('operator_action_count', 0)}"
+    )
+    console.print(
+        "[dim]Read-only — no target-side action taken. Reversal is an "
+        "explicit, approval-gated `cleanup rollback` step.[/dim]"
+    )
+
+    if not items:
+        console.print(
+            "\n[green]No residual artifacts — engagement left no footprint "
+            "to roll back.[/green]"
+        )
+        raise typer.Exit(code=0)
+
+    table = Table(show_header=True, header_style="bold")
+    table.add_column("Item")
+    table.add_column("Artifact")
+    table.add_column("Action")
+    table.add_column("Reversible")
+    table.add_column("Location")
+    for entry in items:
+        if not isinstance(entry, dict):
+            continue
+        table.add_row(
+            str(entry.get("item_id", "-")),
+            str(entry.get("artifact_type", "-")),
+            str(entry.get("action", "-")),
+            str(entry.get("reversibility", "-")),
+            str(entry.get("location", "-")),
+        )
+    console.print()
+    console.print(table)
+
+
+@cleanup_app.command("rollback")
+def cleanup_rollback(
+    item: Annotated[
+        str,
+        typer.Option("--item", help="item_id from `cleanup show`."),
+    ],
+    orchestration: Annotated[
+        str | None,
+        typer.Option(
+            "--orchestration",
+            help="Orchestration id. Defaults to the most recent run.",
+        ),
+    ] = None,
+    approved: Annotated[
+        bool,
+        typer.Option(
+            "--approved",
+            help="REQUIRED: authorize this target-side rollback action.",
+        ),
+    ] = False,
+) -> None:
+    """Phase 6G: approval-gated reversal of one auto-reversible cleanup item.
+
+    Only auto-reversible target-side artifacts (e.g. a self-uploaded test file)
+    are executed, and only within the run's target host. Operator-action items
+    (local disposal, session invalidation) are reported as guidance, never run.
+    """
+
+    from urllib.parse import urlparse
+
+    database = get_database()
+    _target_oid, manifest = _load_cleanup_manifest(database, orchestration)
+
+    entry = next(
+        (
+            i
+            for i in manifest.get("items", []) or []
+            if isinstance(i, dict) and i.get("item_id") == item
+        ),
+        None,
+    )
+    if entry is None:
+        console.print(
+            f"[bold red]Item {item!r} not found[/bold red] in the manifest."
+        )
+        raise typer.Exit(code=1)
+
+    if (
+        entry.get("reversibility") != "auto_reversible"
+        or entry.get("action") != "delete_target_artifact"
+    ):
+        console.print(
+            f"[yellow]Item {item} is '{entry.get('reversibility')}' / "
+            f"'{entry.get('action')}' — handle manually per the manifest "
+            f"guidance:[/yellow] {entry.get('detail', '')}"
+        )
+        raise typer.Exit(code=0)
+
+    location = str(entry.get("location", ""))
+    manifest_target = str(manifest.get("target", ""))
+    parsed = urlparse(location)
+    target_host = urlparse(manifest_target).hostname
+    if (
+        parsed.scheme.lower() not in {"http", "https"}
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+    ):
+        console.print(
+            "[bold red]Refusing rollback:[/bold red] artifact location is not a "
+            "valid credential-free HTTP(S) URL."
+        )
+        raise typer.Exit(code=1)
+    if not target_host or parsed.hostname != target_host:
+        console.print(
+            f"[bold red]Refusing rollback:[/bold red] artifact host "
+            f"'{parsed.hostname}' is outside the run target '{target_host}'."
+        )
+        raise typer.Exit(code=1)
+
+    if not approved:
+        console.print(
+            "[bold yellow]Approval required.[/bold yellow] This sends a DELETE "
+            f"to {location} on the live target. Re-run with --approved."
+        )
+        raise typer.Exit(code=1)
+
+    import httpx
+
+    console.print(
+        f"[bold yellow]WARNING:[/bold yellow] removing self-created artifact "
+        f"via DELETE {location}."
+    )
+    try:
+        response = httpx.request(
+            "DELETE",
+            location,
+            timeout=15.0,
+            follow_redirects=False,
+        )
+        status = response.status_code
+    except httpx.HTTPError as exc:
+        console.print(f"[bold red]Rollback request failed:[/bold red] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    removed = status in {200, 202, 204, 404}
+    console.print(
+        f"[bold]{'Artifact removed' if removed else 'Rollback uncertain'}"
+        f"[/bold] (HTTP {status})."
+    )
+    console.print(
+        "[dim]404 is treated as already-gone. Verify manually if needed.[/dim]"
+    )
 
 
 @project_app.command("create")
