@@ -3536,6 +3536,7 @@ TOOLS = [
     ("crt.sh", "Certificate Transparency", "ENABLED"),
     ("httpx", "Live Host & Service Probe", "ENABLED"),
     ("katana", "Web Crawler", "ENABLED"),
+    ("wayback-cdx", "Historical URL Intelligence (3D)", "ENABLED"),
     ("Saarthi JS", "JavaScript Intelligence", "ENABLED"),
     ("wayback", "Web Archiving (opt-in · publishes ext.)", "APPROVAL"),
     ("nuclei", "Controlled Preview / Execution", "APPROVAL"),

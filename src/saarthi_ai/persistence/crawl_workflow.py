@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import threading
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
@@ -224,6 +225,17 @@ def run_tracked_crawl(
             },
         )
 
+        # Phase 3D "URL Intelligence": passive historical URLs from the
+        # Wayback Machine CDX (read-only; publishes nothing). Best-effort —
+        # a CDX hiccup must never fail the required crawl phase.
+        _collect_wayback_url_intelligence(
+            database,
+            execution_id,
+            collection.domain,
+            evidence_root=evidence_root,
+            actor=actor,
+        )
+
         execution = database.transition_execution(
             execution_id,
             ExecutionState.ANALYZING,
@@ -267,3 +279,105 @@ def run_tracked_crawl(
         )
 
         raise
+
+
+def _collect_wayback_url_intelligence(
+    database: SaarthiDatabase,
+    execution_id: str,
+    domain: str,
+    *,
+    evidence_root: Path | None,
+    actor: str,
+    max_logged: int = 60,
+) -> None:
+    """Passive Wayback CDX URL discovery, logged as a Phase 3D sub-step.
+
+    Non-fatal: any failure is recorded and swallowed so it never breaks the
+    required crawl phase. Read-only — it queries the public Wayback index and
+    publishes nothing to the target.
+    """
+
+    from saarthi_ai.recon.wayback_cdx import collect_wayback_urls
+
+    database.add_audit_event(
+        execution_id,
+        event_type=AuditEventType.TOOL_STARTED,
+        actor=actor,
+        message=(
+            "[3D][wayback] Historical URL intelligence (Wayback CDX) started."
+        ),
+        details={
+            "phase_code": "3D",
+            "tool": "wayback-cdx",
+            "domain": domain,
+            "mode": "passive-read-only",
+        },
+    )
+
+    try:
+        result = collect_wayback_urls(domain)
+    except Exception as exc:  # non-fatal enrichment; never fail the phase
+        database.add_audit_event(
+            execution_id,
+            event_type=AuditEventType.TOOL_FAILED,
+            actor=actor,
+            message=f"[3D][wayback] URL intelligence skipped: {exc}",
+            details={
+                "phase_code": "3D",
+                "tool": "wayback-cdx",
+                "error": str(exc),
+            },
+        )
+        return
+
+    for sequence, url in enumerate(result.urls[:max_logged], start=1):
+        database.add_audit_event(
+            execution_id,
+            event_type=AuditEventType.TOOL_OUTPUT,
+            actor=actor,
+            message=f"[3D][wayback] {url}",
+            details={
+                "phase_code": "3D",
+                "tool": "wayback-cdx",
+                "url": url,
+                "sequence": sequence,
+            },
+        )
+
+    if evidence_root is not None:
+        try:
+            evidence_root.mkdir(parents=True, exist_ok=True)
+            artifact = evidence_root / f"wayback-cdx-{domain}.json"
+            artifact.write_text(
+                json.dumps(
+                    {
+                        "domain": result.domain,
+                        "url_count": result.total,
+                        "truncated": result.truncated,
+                        "urls": list(result.urls),
+                    },
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+        except OSError:
+            pass
+
+    database.add_audit_event(
+        execution_id,
+        event_type=AuditEventType.TOOL_COMPLETED,
+        actor=actor,
+        message=(
+            f"[3D][wayback] Historical URL intelligence completed: "
+            f"{result.total} URLs"
+            + (" (truncated)" if result.truncated else "")
+            + "."
+        ),
+        details={
+            "phase_code": "3D",
+            "tool": "wayback-cdx",
+            "domain": domain,
+            "url_count": result.total,
+            "truncated": result.truncated,
+        },
+    )
