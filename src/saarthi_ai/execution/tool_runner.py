@@ -213,6 +213,23 @@ WAYBACK_PROFILE = ToolProfile(
     timeout_seconds=300,
 )
 
+# ghauri — advanced blind-SQLi detection/exploitation (sqlmap alternative).
+# Intrusive active testing, so it is operator-authorized like sqlmap; the
+# adapter keeps it non-destructive (blind techniques + identity proof only).
+GHAURI_PROFILE = ToolProfile(
+    name="ghauri",
+    executable_candidates=(
+        str(Path.home() / ".local/bin/ghauri"),
+        "/opt/homebrew/bin/ghauri",
+        "/usr/local/bin/ghauri",
+        "ghauri",
+    ),
+    timeout_seconds=600,
+    max_output_bytes=1_000_000,
+    max_arguments=64,
+    max_argument_length=4_096,
+)
+
 
 def validate_tool_arguments(
     profile: ToolProfile,

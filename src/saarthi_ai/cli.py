@@ -1783,6 +1783,121 @@ def blind_create(
     )
 
 
+@confirm_app.command("ghauri")
+def confirm_ghauri(
+    url: Annotated[
+        str,
+        typer.Option(
+            "--url",
+            help="Authorized absolute http(s) URL with the parameter to test.",
+        ),
+    ],
+    parameter: Annotated[
+        str,
+        typer.Option(
+            "--parameter",
+            help="Testable parameter name to cross-check for blind SQLi.",
+        ),
+    ],
+    technique: Annotated[
+        str,
+        typer.Option(
+            "--technique",
+            help="Blind techniques only: B, T, E, or combinations (e.g. BT).",
+        ),
+    ] = "BT",
+    match_string: Annotated[
+        str,
+        typer.Option(
+            "--string",
+            help="Optional true-condition marker string (from a prior run).",
+        ),
+    ] = "",
+    approved: Annotated[
+        bool,
+        typer.Option(
+            "--approved",
+            help="REQUIRED: confirm authorization for active SQLi testing.",
+        ),
+    ] = False,
+) -> None:
+    """Cross-check a blind-SQLi finding with ghauri (non-destructive) + AI note.
+
+    ghauri actively injects payloads, so it requires --approved. Runs blind
+    techniques with identity-proof enumeration only — never a data dump.
+    """
+
+    import asyncio
+
+    from saarthi_ai.analysis import comment_on_live_output
+    from saarthi_ai.execution.ghauri_adapter import (
+        GhauriError,
+        run_ghauri_crosscheck,
+    )
+    from saarthi_ai.llm.ollama_client import (
+        OllamaUnavailableError,
+        SaarthiOllamaClient,
+    )
+
+    if not approved:
+        console.print(
+            "[bold yellow]Approval required.[/bold yellow] ghauri performs "
+            "active SQL-injection testing. Re-run with --approved."
+        )
+        raise typer.Exit(code=1)
+
+    console.print(
+        f"[bold]ghauri blind-SQLi cross-check[/bold] on parameter "
+        f"'{parameter}' at {url} (technique={technique})..."
+    )
+
+    def on_output(event) -> None:
+        console.print(
+            f"[dim][{event.tool_name}:{event.stream}] {event.line}[/dim]"
+        )
+
+    try:
+        result = run_ghauri_crosscheck(
+            url,
+            parameter,
+            technique=technique,
+            match_string=match_string or None,
+            authorized=True,
+            on_output=on_output,
+        )
+    except GhauriError as exc:
+        console.print(f"[bold red]ghauri failed:[/bold red] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    console.print()
+    verdict = (
+        "[bold green]INJECTABLE[/bold green]"
+        if result.injectable
+        else "[bold]not confirmed injectable[/bold]"
+    )
+    console.print(f"ghauri verdict: {verdict}")
+    console.print(f"Exit code: {result.tool_result.exit_code}")
+
+    lines = [
+        f"[ghauri:stdout] {line}"
+        for line in (result.tool_result.stdout or "").splitlines()
+        if line.strip()
+    ][:40]
+    if not lines:
+        return
+    try:
+        client = SaarthiOllamaClient(get_settings())
+        note = asyncio.run(
+            comment_on_live_output(client, "ghauri", url, lines)
+        )
+        console.print()
+        console.print(f"[bold]AI:[/bold] {note}")
+    except OllamaUnavailableError as exc:
+        console.print(f"[dim]AI note unavailable: {exc}[/dim]")
+    except Exception as exc:  # defensive: never fail on the AI note
+        console.print(f"[dim]AI note failed: {exc}[/dim]")
+
+
 @confirm_app.command("run")
 def confirm_run(
     execution_id: Annotated[

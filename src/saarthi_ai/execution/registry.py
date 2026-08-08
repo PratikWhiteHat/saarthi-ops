@@ -52,6 +52,15 @@ TOOL_REGISTRY: dict[str, ToolDefinition] = {
         supported_asset_types=WEB_AND_API,
         timeout_seconds=300,
     ),
+    "ghauri": ToolDefinition(
+        name="ghauri",
+        description=(
+            "Blind-SQLi cross-check (sqlmap alternative); "
+            "operator-authorized, non-destructive identity proof only."
+        ),
+        supported_asset_types=WEB_AND_API,
+        timeout_seconds=600,
+    ),
     "browser-automation": ToolDefinition(
         name="browser-automation",
         description="Perform controlled browser workflow validation.",
