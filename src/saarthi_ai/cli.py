@@ -244,6 +244,11 @@ workflow_app = typer.Typer(
     help="Run authorized multi-phase assessment workflows.",
 )
 
+authenticated_app = typer.Typer(
+    no_args_is_help=True,
+    help="Run Phase 6D authenticated (cross-account) workflows.",
+)
+
 app.add_typer(project_app, name="project")
 app.add_typer(execution_app, name="execution")
 app.add_typer(evidence_app, name="evidence")
@@ -253,6 +258,7 @@ app.add_typer(blind_app, name="blind")
 app.add_typer(confirm_app, name="confirm")
 app.add_typer(controlled_app, name="controlled")
 app.add_typer(workflow_app, name="workflow")
+app.add_typer(authenticated_app, name="authenticated")
 
 console = Console()
 
@@ -4653,3 +4659,116 @@ def workflow_run(
         f"SQLmap runs={len(validation.sqlmap)}."
     )
     console.print(f"Evidence: {validation.evidence_path}")
+
+
+@authenticated_app.command("run")
+def authenticated_run(
+    config: Annotated[
+        str,
+        typer.Option(
+            "--config",
+            help="Path to authenticated-sessions.json.",
+        ),
+    ],
+    approved: Annotated[
+        bool,
+        typer.Option(
+            "--approved",
+            help="REQUIRED: confirm authorization for authenticated testing.",
+        ),
+    ] = False,
+) -> None:
+    """Phase 6D: login accounts, test cross-account authZ + token hygiene + AI.
+
+    Logs in the configured accounts, replays each account's requests as the
+    others (read-only) to find IDOR/BOLA, vertical privesc, and tenant-
+    isolation breaks, and analyzes their session tokens. Requires --approved
+    (it logs in with real accounts and actively probes access).
+    """
+
+    import asyncio
+    import hashlib
+    import json
+    from pathlib import Path
+
+    from saarthi_ai.analysis import comment_on_live_output
+    from saarthi_ai.controlled_validation.authenticated.engine import (
+        run_authenticated_workflow,
+    )
+    from saarthi_ai.controlled_validation.authenticated.models import (
+        AuthWorkflowError,
+        load_auth_workflow_config,
+    )
+    from saarthi_ai.llm.ollama_client import (
+        OllamaUnavailableError,
+        SaarthiOllamaClient,
+    )
+    from saarthi_ai.persistence.authenticated_workflow import result_payload
+
+    if not approved:
+        console.print(
+            "[bold yellow]Approval required.[/bold yellow] Phase 6D logs in "
+            "with real accounts and probes cross-account access. Re-run with "
+            "--approved."
+        )
+        raise typer.Exit(code=1)
+
+    try:
+        cfg = load_auth_workflow_config(config)
+    except AuthWorkflowError as exc:
+        console.print(f"[bold red]Invalid sessions config:[/bold red] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    console.print(
+        f"[bold]Phase 6D authenticated workflow[/bold] on {cfg.target_url} "
+        f"({len(cfg.principals)} principals)..."
+    )
+
+    def log(message: str) -> None:
+        console.print(f"[dim]{message}[/dim]")
+
+    result = run_authenticated_workflow(cfg, on_log=log)
+
+    console.print()
+    if result.findings:
+        console.print(
+            f"[bold red]{len(result.findings)} finding(s):[/bold red]"
+        )
+        for finding in result.findings:
+            console.print(
+                f"  [{finding.severity}] {finding.kind}: {finding.detail}"
+            )
+    else:
+        console.print(
+            "[bold green]No authorization/token findings.[/bold green]"
+        )
+
+    evidence_dir = Path.cwd() / "evidence" / "authenticated"
+    evidence_dir.mkdir(parents=True, exist_ok=True)
+    body = json.dumps(result_payload(result), indent=2).encode("utf-8")
+    sha = hashlib.sha256(body).hexdigest()
+    evidence_path = evidence_dir / f"authenticated-workflow-{sha[:12]}.json"
+    evidence_path.write_bytes(body)
+    console.print(f"Evidence: {evidence_path}")
+
+    ai_lines = [
+        f"[6D] login {s['label']} ({s['role']}): "
+        + ("ok" if s["login_ok"] else "failed")
+        for s in result.sessions
+    ] + [
+        f"[6D][finding] {f.severity} {f.kind}: {f.detail}"
+        for f in result.findings
+    ]
+    try:
+        client = SaarthiOllamaClient(get_settings())
+        note = asyncio.run(
+            comment_on_live_output(
+                client, "authenticated-workflow", cfg.target_url, ai_lines
+            )
+        )
+        console.print()
+        console.print(f"[bold]AI:[/bold] {note}")
+    except OllamaUnavailableError as exc:
+        console.print(f"[dim]AI note unavailable: {exc}[/dim]")
+    except Exception as exc:  # defensive: never fail on the AI note
+        console.print(f"[dim]AI note failed: {exc}[/dim]")

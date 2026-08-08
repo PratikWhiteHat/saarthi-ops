@@ -44,6 +44,7 @@ class OrchestrationPhase(StrEnum):
     NUCLEI_PREVIEW = "6C-nuclei-preview"
     SQLMAP_PREVIEW = "6C-sqlmap-preview"
     SAFE_VALIDATOR = "6C-safe-validator"
+    AUTHENTICATED_WORKFLOW = "6D-authenticated-workflow"
 
 
 class OrchestrationContext(BaseModel):
