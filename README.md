@@ -109,4 +109,4 @@ LinkedIn: <https://www.linkedin.com/in/pratik-chotalia-142aaab1/>
 
 ## License
 
-_TODO: choose a license (e.g., MIT or Apache-2.0) and add a `LICENSE` file._
+Released under the [MIT License](LICENSE).
