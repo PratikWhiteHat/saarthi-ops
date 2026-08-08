@@ -236,6 +236,16 @@ def run_tracked_crawl(
             actor=actor,
         )
 
+        # Local page-snapshot archive (LOCAL-FIRST): store in-scope pages under
+        # the run's evidence dir. Non-fatal; publishes nothing externally.
+        _capture_local_page_archive(
+            database,
+            execution_id,
+            collection.domain,
+            evidence_root=evidence_root,
+            actor=actor,
+        )
+
         execution = database.transition_execution(
             execution_id,
             ExecutionState.ANALYZING,
@@ -379,5 +389,106 @@ def _collect_wayback_url_intelligence(
             "domain": domain,
             "url_count": result.total,
             "truncated": result.truncated,
+        },
+    )
+
+
+def _capture_local_page_archive(
+    database: SaarthiDatabase,
+    execution_id: str,
+    domain: str,
+    *,
+    evidence_root: Path | None,
+    actor: str,
+    limit: int = 15,
+) -> None:
+    """Snapshot in-scope pages LOCALLY as a Phase 3D sub-step.
+
+    Non-fatal and local-only: reads pages recon already discovered (Wayback CDX
+    artifact + domain base) and stores them under the run's evidence dir. It
+    publishes nothing externally.
+    """
+
+    if evidence_root is None:
+        return
+
+    from saarthi_ai.recon.local_archive import capture_local_archive
+
+    urls: list[str] = []
+    cdx_artifact = evidence_root / f"wayback-cdx-{domain}.json"
+    try:
+        if cdx_artifact.exists():
+            data = json.loads(cdx_artifact.read_text(encoding="utf-8"))
+            urls.extend(str(url) for url in data.get("urls", []) or [])
+    except (OSError, json.JSONDecodeError):
+        pass
+    urls.extend([f"https://{domain}/", f"http://{domain}/"])
+
+    database.add_audit_event(
+        execution_id,
+        event_type=AuditEventType.TOOL_STARTED,
+        actor=actor,
+        message="[3D][archive] Local page-snapshot archive started.",
+        details={
+            "phase_code": "3D",
+            "tool": "local-archive",
+            "domain": domain,
+            "mode": "local-only-read",
+        },
+    )
+    try:
+        result = capture_local_archive(
+            urls,
+            evidence_root / "archive",
+            domain=domain,
+            limit=limit,
+        )
+    except Exception as exc:  # non-fatal enrichment; never fail the phase
+        database.add_audit_event(
+            execution_id,
+            event_type=AuditEventType.TOOL_FAILED,
+            actor=actor,
+            message=f"[3D][archive] Local archive skipped: {exc}",
+            details={
+                "phase_code": "3D",
+                "tool": "local-archive",
+                "error": str(exc),
+            },
+        )
+        return
+
+    for entry in result.entries[:40]:
+        if "sha256" not in entry:
+            continue
+        database.add_audit_event(
+            execution_id,
+            event_type=AuditEventType.TOOL_OUTPUT,
+            actor=actor,
+            message=(
+                f"[3D][archive] {entry['url']} -> {entry['saved_as']} "
+                f"({entry['status_code']})"
+            ),
+            details={
+                "phase_code": "3D",
+                "tool": "local-archive",
+                "url": entry["url"],
+                "saved_as": entry["saved_as"],
+            },
+        )
+
+    database.add_audit_event(
+        execution_id,
+        event_type=AuditEventType.TOOL_COMPLETED,
+        actor=actor,
+        message=(
+            f"[3D][archive] Local page archive completed: "
+            f"{result.archived}/{result.attempted} pages saved locally."
+        ),
+        details={
+            "phase_code": "3D",
+            "tool": "local-archive",
+            "domain": domain,
+            "archived": result.archived,
+            "attempted": result.attempted,
         },
     )

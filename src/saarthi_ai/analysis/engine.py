@@ -63,6 +63,7 @@ class RunDigest:
     ghauri_summary: str | None = None
     xsstrike_summary: str | None = None
     wayback_summary: str | None = None
+    archive_summary: str | None = None
 
 
 def _metadata(execution: ExecutionRecord) -> dict:
@@ -267,6 +268,38 @@ def _read_wayback_intel(
     return summary
 
 
+def _read_local_archive(
+    orchestration_id: str,
+    evidence_root: Path,
+) -> str | None:
+    """Summarize the Phase 3D local page-snapshot archive."""
+
+    index = (
+        evidence_root
+        / orchestration_id
+        / "crawling"
+        / "archive"
+        / "archive-index.json"
+    )
+    if not index.exists():
+        return None
+    try:
+        payload = json.loads(index.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    archived = payload.get("archived", 0)
+    attempted = payload.get("attempted", 0)
+    summary = f"local-archive: {archived}/{attempted} pages saved locally"
+    sample = [
+        str(entry.get("url"))
+        for entry in (payload.get("entries") or [])
+        if isinstance(entry, dict) and entry.get("sha256")
+    ][:6]
+    if sample:
+        summary += "\n  - " + "\n  - ".join(sample)
+    return summary
+
+
 def gather_run_digest(
     database: SaarthiDatabase,
     *,
@@ -334,6 +367,7 @@ def gather_run_digest(
 
     nuclei_summary = sqlmap_summary = None
     ghauri_summary = xsstrike_summary = wayback_summary = None
+    archive_summary = None
     verified_lines: list[str] = []
     if isinstance(oid, str) and oid:
         (
@@ -344,6 +378,7 @@ def gather_run_digest(
             verified_lines,
         ) = _read_auto_validation(oid, evidence_root)
         wayback_summary = _read_wayback_intel(oid, evidence_root)
+        archive_summary = _read_local_archive(oid, evidence_root)
 
     return RunDigest(
         orchestration_id=oid if isinstance(oid, str) else None,
@@ -361,6 +396,7 @@ def gather_run_digest(
         ghauri_summary=ghauri_summary,
         xsstrike_summary=xsstrike_summary,
         wayback_summary=wayback_summary,
+        archive_summary=archive_summary,
     )
 
 
@@ -451,6 +487,12 @@ def build_analysis_prompt(digest: RunDigest) -> str:
             "",
             "Wayback URL intelligence:",
             f"  {digest.wayback_summary}",
+        ]
+    if digest.archive_summary:
+        lines += [
+            "",
+            "Local page archive:",
+            f"  {digest.archive_summary}",
         ]
 
     if digest.failures:
