@@ -69,6 +69,7 @@ class RunDigest:
     wayback_summary: str | None = None
     archive_summary: str | None = None
     authz_summary: str | None = None
+    exploit_summary: str | None = None
 
 
 def _metadata(execution: ExecutionRecord) -> dict:
@@ -329,6 +330,35 @@ def _summarize_authenticated_evidence(evidence: object) -> str | None:
     return header + ("\n  - " + "\n  - ".join(lines) if lines else "")
 
 
+def _summarize_exploit_evidence(evidence: object) -> str | None:
+    """Summarize a Phase 6E exploit-confirmation evidence record."""
+
+    path = getattr(evidence, "path", None)
+    if not path:
+        return None
+    try:
+        payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, TypeError):
+        return None
+    findings = payload.get("findings", []) or []
+    header = (
+        f"{payload.get('confirmed_count', 0)} confirmed of {len(findings)}; "
+        f"highest {payload.get('highest_severity', 'info')}"
+    )
+    lines = [
+        f"{f.get('severity')} {f.get('verdict')} "
+        f"{f.get('source_tool')}/{f.get('kind')}"
+        + (
+            f" [extract:{f.get('extraction_kind')}]"
+            if f.get("extraction_kind")
+            else ""
+        )
+        for f in findings[:12]
+        if isinstance(f, dict)
+    ]
+    return header + ("\n  - " + "\n  - ".join(lines) if lines else "")
+
+
 def gather_run_digest(
     database: SaarthiDatabase,
     *,
@@ -374,6 +404,7 @@ def gather_run_digest(
     evidence_counts: Counter[str] = Counter()
     evidence_signals: list[str] = []
     authz_summary: str | None = None
+    exploit_summary: str | None = None
 
     for execution in [parent, *children]:
         phase_code = _metadata(execution).get("phase_code", "-")
@@ -401,6 +432,13 @@ def gather_run_digest(
                 summary = _summarize_authenticated_evidence(evidence)
                 if summary:
                     authz_summary = summary
+            elif (
+                evidence.evidence_type
+                is EvidenceType.EXPLOIT_CONFIRMATION_RESULT
+            ):
+                summary = _summarize_exploit_evidence(evidence)
+                if summary:
+                    exploit_summary = summary
 
     nuclei_summary = sqlmap_summary = None
     ghauri_summary = xsstrike_summary = wayback_summary = None
@@ -435,6 +473,7 @@ def gather_run_digest(
         wayback_summary=wayback_summary,
         archive_summary=archive_summary,
         authz_summary=authz_summary,
+        exploit_summary=exploit_summary,
     )
 
 
@@ -537,6 +576,12 @@ def build_analysis_prompt(digest: RunDigest) -> str:
             "",
             "Authenticated workflows (6D — authZ + token hygiene):",
             f"  {digest.authz_summary}",
+        ]
+    if digest.exploit_summary:
+        lines += [
+            "",
+            "Exploit confirmation (6E — impact verdicts):",
+            f"  {digest.exploit_summary}",
         ]
 
     if digest.failures:

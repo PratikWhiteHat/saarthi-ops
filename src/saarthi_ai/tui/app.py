@@ -3558,6 +3558,7 @@ TOOLS = [
     ("Saarthi 6C.6", "File Upload Surface Validator", "APPROVAL"),
     ("Saarthi 6C.7", "API Data-Exposure Surface Validator", "APPROVAL"),
     ("Saarthi 6D", "Authenticated Workflows (authZ + tokens)", "ENABLED"),
+    ("Saarthi 6E", "Exploit Confirmation (impact verdicts)", "ENABLED"),
     *validator_module_tool_rows(),
 ]
 
@@ -5876,6 +5877,41 @@ class SaarthiDashboard(App[None]):
             f"sqlmap runs={len(validation.sqlmap)}."
         )
         log_line(f"[OK ] Evidence: {validation.evidence_path}")
+
+        # Phase 6E — exploit confirmation: aggregate this run's confirmed
+        # findings (auto-validation + 6D) into impact verdicts. Deterministic
+        # (no network); non-fatal.
+        try:
+            from saarthi_ai.orchestration.models import OrchestrationPhase
+            from saarthi_ai.persistence.exploit_confirmation_workflow import (
+                run_tracked_exploit_confirmation,
+            )
+            from saarthi_ai.persistence.orchestration_workflow import (
+                create_phase_execution,
+            )
+
+            child_6e = create_phase_execution(
+                database,
+                context,
+                phase=OrchestrationPhase.EXPLOIT_CONFIRMATION,
+                phase_name="exploit_confirmation",
+                active_testing_allowed=False,
+            )
+            tracked_6e = run_tracked_exploit_confirmation(
+                database,
+                child_6e.execution_id,
+                orchestration_id=context.orchestration_id,
+                evidence_root=evidence_root / "exploit-confirmation",
+            )
+            result_6e = tracked_6e.result
+            log_line(
+                f"[OK ] 6E exploit confirmation: {result_6e.confirmed_count} "
+                f"confirmed of {len(result_6e.findings)} finding(s), highest "
+                f"{result_6e.highest_severity.value}."
+            )
+        except Exception as exc:  # non-fatal aggregation
+            log_line(f"[6E] exploit confirmation skipped: {exc}")
+
         self.call_from_thread(
             self.notify,
             "Full assessment complete — evidence saved.",
