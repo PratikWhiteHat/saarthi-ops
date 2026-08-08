@@ -101,6 +101,7 @@ async def run_phase6_safe_chain(
     actor: str = "saarthi-phase6-orchestrator",
     transport: httpx.AsyncBaseTransport | None = None,
     nuclei_runner: Callable[..., ToolRunResult] | None = None,
+    authenticated_sessions_path: Path | str | None = None,
 ) -> Phase6ChainResult:
     """Run previews and one-request GET validators after Phase 4A.
 
@@ -651,7 +652,130 @@ async def run_phase6_safe_chain(
             )
         previous_execution_id = child.execution_id
 
+    # Phase 6D — authenticated workflows. Runs only when an
+    # authenticated-sessions config is supplied AND its target matches this
+    # assessment's scope; otherwise it records a NOT_APPLICABLE skip.
+    results.append(
+        await _run_phase6d_authenticated_step(
+            database,
+            context,
+            evidence_root=evidence_root / "authenticated",
+            actor=actor,
+            previous_execution_id=previous_execution_id,
+            sessions_path=authenticated_sessions_path,
+        )
+    )
+
     return Phase6ChainResult(
         context=context,
         phase_results=results,
+    )
+
+
+async def _run_phase6d_authenticated_step(
+    database: SaarthiDatabase,
+    context: OrchestrationContext,
+    *,
+    evidence_root: Path,
+    actor: str,
+    previous_execution_id: str | None,
+    sessions_path: Path | str | None,
+) -> OrchestrationPhaseResult:
+    """Run Phase 6D when a scoped authenticated-sessions config is available."""
+
+    import asyncio
+    from urllib.parse import urlsplit
+
+    from saarthi_ai.controlled_validation.authenticated.models import (
+        AuthWorkflowError,
+        load_auth_workflow_config,
+    )
+    from saarthi_ai.persistence.authenticated_workflow import (
+        run_tracked_authenticated_workflow,
+    )
+
+    path = (
+        Path(sessions_path)
+        if sessions_path
+        else Path.cwd() / "authenticated-sessions.json"
+    )
+    if not path.exists():
+        return OrchestrationPhaseResult(
+            phase=OrchestrationPhase.AUTHENTICATED_WORKFLOW,
+            outcome=OrchestrationPhaseOutcome.NOT_APPLICABLE,
+            required=False,
+            reason="No authenticated-sessions.json supplied; 6D skipped.",
+        )
+
+    try:
+        config = load_auth_workflow_config(path)
+    except AuthWorkflowError as exc:
+        return OrchestrationPhaseResult(
+            phase=OrchestrationPhase.AUTHENTICATED_WORKFLOW,
+            outcome=OrchestrationPhaseOutcome.SKIPPED,
+            required=False,
+            reason=f"6D skipped — invalid sessions config: {exc}"[:500],
+        )
+
+    run_host = (urlsplit(context.target_url).hostname or "").lower()
+    cfg_host = (urlsplit(config.target_url).hostname or "").lower()
+    if run_host != cfg_host:
+        return OrchestrationPhaseResult(
+            phase=OrchestrationPhase.AUTHENTICATED_WORKFLOW,
+            outcome=OrchestrationPhaseOutcome.NOT_APPLICABLE,
+            required=False,
+            reason=(
+                f"6D skipped — sessions target {cfg_host!r} does not match "
+                f"assessment target {run_host!r}."
+            ),
+        )
+
+    child = create_phase_execution(
+        database,
+        context,
+        phase=OrchestrationPhase.AUTHENTICATED_WORKFLOW,
+        phase_name="authenticated_workflow",
+        active_testing_allowed=True,
+        previous_execution_id=previous_execution_id,
+    )
+    try:
+        tracked = await asyncio.to_thread(
+            run_tracked_authenticated_workflow,
+            database,
+            child.execution_id,
+            config,
+            actor=actor,
+            evidence_root=evidence_root,
+        )
+    except Exception as exc:  # fail-soft, like the 6C validators
+        database.add_audit_event(
+            context.parent_execution_id,
+            event_type=AuditEventType.TOOL_FAILED,
+            actor=actor,
+            message="[6D][orchestrator] Authenticated workflow failed.",
+            details={
+                "phase_code": "6D",
+                "error": str(exc),
+                "child_execution_id": child.execution_id,
+            },
+        )
+        return OrchestrationPhaseResult(
+            phase=OrchestrationPhase.AUTHENTICATED_WORKFLOW,
+            outcome=OrchestrationPhaseOutcome.FAILED,
+            required=False,
+            execution_id=child.execution_id,
+            error_summary=str(exc)[:2_000],
+        )
+
+    return OrchestrationPhaseResult(
+        phase=OrchestrationPhase.AUTHENTICATED_WORKFLOW,
+        execution_id=child.execution_id,
+        evidence_id=(
+            tracked.evidence.evidence_id if tracked.evidence else None
+        ),
+        evidence_path=tracked.evidence_path,
+        metrics={
+            "findings": len(tracked.result.findings),
+            "logins_ok": tracked.result.logins_ok,
+        },
     )

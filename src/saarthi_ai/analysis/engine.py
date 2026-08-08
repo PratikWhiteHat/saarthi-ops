@@ -11,7 +11,11 @@ from pathlib import Path
 from saarthi_ai.automation.adaptive import AdaptationEvent
 from saarthi_ai.llm.ollama_client import SaarthiOllamaClient
 from saarthi_ai.persistence.database import SaarthiDatabase
-from saarthi_ai.persistence.models import AuditEventType, ExecutionRecord
+from saarthi_ai.persistence.models import (
+    AuditEventType,
+    EvidenceType,
+    ExecutionRecord,
+)
 from saarthi_ai.schemas.chat import Message
 
 ORCHESTRATION_PARENT_ROLE = "orchestration_parent"
@@ -64,6 +68,7 @@ class RunDigest:
     xsstrike_summary: str | None = None
     wayback_summary: str | None = None
     archive_summary: str | None = None
+    authz_summary: str | None = None
 
 
 def _metadata(execution: ExecutionRecord) -> dict:
@@ -300,6 +305,30 @@ def _read_local_archive(
     return summary
 
 
+def _summarize_authenticated_evidence(evidence: object) -> str | None:
+    """Summarize a Phase 6D authenticated-workflow evidence record."""
+
+    path = getattr(evidence, "path", None)
+    if not path:
+        return None
+    try:
+        payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, TypeError):
+        return None
+    findings = payload.get("findings", []) or []
+    ok = payload.get("logins_ok", 0)
+    failed = payload.get("logins_failed", 0)
+    header = (
+        f"logins {ok}/{ok + failed} ok, {len(findings)} finding(s)"
+    )
+    lines = [
+        f"{f.get('severity')} {f.get('kind')}: {f.get('detail')}"[:200]
+        for f in findings[:12]
+        if isinstance(f, dict)
+    ]
+    return header + ("\n  - " + "\n  - ".join(lines) if lines else "")
+
+
 def gather_run_digest(
     database: SaarthiDatabase,
     *,
@@ -344,6 +373,7 @@ def gather_run_digest(
     failures: list[str] = []
     evidence_counts: Counter[str] = Counter()
     evidence_signals: list[str] = []
+    authz_summary: str | None = None
 
     for execution in [parent, *children]:
         phase_code = _metadata(execution).get("phase_code", "-")
@@ -364,6 +394,13 @@ def gather_run_digest(
                 evidence_signals.append(
                     f"[{phase_code}] {evidence.evidence_type.value}: {signal}"
                 )
+            if (
+                evidence.evidence_type
+                is EvidenceType.AUTHENTICATED_WORKFLOW_RESULT
+            ):
+                summary = _summarize_authenticated_evidence(evidence)
+                if summary:
+                    authz_summary = summary
 
     nuclei_summary = sqlmap_summary = None
     ghauri_summary = xsstrike_summary = wayback_summary = None
@@ -397,6 +434,7 @@ def gather_run_digest(
         xsstrike_summary=xsstrike_summary,
         wayback_summary=wayback_summary,
         archive_summary=archive_summary,
+        authz_summary=authz_summary,
     )
 
 
@@ -493,6 +531,12 @@ def build_analysis_prompt(digest: RunDigest) -> str:
             "",
             "Local page archive:",
             f"  {digest.archive_summary}",
+        ]
+    if digest.authz_summary:
+        lines += [
+            "",
+            "Authenticated workflows (6D — authZ + token hygiene):",
+            f"  {digest.authz_summary}",
         ]
 
     if digest.failures:

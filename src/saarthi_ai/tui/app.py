@@ -3557,6 +3557,7 @@ TOOLS = [
     ("Saarthi 6C.4", "Session Cookie Attribute Validator", "APPROVAL"),
     ("Saarthi 6C.6", "File Upload Surface Validator", "APPROVAL"),
     ("Saarthi 6C.7", "API Data-Exposure Surface Validator", "APPROVAL"),
+    ("Saarthi 6D", "Authenticated Workflows (authZ + tokens)", "ENABLED"),
     *validator_module_tool_rows(),
 ]
 
