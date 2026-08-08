@@ -70,6 +70,7 @@ class EvidenceType(StrEnum):
     AUTHENTICATED_WORKFLOW_RESULT = "authenticated_workflow_result"
     EXPLOIT_CONFIRMATION_RESULT = "exploit_confirmation_result"
     POST_EXPLOITATION_SIMULATION = "post_exploitation_simulation"
+    CLEANUP_MANIFEST = "cleanup_manifest"
     UPLOAD_VALIDATION_PLAN = "upload_validation_plan"
     UPLOAD_EXTERNAL_RESULT = "upload_external_result"
     TLS_RESULT = "tls_result"

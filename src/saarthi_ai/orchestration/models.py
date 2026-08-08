@@ -47,6 +47,7 @@ class OrchestrationPhase(StrEnum):
     AUTHENTICATED_WORKFLOW = "6D-authenticated-workflow"
     EXPLOIT_CONFIRMATION = "6E-exploit-confirmation"
     POST_EXPLOITATION = "6F-post-exploitation"
+    CLEANUP = "6G-cleanup-rollback"
 
 
 class OrchestrationContext(BaseModel):
