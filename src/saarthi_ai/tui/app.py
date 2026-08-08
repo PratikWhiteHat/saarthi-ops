@@ -4909,6 +4909,9 @@ class SaarthiDashboard(App[None]):
         ("u", "focus_url", "URL"),
         ("a", "ai_analyze", "AI Analyze"),
         ("A", "toggle_ai_live", "AI live"),
+        ("g", "ai_propose", "AI Propose"),
+        ("G", "ai_run_next", "AI Run"),
+        ("x", "ai_skip", "AI Skip"),
         ("h", "help", "Help"),
     ]
 
@@ -4930,6 +4933,11 @@ class SaarthiDashboard(App[None]):
         # Live AI co-pilot: comments on each phase as the assessment runs.
         self._ai_live_enabled = True
         self._ai_observer_running = False
+        # AI action queue: propose -> operator approve -> execute. Actions are
+        # drawn from a fixed non-destructive menu, so nothing here can ever be
+        # a data dump, shell, evasion, or out-of-scope host.
+        self._ai_action_queue: list = []
+        self._propose_running = False
         self._live_validation_lines: list[str] = []
         # Snapshot of every line currently in the activity log (DB audit
         # events + live tool lines), used to append only new lines instead
@@ -5362,6 +5370,143 @@ class SaarthiDashboard(App[None]):
         state = "ON" if self._ai_live_enabled else "OFF"
         self.notify(f"Live AI co-pilot {state}.")
 
+    def action_ai_propose(self) -> None:
+        """Ask the AI for a queue of safe next actions (the propose step)."""
+
+        if self._propose_running:
+            self.notify(
+                "Already generating proposals.", severity="warning"
+            )
+            return
+        self._propose_running = True
+        self._append_validation_line(
+            "[AI] Generating proposed next actions from the latest evidence…"
+        )
+        self.run_worker(
+            self._run_propose_worker,
+            name="ai-propose",
+            group="ai-propose",
+            thread=True,
+            exclusive=True,
+        )
+
+    def _run_propose_worker(self) -> None:
+        """Build the safe action menu and let the model select/annotate it."""
+
+        import asyncio
+
+        from saarthi_ai.analysis import gather_run_digest
+        from saarthi_ai.automation.chain_config import ChainConfigError
+        from saarthi_ai.automation.proposals import propose_actions
+        from saarthi_ai.config import get_settings
+        from saarthi_ai.llm.ollama_client import (
+            OllamaUnavailableError,
+            SaarthiOllamaClient,
+        )
+        from saarthi_ai.persistence.database import SaarthiDatabase
+
+        def log(line: str) -> None:
+            self.call_from_thread(self._append_validation_line, line)
+
+        try:
+            derived = self._derive_chain_validation(
+                confirmed_poc=True,
+                single_row_dump=False,
+            )
+            database = SaarthiDatabase(self.repository.database_path)
+            digest = gather_run_digest(
+                database, orchestration_id=derived.orchestration_id
+            )
+        except ChainConfigError as error:
+            log(f"[AI][ERR] No chain to propose from: {error}")
+            self.call_from_thread(self._finish_propose)
+            return
+        except Exception as error:  # defensive: never crash the TUI
+            log(f"[AI][ERR] Could not assemble proposals: {error}")
+            self.call_from_thread(self._finish_propose)
+            return
+
+        try:
+            client = SaarthiOllamaClient(get_settings())
+            actions = asyncio.run(propose_actions(client, derived, digest))
+        except OllamaUnavailableError as error:
+            log(f"[AI][ERR] {error}")
+            self.call_from_thread(self._finish_propose)
+            return
+        except Exception as error:  # defensive
+            log(f"[AI][ERR] Proposal generation failed: {error}")
+            self.call_from_thread(self._finish_propose)
+            return
+
+        self.call_from_thread(self._set_action_queue, actions)
+        self.call_from_thread(self._finish_propose)
+
+    def _set_action_queue(self, actions: list) -> None:
+        self._ai_action_queue = list(actions)
+        if not actions:
+            self._append_validation_line(
+                "[AI] No further actions proposed — nothing worth running."
+            )
+            return
+        self._append_validation_line(
+            f"[AI] {len(actions)} action(s) proposed — press "
+            "[G] to run the next, [x] to skip:"
+        )
+        for index, action in enumerate(actions, start=1):
+            self._append_validation_line(
+                f"[AI]   {index}. {action.describe()}"
+            )
+
+    def _finish_propose(self) -> None:
+        self._propose_running = False
+
+    def action_ai_run_next(self) -> None:
+        """Approve and execute the next AI-proposed action (approve step)."""
+
+        from saarthi_ai.automation.chain_config import ChainConfigError
+        from saarthi_ai.automation.proposals import build_action_derived
+
+        if not self._ai_action_queue:
+            self.notify(
+                "No AI actions queued — press g to propose.",
+                severity="warning",
+            )
+            return
+        if self._validation_running:
+            self.notify(
+                "A validation run is already in progress.",
+                severity="warning",
+            )
+            return
+
+        action = self._ai_action_queue.pop(0)
+        try:
+            base = self._derive_chain_validation(
+                confirmed_poc=True,
+                single_row_dump=False,
+            )
+            derived = build_action_derived(base, action)
+        except ChainConfigError as error:
+            self.notify(f"Cannot run action: {error}", severity="error")
+            return
+        except Exception as error:  # defensive
+            self.notify(f"Cannot build action: {error}", severity="error")
+            return
+
+        self._append_validation_line(
+            f"[AI] Operator approved → {action.label}"
+        )
+        self._launch_validation(derived, confirmed=True)
+
+    def action_ai_skip(self) -> None:
+        """Discard the next AI-proposed action (the skip step)."""
+
+        if not self._ai_action_queue:
+            self.notify("No AI actions queued.", severity="warning")
+            return
+        action = self._ai_action_queue.pop(0)
+        self._append_validation_line(f"[AI] Skipped → {action.label}")
+
     def _start_ai_observer(self, orchestration_id: str) -> None:
         """Start the live AI observer for a just-created orchestration."""
 
@@ -5414,7 +5559,9 @@ class SaarthiDashboard(App[None]):
         max_comments = 30
         llm_ok = True
         target = ""
-        deadline = time.monotonic() + 2400.0
+        # Watch for the full run (tools now have generous budgets) so the
+        # final AI triage always fires instead of the observer expiring early.
+        deadline = time.monotonic() + 14400.0
 
         while time.monotonic() < deadline:
             running = self._validation_running
@@ -5710,11 +5857,12 @@ class SaarthiDashboard(App[None]):
         else:
             log_line("[INF] SQLMap params  : none (Nuclei-only run)")
 
+        live_feed, live_stop = self._spawn_live_scan_ai(derived.target_url)
+
         def on_output(event: ToolOutputEvent) -> None:
-            self.call_from_thread(
-                self._append_validation_line,
-                f"[{event.tool_name}:{event.stream}] {event.line}",
-            )
+            line = f"[{event.tool_name}:{event.stream}] {event.line}"
+            live_feed(line)
+            self.call_from_thread(self._append_validation_line, line)
 
         try:
             validation = run_automatic_validation(
@@ -5729,6 +5877,8 @@ class SaarthiDashboard(App[None]):
         except Exception as error:  # defensive: surface, never crash the TUI
             fail(f"Validation run failed: {error}")
             return
+        finally:
+            live_stop()
 
         nuclei_exit = validation.nuclei.get("exit_code")
         log_line(
@@ -5893,6 +6043,99 @@ class SaarthiDashboard(App[None]):
             exclusive=True,
         )
 
+    def _spawn_live_scan_ai(self, target_url: str):
+        """Start a non-blocking live AI co-pilot over streamed scan output.
+
+        Returns ``(feed, stop)``. ``feed(line)`` buffers one tool-output
+        line; ``stop()`` ends the watcher. While the scan runs, a daemon
+        thread asks the local model for a terse note on the latest
+        nuclei/sqlmap output every ~40s, so the operator sees AI analysis
+        DURING nuclei and sqlmap — not only when the phase completes. The
+        model call happens on its own thread and never blocks the tools.
+        A no-op recorder is returned when live AI is toggled off.
+        """
+
+        import threading
+
+        lines: list[str] = []
+        lock = threading.Lock()
+        stop_event = threading.Event()
+
+        def feed(line: str) -> None:
+            with lock:
+                lines.append(line)
+
+        if not self._ai_live_enabled:
+            return feed, (lambda: None)
+
+        def loop() -> None:
+            import asyncio
+            import time as _time
+
+            from saarthi_ai.analysis import comment_on_live_output
+            from saarthi_ai.config import get_settings
+            from saarthi_ai.llm.ollama_client import (
+                OllamaUnavailableError,
+                SaarthiOllamaClient,
+            )
+
+            def log(line: str) -> None:
+                self.call_from_thread(self._append_validation_line, line)
+
+            try:
+                client = SaarthiOllamaClient(get_settings())
+            except Exception:
+                return
+
+            log("[AI] Live co-pilot watching nuclei/sqlmap output…")
+            seen = 0
+            comments = 0
+            max_comments = 25
+            interval = 40.0
+            next_at = _time.monotonic() + interval
+            while not stop_event.is_set():
+                if _time.monotonic() < next_at:
+                    _time.sleep(1.0)
+                    continue
+                next_at = _time.monotonic() + interval
+                with lock:
+                    fresh = lines[seen:]
+                    seen = len(lines)
+                if not fresh or comments >= max_comments:
+                    continue
+                tail = fresh[-40:]
+                tool = (
+                    "sqlmap"
+                    if any("[sqlmap" in item for item in tail)
+                    else "nuclei"
+                )
+                try:
+                    note = asyncio.run(
+                        comment_on_live_output(
+                            client, tool, target_url, tail
+                        )
+                    )
+                except OllamaUnavailableError:
+                    log("[AI] Ollama unavailable — live notes paused.")
+                    return
+                except Exception:
+                    continue
+                comments += 1
+                for entry in note.splitlines():
+                    if entry.strip():
+                        log(f"[AI live] {entry.strip()}")
+
+        thread = threading.Thread(
+            target=loop, name="live-scan-ai", daemon=True
+        )
+        thread.start()
+
+        def stop() -> None:
+            stop_event.set()
+            thread.join(timeout=8.0)
+
+        return feed, stop
+
     def _run_validation_worker(self, derived) -> None:
         """Run nuclei+SQLMap for a pre-derived chain config in a thread."""
 
@@ -5932,11 +6175,12 @@ class SaarthiDashboard(App[None]):
                 "(intrusive testing not authorized; nuclei-only run)"
             )
 
+        live_feed, live_stop = self._spawn_live_scan_ai(derived.target_url)
+
         def on_output(event: ToolOutputEvent) -> None:
-            self.call_from_thread(
-                self._append_validation_line,
-                f"[{event.tool_name}:{event.stream}] {event.line}",
-            )
+            line = f"[{event.tool_name}:{event.stream}] {event.line}"
+            live_feed(line)
+            self.call_from_thread(self._append_validation_line, line)
 
         try:
             result = run_automatic_validation(
@@ -5951,6 +6195,8 @@ class SaarthiDashboard(App[None]):
         except Exception as error:  # defensive: surface, never crash the TUI
             fail(f"Validation run failed: {error}")
             return
+        finally:
+            live_stop()
 
         nuclei_exit = result.nuclei.get("exit_code")
         log_line(

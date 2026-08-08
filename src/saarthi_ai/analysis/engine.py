@@ -285,6 +285,39 @@ def gather_run_digest(
     )
 
 
+LIVE_WATCH_SYSTEM_PROMPT = (
+    "You are a senior offensive-security analyst watching an AUTHORIZED VAPT "
+    "scanner run live. Given the latest raw output lines from the tool, reply "
+    "in ONE or TWO short sentences noting anything notable so far — a finding, "
+    "an injection/DBMS signal, a WAF/IPS block, or say 'progressing, nothing "
+    "notable yet' when there is nothing. Analyze ONLY what is shown; never "
+    "invent findings, hosts, or data. No preamble, no lists."
+)
+
+
+async def comment_on_live_output(
+    client: SaarthiOllamaClient,
+    tool_name: str,
+    target: str,
+    lines: list[str],
+    *,
+    num_predict: int = 110,
+) -> str:
+    """Terse live AI note on streamed tool output while a scan is running."""
+
+    excerpt = "\n".join(line.strip() for line in lines if line.strip())[-1800:]
+    prompt = (
+        f"Tool: {tool_name}\nTarget: {target}\n"
+        f"Latest output lines:\n{excerpt or '(no new output)'}"
+    )
+    content, _thinking = await client.chat(
+        [Message(role="user", content=prompt)],
+        system_prompt=LIVE_WATCH_SYSTEM_PROMPT,
+        num_predict=num_predict,
+    )
+    return content
+
+
 def build_analysis_prompt(digest: RunDigest) -> str:
     """Render the digest as the user message for the analyst model."""
 

@@ -172,7 +172,7 @@ def main() -> int:
             nuclei_process_timeout_seconds=int(
                 raw_config.get(
                     "nuclei_process_timeout_seconds",
-                    900,
+                    10800,
                 )
             ),
             sqlmap_level=int(
@@ -202,7 +202,7 @@ def main() -> int:
             sqlmap_process_timeout_seconds=int(
                 raw_config.get(
                     "sqlmap_process_timeout_seconds",
-                    600,
+                    3600,
                 )
             ),
             sqlmap_techniques=str(

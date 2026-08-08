@@ -125,13 +125,18 @@ class AutoValidationConfig:
     nuclei_rate_limit: int = 5
     nuclei_concurrency: int = 5
     nuclei_request_timeout_seconds: int = 10
-    nuclei_process_timeout_seconds: int = 900
+    # Generous process budget so a full (throttled) template run completes
+    # rather than being killed mid-scan. Not a rate change — the polite
+    # rate-limit/concurrency still bound load on the target.
+    nuclei_process_timeout_seconds: int = 10800
 
     sqlmap_level: int = 2
     sqlmap_risk: int = 1
     sqlmap_threads: int = 1
     sqlmap_request_timeout_seconds: int = 10
-    sqlmap_process_timeout_seconds: int = 600
+    # Generous process budget so the full technique battery can confirm an
+    # injection even when adaptive throttling (delay/threads) slows it down.
+    sqlmap_process_timeout_seconds: int = 3600
     sqlmap_techniques: str = "BEUSTQ"
 
     # Confirmed-PoC mode (explicitly authorized bug-bounty proof only).
