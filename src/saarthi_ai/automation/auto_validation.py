@@ -627,6 +627,7 @@ def run_automatic_validation(
 
     sqlmap_results: list[dict[str, Any]] = []
     ghauri_cross_checks: list[dict[str, Any]] = []
+    xsstrike_checks: list[dict[str, Any]] = []
 
     sqlmap_profile = SQLMAP_PROFILE.__class__(
         name=SQLMAP_PROFILE.name,
@@ -695,6 +696,12 @@ def run_automatic_validation(
             )
             if cross_check is not None:
                 ghauri_cross_checks.append(cross_check)
+
+    # Auto XSS check (XSStrike) on the target URL when it carries parameters.
+    # Gated on the same operator authorization; targeted + non-destructive.
+    xsstrike_check = _run_xsstrike_check(config, emit_log=emit_log)
+    if xsstrike_check is not None:
+        xsstrike_checks.append(xsstrike_check)
 
     verified_findings: list[dict[str, Any]] = []
     if config.verify_findings:
@@ -802,6 +809,7 @@ def run_automatic_validation(
         ),
         "sqlmap": sqlmap_results,
         "ghauri": ghauri_cross_checks,
+        "xsstrike": xsstrike_checks,
         "verified_findings": verified_findings,
     }
 
@@ -912,4 +920,59 @@ def _run_ghauri_cross_check(
         "exit_code": result.tool_result.exit_code,
         "timed_out": result.tool_result.timed_out,
         "stdout_sha256": result.tool_result.stdout_sha256,
+    }
+
+
+def _run_xsstrike_check(
+    config: AutoValidationConfig,
+    *,
+    emit_log: Callable[[str], None],
+) -> dict[str, Any] | None:
+    """Non-destructive XSStrike XSS check on the target URL.
+
+    Gated on the same operator authorization the run already carries; runs only
+    when the target URL carries query parameters. GET-style reflected/DOM check
+    only (no crawl, no blind XSS). Best-effort — never raises.
+    """
+
+    from urllib.parse import urlsplit
+
+    if not (
+        config.authorized
+        and config.approved
+        and config.active_testing
+        and config.intrusive_testing
+    ):
+        return None
+    if not urlsplit(config.target_url).query:
+        return None  # no parameters to test for reflected XSS
+
+    from saarthi_ai.execution.xsstrike_adapter import run_xsstrike_scan
+
+    emit_log(f"[Saarthi] XSStrike XSS check on {config.target_url}...")
+    try:
+        result = run_xsstrike_scan(
+            config.target_url,
+            delay=1,
+            authorized=True,
+        )
+    except Exception as exc:  # non-fatal check
+        emit_log(f"[Saarthi] XSStrike check skipped: {exc}")
+        return {
+            "url": config.target_url,
+            "status": "error",
+            "error": str(exc),
+        }
+
+    verdict = "xss_found" if result.vulnerable else "no_xss"
+    emit_log(
+        f"[verify] xsstrike {config.target_url}: {verdict} "
+        f"(efficiency {result.max_efficiency})"
+    )
+    return {
+        "url": config.target_url,
+        "vulnerable": result.vulnerable,
+        "max_efficiency": result.max_efficiency,
+        "exit_code": result.tool_result.exit_code,
+        "timed_out": result.tool_result.timed_out,
     }

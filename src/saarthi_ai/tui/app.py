@@ -3538,11 +3538,11 @@ TOOLS = [
     ("katana", "Web Crawler", "ENABLED"),
     ("wayback-cdx", "Historical URL Intelligence (3D)", "ENABLED"),
     ("Saarthi JS", "JavaScript Intelligence", "ENABLED"),
-    ("wayback", "Web Archiving (opt-in · publishes ext.)", "APPROVAL"),
-    ("nuclei", "Controlled Preview / Execution", "APPROVAL"),
-    ("sqlmap", "External Result Handoff / Import", "6C.1 HANDOFF"),
+    ("wayback", "Web Archiving (opt-in CLI · publishes ext.)", "OPT-IN"),
+    ("nuclei", "Controlled Preview / Execution", "ENABLED"),
+    ("sqlmap", "External Result Handoff / Import", "ENABLED"),
     ("ghauri", "Blind SQLi Cross-check (auto 6C)", "ENABLED"),
-    ("xsstrike", "XSS Detection (reflected/DOM)", "APPROVAL"),
+    ("xsstrike", "XSS Detection (reflected/DOM, auto 6C)", "ENABLED"),
     ("OAST Manager", "Out-of-band Correlation", "PHASE 6"),
     ("Saarthi 6A", "Attack Hypothesis Engine", "ENABLED"),
     ("Saarthi 6B", "Policy & Approval Gate", "APPROVAL"),
@@ -5678,23 +5678,14 @@ class SaarthiDashboard(App[None]):
             )
             return
 
-        body = (
-            f"Target : {url}\n"
-            f"Host   : {parsed.hostname}\n\n"
-            "This runs REAL active + intrusive testing:\n"
-            "  • Recon (DNS, subdomains, HTTP, crawl, JS)\n"
-            "  • Phase 6 safe validators\n"
-            "  • Nuclei scan + SQLMap (confirmed-PoC)\n\n"
-            "Proceed only on a target you are authorized to test.\n"
-            "[Y] Launch   ·   [N]/[Esc] Cancel"
+        # AUTHORIZE & RUN is itself the operator authorization — there is no
+        # secondary approval prompt. Testing stays bound to the authorized
+        # scope (allowed_hosts). Launch directly.
+        self.notify(
+            f"Authorized launch on {parsed.hostname} — full assessment "
+            "(recon → Phase 6 → nuclei + sqlmap)."
         )
-        self.push_screen(
-            ConfirmScanScreen("⚠  LAUNCH FULL ASSESSMENT?", body),
-            lambda confirmed: self._launch_full_assessment(
-                url,
-                bool(confirmed),
-            ),
-        )
+        self._launch_full_assessment(url, True)
 
     def _launch_full_assessment(self, url: str, confirmed: bool) -> None:
         """Start the assessment worker once the operator has confirmed."""

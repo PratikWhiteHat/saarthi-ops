@@ -60,6 +60,9 @@ class RunDigest:
     verified_findings: tuple[str, ...] = ()
     nuclei_summary: str | None = None
     sqlmap_summary: str | None = None
+    ghauri_summary: str | None = None
+    xsstrike_summary: str | None = None
+    wayback_summary: str | None = None
 
 
 def _metadata(execution: ExecutionRecord) -> dict:
@@ -117,9 +120,16 @@ def _compact_metadata(metadata: dict) -> str:
 def _read_auto_validation(
     orchestration_id: str,
     evidence_root: Path,
-) -> tuple[str | None, str | None, list[str]]:
-    """Summarize nuclei/sqlmap output from the auto-validation evidence."""
+) -> tuple[str | None, str | None, str | None, str | None, list[str]]:
+    """Summarize nuclei/sqlmap/ghauri/xsstrike auto-validation evidence."""
 
+    empty: tuple[None, None, None, None, list[str]] = (
+        None,
+        None,
+        None,
+        None,
+        [],
+    )
     pattern = str(
         evidence_root
         / orchestration_id
@@ -129,12 +139,12 @@ def _read_auto_validation(
     )
     files = sorted(glob.glob(pattern))
     if not files:
-        return None, None, []
+        return empty
 
     try:
         payload = json.loads(Path(files[-1]).read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
-        return None, None, []
+        return empty
 
     nuclei = payload.get("nuclei", {}) or {}
     stdout = nuclei.get("stdout", "") or ""
@@ -186,6 +196,33 @@ def _read_auto_validation(
     if sqlmap_summary:
         sqlmap_summary = "  - " + sqlmap_summary
 
+    ghauri_runs = payload.get("ghauri", []) or []
+    ghauri_lines = [
+        f"param={g.get('parameter')} injectable={g.get('injectable')}"
+        + (f" [{g.get('status')}]" if g.get("status") else "")
+        for g in ghauri_runs
+        if isinstance(g, dict)
+    ]
+    ghauri_summary = (
+        "  - " + "\n  - ".join(ghauri_lines) if ghauri_lines else None
+    )
+
+    xsstrike_runs = payload.get("xsstrike", []) or []
+    xsstrike_lines = [
+        f"url={x.get('url')} xss={x.get('vulnerable')}"
+        + (
+            f" efficiency={x.get('max_efficiency')}"
+            if x.get("max_efficiency") is not None
+            else ""
+        )
+        + (f" [{x.get('status')}]" if x.get("status") else "")
+        for x in xsstrike_runs
+        if isinstance(x, dict)
+    ]
+    xsstrike_summary = (
+        "  - " + "\n  - ".join(xsstrike_lines) if xsstrike_lines else None
+    )
+
     verified = payload.get("verified_findings", []) or []
     verified_lines = [
         f"{item.get('verdict')}: {item.get('source_tool')} "
@@ -194,7 +231,40 @@ def _read_auto_validation(
         if isinstance(item, dict)
     ][:MAX_FINDINGS]
 
-    return nuclei_summary, sqlmap_summary, verified_lines
+    return (
+        nuclei_summary,
+        sqlmap_summary,
+        ghauri_summary,
+        xsstrike_summary,
+        verified_lines,
+    )
+
+
+def _read_wayback_intel(
+    orchestration_id: str,
+    evidence_root: Path,
+) -> str | None:
+    """Summarize Phase 3D Wayback CDX historical-URL intelligence."""
+
+    pattern = str(
+        evidence_root / orchestration_id / "crawling" / "wayback-cdx-*.json"
+    )
+    files = sorted(glob.glob(pattern))
+    if not files:
+        return None
+    try:
+        payload = json.loads(Path(files[-1]).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    urls = payload.get("urls", []) or []
+    count = payload.get("url_count", len(urls))
+    summary = f"wayback-cdx: {count} historical URLs"
+    if payload.get("truncated"):
+        summary += " (truncated)"
+    sample = [str(url) for url in urls[:8]]
+    if sample:
+        summary += "\n  - " + "\n  - ".join(sample)
+    return summary
 
 
 def gather_run_digest(
@@ -263,11 +333,17 @@ def gather_run_digest(
                 )
 
     nuclei_summary = sqlmap_summary = None
+    ghauri_summary = xsstrike_summary = wayback_summary = None
     verified_lines: list[str] = []
     if isinstance(oid, str) and oid:
-        nuclei_summary, sqlmap_summary, verified_lines = (
-            _read_auto_validation(oid, evidence_root)
-        )
+        (
+            nuclei_summary,
+            sqlmap_summary,
+            ghauri_summary,
+            xsstrike_summary,
+            verified_lines,
+        ) = _read_auto_validation(oid, evidence_root)
+        wayback_summary = _read_wayback_intel(oid, evidence_root)
 
     return RunDigest(
         orchestration_id=oid if isinstance(oid, str) else None,
@@ -282,6 +358,9 @@ def gather_run_digest(
         verified_findings=tuple(verified_lines),
         nuclei_summary=nuclei_summary,
         sqlmap_summary=sqlmap_summary,
+        ghauri_summary=ghauri_summary,
+        xsstrike_summary=xsstrike_summary,
+        wayback_summary=wayback_summary,
     )
 
 
@@ -359,6 +438,20 @@ def build_analysis_prompt(digest: RunDigest) -> str:
         lines += ["", "Nuclei:", f"  {digest.nuclei_summary}"]
     if digest.sqlmap_summary:
         lines += ["", "SQLMap:", digest.sqlmap_summary]
+    if digest.ghauri_summary:
+        lines += [
+            "",
+            "Ghauri (blind-SQLi cross-check):",
+            digest.ghauri_summary,
+        ]
+    if digest.xsstrike_summary:
+        lines += ["", "XSStrike (XSS):", digest.xsstrike_summary]
+    if digest.wayback_summary:
+        lines += [
+            "",
+            "Wayback URL intelligence:",
+            f"  {digest.wayback_summary}",
+        ]
 
     if digest.failures:
         lines += ["", "Phase failures:"]
