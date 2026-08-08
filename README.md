@@ -1,133 +1,112 @@
-# Saarthi AI Starter
+# Saarthi OPS
 
-Phase 0 foundation for a local security-specialized AI assistant on Apple Silicon.
+**A local-first, privacy-first, AI-assisted VAPT platform.**
+Reconnaissance through controlled attack validation, driven by a local-LLM
+co-pilot — entirely on the operator's own machine. No target data, credentials,
+or evidence ever leaves the box.
 
-## What is included
-- FastAPI backend
-- Ollama integration
-- Terminal chat CLI
-- Environment-based configuration
-- Health checks
-- Initial tests and lint configuration
-- Master `SKILL.md`
+`LOCAL-FIRST · PRIVACY-FIRST · OPERATOR-FIRST`
 
-This starter intentionally does **not** execute security tools. Tool execution will be added later
-with authorization checks, allowlists, sandboxing, approval prompts, timeouts, and audit logs.
+![Saarthi OPS operator console](docs/screenshots/saarthi-ops-console.png)
 
-## Prerequisites
-- Apple Silicon Mac with macOS Sonoma 14 or newer
-- 24 GB unified memory is suitable for the default 9B quantized model
-- At least 20 GB free disk space recommended for the initial environment and model
-- Apple Command Line Tools
-- Git
-- `uv`
-- Ollama
+## Why
 
-## 1. Verify the Mac
+Offensive workflows increasingly want AI assistance — but shipping a client's
+data to a cloud LLM is a non-starter under most engagement rules. Saarthi OPS
+runs the whole authorized engagement **and** its AI co-pilot locally using
+[Ollama](https://ollama.com/). Everything is evidence-driven, permission-gated,
+bounded, reversible, and fully audited.
+
+## What it does
+
+From a single authorized URL, Saarthi orchestrates:
+
+- **Recon (Phase 3)** — DNS, subdomains, live-host & HTTP intelligence,
+  crawling, JavaScript intelligence, historical-URL discovery (Wayback CDX),
+  and local page archiving.
+- **Safe direct checks (Phase 4)** — security headers, TLS, CORS, redirects,
+  technology fingerprinting.
+- **Assessment orchestration (Phase 5)** — planning, dependency and outcome
+  handling.
+- **Controlled attack validation (Phase 6)**
+  - **6A** Attack Hypothesis Engine
+  - **6B** Policy & Approval Gate
+  - **6C** Low-Risk Surface Validators (injection, browser, server/parser,
+    clickjacking, CSRF, HTTP parameters, session cookies, file upload, API
+    data-exposure)
+  - **6D** Authenticated Workflows — auto-login multiple accounts and replay
+    requests across them to surface IDOR/BOLA, vertical privilege escalation,
+    and tenant-isolation breaks, plus JWT/session-token hygiene.
+
+Throughout, an **AI co-pilot** watches each phase live, triages and ranks
+findings, cross-checks them with independent tools (e.g., ghauri confirming
+sqlmap) to cut false positives, and produces an evidence-backed report — all
+offline. **Adaptive control** auto-tunes scanners around WAF and rate-limiting
+so scans complete without getting blocked.
+
+**Integrated tooling:** subfinder · amass · assetfinder · crt.sh · httpx ·
+katana · Wayback CDX · local page archive · nuclei · sqlmap · ghauri ·
+XSStrike — alongside Saarthi's own JavaScript-intelligence,
+attack-hypothesis, and authenticated-workflow engines.
+
+![Workflow status and enabled tools](docs/screenshots/saarthi-ops-workflow.png)
+
+## Design principle: autonomous yet accountable
+
+Every AI and tool action is:
+
+- **Evidence-driven** — every decision traces to captured evidence.
+- **Permission-gated** — a single operator authorization ("Authorize & Run")
+  governs the engagement, scope-locked to a declared allowed-host list.
+- **Bounded & reversible** — request budgets, timeouts, non-destructive by
+  default.
+- **Audited** — a complete local audit trail; credentials and secrets are
+  **never persisted** (only labels + SHA-256 fingerprints).
+
+## Quickstart
+
+Built for Apple Silicon macOS. Prerequisites:
+[`uv`](https://docs.astral.sh/uv/), [Ollama](https://ollama.com/), and ~24 GB
+unified memory for the default 9B model.
 
 ```bash
-sw_vers
-uname -m
-sysctl -n hw.memsize
-xcode-select -p || xcode-select --install
-```
-
-Expected architecture: `arm64`.
-
-## 2. Install uv
-
-Using Homebrew:
-
-```bash
-brew install uv
-```
-
-Or use Astral's installer:
-
-```bash
-curl -LsSf https://astral.sh/uv/install.sh | sh
-```
-
-Restart Terminal if `uv` is not immediately found.
-
-## 3. Install and start Ollama
-
-Install the official Ollama macOS application, move it to Applications, and open it once.
-Then verify:
-
-```bash
-ollama --version
-curl http://localhost:11434/api/tags
-```
-
-## 4. Configure and initialize this project
-
-```bash
+git clone <this-repo-url>
 cd saarthi-ai-starter
 cp .env.example .env
-./scripts/setup_mac.sh
+./scripts/setup_mac.sh          # install deps and pull the local model
+uv run saarthi-ai               # launch the operator console (TUI)
 ```
 
-The default model is:
-
-```text
-qwen3.5:9b
-```
-
-To use another model, edit `.env` before running setup.
-
-## 5. Run the API
+Other entry points:
 
 ```bash
-uv run fastapi dev src/saarthi_ai/main.py
+uv run saarthi doctor           # environment diagnostics
+uv run saarthi authenticated run --config authenticated-sessions.json --approved
 ```
 
-Open the generated API documentation at `http://127.0.0.1:8000/docs`.
+Default local model: `qwen3.5:9b` (configurable in `.env`).
 
-Health checks:
+## Authorized use only
 
-```bash
-curl http://127.0.0.1:8000/health
-curl http://127.0.0.1:8000/health/model
-```
+Saarthi OPS is for **authorized** security testing — your own systems, or
+engagements / bug-bounty scopes you have **written permission** to test. It is
+scope-locked to hosts you explicitly declare and must not be used against
+systems you do not own or are not authorized to assess.
 
-Chat request:
+## Roadmap
 
-```bash
-curl -s http://127.0.0.1:8000/v1/chat \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "messages": [
-      {
-        "role": "user",
-        "content": "Explain the difference between an observation and an inference in a security report."
-      }
-    ],
-    "think": false
-  }'
-```
+Phases 1–6D are implemented. Upcoming: **6E** Exploit Confirmation, **6F**
+Post-Exploitation Simulation, **6G** Cleanup & Rollback, **Phase 7** (attack
+chaining), **Phase 8** (reporting & remediation) — with explicit per-action
+approval for higher-risk steps.
 
-## 6. Run terminal chat
+## Author
 
-```bash
-uv run saarthi chat
-```
+**Pratik Chotalia** — security consultant (Dubai, UAE). OSCP, OSEP, OSED,
+CARTP, CRTP, OffSec AI-300 (OSAI). Invite-only Synack Red Team; recognized in
+the NASA and NCIIPC Halls of Fame.
+LinkedIn: <https://www.linkedin.com/in/pratik-chotalia-142aaab1/>
 
-Run setup diagnostics:
+## License
 
-```bash
-uv run saarthi doctor
-```
-
-## 7. Development checks
-
-```bash
-uv run ruff check .
-uv run ruff format .
-uv run pytest
-```
-
-## Next milestone
-Phase 1 will define the dataset schema, provenance records, licenses, sanitization rules, and the
-first evaluation set. We should create the evaluation set before fine-tuning so improvements can be
-measured honestly.
+_TODO: choose a license (e.g., MIT or Apache-2.0) and add a `LICENSE` file._
