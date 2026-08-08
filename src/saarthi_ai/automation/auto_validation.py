@@ -626,6 +626,7 @@ def run_automatic_validation(
     )
 
     sqlmap_results: list[dict[str, Any]] = []
+    ghauri_cross_checks: list[dict[str, Any]] = []
 
     sqlmap_profile = SQLMAP_PROFILE.__class__(
         name=SQLMAP_PROFILE.name,
@@ -682,6 +683,18 @@ def run_automatic_validation(
         sqlmap_results.append(
             summarized_result
         )
+
+        # Auto blind-SQLi cross-check: when sqlmap flags a blind injection,
+        # independently confirm it with ghauri (non-destructive). Gated on the
+        # same operator authorization this run already carries.
+        if _sqlmap_flagged_blind(sqlmap_result.stdout):
+            cross_check = _run_ghauri_cross_check(
+                config,
+                candidate,
+                emit_log=emit_log,
+            )
+            if cross_check is not None:
+                ghauri_cross_checks.append(cross_check)
 
     verified_findings: list[dict[str, Any]] = []
     if config.verify_findings:
@@ -788,6 +801,7 @@ def run_automatic_validation(
             nuclei_result
         ),
         "sqlmap": sqlmap_results,
+        "ghauri": ghauri_cross_checks,
         "verified_findings": verified_findings,
     }
 
@@ -822,3 +836,80 @@ def run_automatic_validation(
         sqlmap=tuple(sqlmap_results),
         verified_findings=tuple(verified_findings),
     )
+
+
+def _sqlmap_flagged_blind(stdout: str) -> bool:
+    """True when sqlmap's output reports a confirmed BLIND injection."""
+
+    low = (stdout or "").lower()
+    confirmed = (
+        "is vulnerable" in low
+        or "injection point(s)" in low
+        or "identified the following injection" in low
+        or ("appears to be" in low and "injectable" in low)
+    )
+    if not confirmed:
+        return False
+    return "boolean-based blind" in low or "time-based blind" in low
+
+
+def _run_ghauri_cross_check(
+    config: AutoValidationConfig,
+    candidate: SqlmapCandidate,
+    *,
+    emit_log: Callable[[str], None],
+) -> dict[str, Any] | None:
+    """Non-destructive ghauri confirmation of a sqlmap blind-SQLi candidate.
+
+    Gated on the same operator authorization the sqlmap run already used, so it
+    adds no un-approved active testing. GET candidates only. Best-effort — a
+    ghauri hiccup is recorded, never raised, and never fails the run.
+    """
+
+    if not (
+        config.authorized
+        and config.approved
+        and config.active_testing
+        and config.intrusive_testing
+    ):
+        return None
+    if candidate.method.upper() != "GET":
+        return None
+
+    from saarthi_ai.execution.ghauri_adapter import run_ghauri_crosscheck
+
+    emit_log(
+        "[Saarthi] ghauri cross-check (blind SQLi) on parameter "
+        f"'{candidate.parameter}'..."
+    )
+    try:
+        result = run_ghauri_crosscheck(
+            candidate.url,
+            candidate.parameter,
+            technique="BT",
+            identity_proof=True,
+            authorized=True,
+        )
+    except Exception as exc:  # non-fatal cross-check
+        emit_log(f"[Saarthi] ghauri cross-check skipped: {exc}")
+        return {
+            "parameter": candidate.parameter,
+            "url": candidate.url,
+            "technique": "BT",
+            "status": "error",
+            "error": str(exc),
+        }
+
+    verdict = "injectable" if result.injectable else "not_confirmed"
+    emit_log(
+        f"[verify] ghauri {candidate.parameter} @ {candidate.url}: {verdict}"
+    )
+    return {
+        "parameter": candidate.parameter,
+        "url": candidate.url,
+        "technique": result.technique,
+        "injectable": result.injectable,
+        "exit_code": result.tool_result.exit_code,
+        "timed_out": result.tool_result.timed_out,
+        "stdout_sha256": result.tool_result.stdout_sha256,
+    }
