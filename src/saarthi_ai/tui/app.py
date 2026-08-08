@@ -4906,7 +4906,6 @@ class SaarthiDashboard(App[None]):
         ("e", "focus_executions", "Evidence"),
         ("u", "focus_url", "URL"),
         ("a", "ai_analyze", "AI Analyze"),
-        ("A", "toggle_ai_live", "AI"),
         ("g", "ai_propose", "AI Propose"),
         ("G", "ai_run_next", "AI Run"),
         ("x", "ai_skip", "AI Skip"),
@@ -5244,8 +5243,8 @@ class SaarthiDashboard(App[None]):
     def action_help(self) -> None:
         self.notify(
             "R refresh · U focus URL (Enter = full assessment) · "
-            "a AI analyze · shift+A AI on/off · g AI propose · "
-            "shift+G AI run · x AI skip · P phases · Q quit",
+            "a AI analyze · g AI propose · shift+G AI run · "
+            "x AI skip · P phases · Q quit",
             timeout=7,
         )
 
