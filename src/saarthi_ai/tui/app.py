@@ -3541,7 +3541,6 @@ TOOLS = [
     ("wayback-cdx", "Historical URL Intelligence (3D)", "ENABLED"),
     ("local-archive", "Local Page Snapshot (3D · local-only)", "ENABLED"),
     ("Saarthi JS", "JavaScript Intelligence", "ENABLED"),
-    ("wayback", "Web Archiving (opt-in CLI · publishes ext.)", "OPT-IN"),
     ("nuclei", "Controlled Preview / Execution", "ENABLED"),
     ("sqlmap", "External Result Handoff / Import", "ENABLED"),
     ("ghauri", "Blind SQLi Cross-check (auto 6C)", "ENABLED"),
