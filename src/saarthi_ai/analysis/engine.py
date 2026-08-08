@@ -72,6 +72,7 @@ class RunDigest:
     exploit_summary: str | None = None
     post_exploitation_summary: str | None = None
     cleanup_summary: str | None = None
+    phase4_validation_summary: str | None = None
 
 
 def _metadata(execution: ExecutionRecord) -> dict:
@@ -417,6 +418,48 @@ def _summarize_cleanup_evidence(evidence: object) -> str | None:
     return header + ("\n  - " + "\n  - ".join(lines) if lines else "")
 
 
+# Phase-4 candidate-driven validators (blind/OAST/confirmation). In the auto
+# chain these are prerequisite gates; their outcomes live in audit events, not
+# evidence, so they are surfaced separately for the analyst.
+_PHASE4_VALIDATION_NAMES: dict[str, str] = {
+    "4B": "Blind Validation",
+    "4C": "OAST Manager",
+    "4D": "Confirmation Engine",
+}
+
+_PHASE4_EVIDENCE_LABELS: tuple[tuple[str, str], ...] = (
+    ("blind_validation_result", "blind-validation records"),
+    ("oast_observation", "OAST observations"),
+    ("confirmation_result", "confirmation decisions"),
+)
+
+
+def _phase4_validation_summary(
+    gates: dict[str, tuple[str, str]],
+    evidence_counts: dict[str, int],
+) -> str | None:
+    """Render the Phase-4 blind/OAST/confirmation status for the analyst."""
+
+    lines: list[str] = []
+    for code, name in _PHASE4_VALIDATION_NAMES.items():
+        if code in gates:
+            outcome, reason = gates[code]
+            line = f"{code} {name}: {outcome}"
+            if reason:
+                line += f" — {reason}"
+            lines.append(line)
+    active = [
+        f"{count} {label}"
+        for key, label in _PHASE4_EVIDENCE_LABELS
+        if (count := evidence_counts.get(key, 0))
+    ]
+    if active:
+        lines.append("recorded evidence: " + ", ".join(active))
+    if not lines:
+        return None
+    return "\n  - ".join(lines)
+
+
 def gather_run_digest(
     database: SaarthiDatabase,
     *,
@@ -465,6 +508,7 @@ def gather_run_digest(
     exploit_summary: str | None = None
     post_exploitation_summary: str | None = None
     cleanup_summary: str | None = None
+    phase4_gates: dict[str, tuple[str, str]] = {}
 
     for execution in [parent, *children]:
         phase_code = _metadata(execution).get("phase_code", "-")
@@ -477,6 +521,16 @@ def gather_run_digest(
                 )
             elif event.event_type is AuditEventType.TOOL_FAILED:
                 failures.append(f"[{phase_code}] {event.message}"[:200])
+            else:
+                details = event.details or {}
+                gate_code = str(details.get("phase_code") or "")
+                if gate_code in _PHASE4_VALIDATION_NAMES and (
+                    details.get("gate_evaluated") or details.get("outcome")
+                ):
+                    phase4_gates[gate_code] = (
+                        str(details.get("outcome") or "evaluated"),
+                        str(details.get("reason") or ""),
+                    )
 
         for evidence in database.list_evidence(execution.execution_id):
             evidence_counts[evidence.evidence_type.value] += 1
@@ -510,6 +564,10 @@ def gather_run_digest(
                 summary = _summarize_cleanup_evidence(evidence)
                 if summary:
                     cleanup_summary = summary
+
+    phase4_validation_summary = _phase4_validation_summary(
+        phase4_gates, dict(evidence_counts)
+    )
 
     nuclei_summary = sqlmap_summary = None
     ghauri_summary = xsstrike_summary = wayback_summary = None
@@ -547,6 +605,7 @@ def gather_run_digest(
         exploit_summary=exploit_summary,
         post_exploitation_summary=post_exploitation_summary,
         cleanup_summary=cleanup_summary,
+        phase4_validation_summary=phase4_validation_summary,
     )
 
 
@@ -643,6 +702,14 @@ def build_analysis_prompt(digest: RunDigest) -> str:
             "",
             "Local page archive:",
             f"  {digest.archive_summary}",
+        ]
+    if digest.phase4_validation_summary:
+        lines += [
+            "",
+            "Blind / OAST / confirmation validators (4B/4C/4D — candidate-"
+            "driven OAST-callback loop; loopback-only collaborator, so external "
+            "targets cannot correlate a callback):",
+            f"  - {digest.phase4_validation_summary}",
         ]
     if digest.authz_summary:
         lines += [
