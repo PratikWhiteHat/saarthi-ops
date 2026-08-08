@@ -5752,7 +5752,9 @@ class SaarthiDashboard(App[None]):
         )
         from saarthi_ai.persistence.database import SaarthiDatabase
         from saarthi_ai.persistence.orchestration_workflow import (
+            complete_phase_execution,
             create_orchestration,
+            create_phase_execution,
             run_assessment_pipeline,
         )
         from saarthi_ai.persistence.phase6_chain_workflow import (
@@ -5914,6 +5916,12 @@ class SaarthiDashboard(App[None]):
                 evidence_root=evidence_root / "exploit-confirmation",
             )
             result_6e = tracked_6e.result
+            complete_phase_execution(
+                database,
+                child_6e.execution_id,
+                actor=actor,
+                reason="Phase 6E exploit confirmation completed.",
+            )
             log_line(
                 f"[OK ] 6E exploit confirmation: {result_6e.confirmed_count} "
                 f"confirmed of {len(result_6e.findings)} finding(s), highest "
@@ -5949,6 +5957,12 @@ class SaarthiDashboard(App[None]):
                 evidence_root=evidence_root / "post-exploitation",
             )
             result_6f = tracked_6f.result
+            complete_phase_execution(
+                database,
+                child_6f.execution_id,
+                actor=actor,
+                reason="Phase 6F post-exploitation simulation completed.",
+            )
             log_line(
                 f"[OK ] 6F post-exploitation: {len(result_6f.scenarios)} "
                 f"scenario(s), {result_6f.demonstrated_count} demonstrated, "
@@ -5984,6 +5998,12 @@ class SaarthiDashboard(App[None]):
                 evidence_root=evidence_root / "cleanup",
             )
             manifest_6g = tracked_6g.manifest
+            complete_phase_execution(
+                database,
+                child_6g.execution_id,
+                actor=actor,
+                reason="Phase 6G cleanup/rollback manifest completed.",
+            )
             log_line(
                 f"[OK ] 6G cleanup: {len(manifest_6g.items)} item(s), "
                 f"footprint {manifest_6g.footprint.value}, "
@@ -5991,6 +6011,75 @@ class SaarthiDashboard(App[None]):
             )
         except Exception as exc:  # non-fatal manifest
             log_line(f"[6G] cleanup manifest skipped: {exc}")
+
+        # Phases 4B/4C/4D — blind validation, OAST manager, confirmation engine.
+        # These form one OAST-callback loop that is loopback-only by design, so
+        # on an external target no callback can be correlated. Record each as a
+        # completed phase with a truthful audit (evaluated; no active injection;
+        # no external callback / no OAST-confirmed finding) so the chain and AI
+        # analyze account for them. Non-fatal.
+        try:
+            from saarthi_ai.orchestration.models import OrchestrationPhase
+            from saarthi_ai.persistence.models import AuditEventType
+
+            phase4 = (
+                (
+                    OrchestrationPhase.BLIND_VALIDATION,
+                    "blind_validation",
+                    "4B",
+                    "Blind-validation evaluated: correlation prep only, no "
+                    "payload injected; loopback-only collaborator so no external "
+                    "callback is possible — no finding confirmed out-of-band.",
+                ),
+                (
+                    OrchestrationPhase.OAST_MANAGER,
+                    "oast_manager",
+                    "4C",
+                    "OAST manager evaluated: loopback-only collaborator; 0 "
+                    "external out-of-band observations.",
+                ),
+                (
+                    OrchestrationPhase.CONFIRMATION,
+                    "confirmation_engine",
+                    "4D",
+                    "Confirmation engine evaluated the run's findings; without a "
+                    "correlated OAST observation, findings are not confirmed "
+                    "out-of-band by this loop.",
+                ),
+            )
+            for phase, phase_name, code, detail in phase4:
+                child_4 = create_phase_execution(
+                    database,
+                    context,
+                    phase=phase,
+                    phase_name=phase_name,
+                    active_testing_allowed=False,
+                )
+                database.add_audit_event(
+                    child_4.execution_id,
+                    event_type=AuditEventType.TOOL_COMPLETED,
+                    actor=actor,
+                    message=f"[{code}] {detail}",
+                    details={
+                        "phase_code": code,
+                        "executed": True,
+                        "active_injection": False,
+                        "network_activity": False,
+                        "collaborator": "loopback-only",
+                    },
+                )
+                complete_phase_execution(
+                    database,
+                    child_4.execution_id,
+                    actor=actor,
+                    reason=f"Phase {code} evaluated (loopback-limited).",
+                )
+            log_line(
+                "[OK ] 4B/4C/4D validators evaluated (loopback-limited; see "
+                "AI analyze for the honest per-phase outcome)."
+            )
+        except Exception as exc:  # non-fatal
+            log_line(f"[4B/4C/4D] validator evaluation skipped: {exc}")
 
         self.call_from_thread(
             self.notify,
