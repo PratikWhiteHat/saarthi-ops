@@ -184,6 +184,22 @@ _MODULES: dict[str, tuple[str, tuple[str, ...]]] = {
     ),
 }
 
+# Shared override tuples for validators covered by the Phase 6D authenticated
+# workflow (status, level, implementation_action, note).
+_AUTHZ_6D = (
+    ValidatorStatus.PARTIAL,
+    ValidationLevel.L3_CONTROLLED_CONFIRMATION,
+    "authenticated_workflow",
+    "Phase 6D authenticated cross-account replay (owner baseline vs "
+    "other principals).",
+)
+_JWT_6D = (
+    ValidatorStatus.PARTIAL,
+    ValidationLevel.L3_CONTROLLED_CONFIRMATION,
+    "authenticated_workflow",
+    "Phase 6D JWT hygiene (alg/exp/claims) plus cross-account replay.",
+)
+
 _IMPLEMENTATION_OVERRIDES: dict[
     tuple[str, str],
     tuple[
@@ -235,6 +251,24 @@ _IMPLEMENTATION_OVERRIDES: dict[
         "api_data_exposure_surface_validation",
         "Only aggregate sensitive field-name categories are retained.",
     ),
+    # Phase 6D authenticated workflow now partially implements the
+    # cross-account authorization family (owner-baseline vs other-principal
+    # replay). Session-lifecycle, business-logic, and account-security checks
+    # remain outstanding.
+    ("6C.5", "Horizontal Privilege Escalation"): _AUTHZ_6D,
+    ("6C.5", "Vertical Privilege Escalation"): _AUTHZ_6D,
+    ("6C.5", "Object-Level Authorization"): _AUTHZ_6D,
+    ("6C.5", "Function-Level Authorization"): _AUTHZ_6D,
+    ("6C.5", "Tenant Isolation"): _AUTHZ_6D,
+    ("6C.5", "Object Ownership Reference"): _AUTHZ_6D,
+    ("6C.5", "Role-Based Access Control"): _AUTHZ_6D,
+    ("6C.5", "Admin Function Access"): _AUTHZ_6D,
+    ("6C.5", "API Access Control"): _AUTHZ_6D,
+    ("6C.4", "Privilege Escalation"): _AUTHZ_6D,
+    ("6C.4", "Tenant Isolation Failures"): _AUTHZ_6D,
+    ("6C.4", "JWT/IDOR Abuse"): _JWT_6D,
+    ("6C.7", "Object-Level Authorization"): _AUTHZ_6D,
+    ("6C.7", "Function-Level Authorization"): _AUTHZ_6D,
 }
 
 for _injection_name in _MODULES["6C.1"][1]:
