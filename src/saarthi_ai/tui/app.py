@@ -5867,6 +5867,7 @@ class SaarthiDashboard(App[None]):
             live_feed(line)
             self.call_from_thread(self._append_validation_line, line)
 
+        validation = None
         try:
             validation = run_automatic_validation(
                 derived.config,
@@ -5875,20 +5876,38 @@ class SaarthiDashboard(App[None]):
                 on_adapt=self._make_adapt_callback(),
             )
         except (AutoValidationError, ToolRunnerError) as error:
-            fail(str(error))
-            return
+            log_line(f"[ERR] Auto-validation failed: {error}")
+            self.call_from_thread(
+                self.notify,
+                f"Auto-validation failed: {error}",
+                severity="warning",
+            )
         except Exception as error:  # defensive: surface, never crash the TUI
-            fail(f"Validation run failed: {error}")
-            return
+            log_line(f"[ERR] Auto-validation run failed: {error}")
+            self.call_from_thread(
+                self.notify,
+                f"Auto-validation run failed: {error}",
+                severity="warning",
+            )
         finally:
             live_stop()
 
-        nuclei_exit = validation.nuclei.get("exit_code")
-        log_line(
-            f"[OK ] Full assessment complete. nuclei exit={nuclei_exit}, "
-            f"sqlmap runs={len(validation.sqlmap)}."
-        )
-        log_line(f"[OK ] Evidence: {validation.evidence_path}")
+        # Auto-validation (active nuclei/sqlmap) is the only step that can fail
+        # on a live host; the deterministic wrap-up phases below (6E-6G, 4B/4C/4D)
+        # do not depend on it, so continue regardless instead of aborting the run.
+        if validation is not None:
+            nuclei_exit = validation.nuclei.get("exit_code")
+            log_line(
+                f"[OK ] Auto-validation complete. nuclei exit={nuclei_exit}, "
+                f"sqlmap runs={len(validation.sqlmap)}."
+            )
+            log_line(f"[OK ] Evidence: {validation.evidence_path}")
+        else:
+            log_line(
+                "[WARN] Auto-validation did not complete; continuing to the "
+                "deterministic wrap-up phases (6E-6G, 4B/4C/4D) on the evidence "
+                "collected so far."
+            )
 
         # Phase 6E — exploit confirmation: aggregate this run's confirmed
         # findings (auto-validation + 6D) into impact verdicts. Deterministic
@@ -6081,6 +6100,7 @@ class SaarthiDashboard(App[None]):
         except Exception as exc:  # non-fatal
             log_line(f"[4B/4C/4D] validator evaluation skipped: {exc}")
 
+        log_line("[OK ] Full assessment complete — all phases recorded.")
         self.call_from_thread(
             self.notify,
             "Full assessment complete — evidence saved.",
