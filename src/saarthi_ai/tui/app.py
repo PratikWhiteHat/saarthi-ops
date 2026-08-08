@@ -3541,7 +3541,7 @@ TOOLS = [
     ("wayback", "Web Archiving (opt-in · publishes ext.)", "APPROVAL"),
     ("nuclei", "Controlled Preview / Execution", "APPROVAL"),
     ("sqlmap", "External Result Handoff / Import", "6C.1 HANDOFF"),
-    ("ghauri", "Blind SQLi Cross-check", "PHASE 6"),
+    ("ghauri", "Blind SQLi Cross-check (auto 6C)", "ENABLED"),
     ("OAST Manager", "Out-of-band Correlation", "PHASE 6"),
     ("Saarthi 6A", "Attack Hypothesis Engine", "ENABLED"),
     ("Saarthi 6B", "Policy & Approval Gate", "APPROVAL"),
