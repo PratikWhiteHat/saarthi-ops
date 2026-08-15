@@ -189,6 +189,10 @@ from saarthi_ai.recon.javascript_collector import (
     JavaScriptCollectionError,
 )
 from saarthi_ai.recon.subdomain_collector import SubdomainCollectionError
+from saarthi_ai.reporting.pipeline import (
+    engagement_from_settings,
+    run_reporting_phases,
+)
 from saarthi_ai.schemas import Message
 
 app = typer.Typer(
@@ -254,6 +258,11 @@ cleanup_app = typer.Typer(
     help="Inspect and reverse the Phase 6G engagement footprint.",
 )
 
+knowledge_app = typer.Typer(
+    no_args_is_help=True,
+    help="Manage the local knowledge pack (vulnerability library + template).",
+)
+
 app.add_typer(project_app, name="project")
 app.add_typer(execution_app, name="execution")
 app.add_typer(evidence_app, name="evidence")
@@ -265,6 +274,7 @@ app.add_typer(controlled_app, name="controlled")
 app.add_typer(workflow_app, name="workflow")
 app.add_typer(authenticated_app, name="authenticated")
 app.add_typer(cleanup_app, name="cleanup")
+app.add_typer(knowledge_app, name="knowledge")
 
 console = Console()
 
@@ -436,6 +446,218 @@ def analyze(
 
     console.print()
     console.print(Markdown(content))
+
+
+@knowledge_app.command("import-bible")
+def knowledge_import_bible(
+    source: Annotated[
+        Path,
+        typer.Argument(
+            help="Path to a vulnerability-library .docx to parse and install.",
+        ),
+    ],
+) -> None:
+    """Parse a vulnerability library (.docx) into the local knowledge pack."""
+
+    from saarthi_ai.config import knowledge_dir
+    from saarthi_ai.knowledge.bible_parser import (
+        BibleParseError,
+        parse_bible_docx,
+    )
+    from saarthi_ai.knowledge.loader import save_bible_catalog
+
+    try:
+        catalog = parse_bible_docx(source)
+    except BibleParseError as exc:
+        console.print(f"[bold red]Import failed:[/bold red] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    path = save_bible_catalog(catalog)
+    counts: dict[str, int] = {}
+    for entry in catalog.entries:
+        counts[entry.severity.value] = counts.get(entry.severity.value, 0) + 1
+    console.print(
+        f"[bold green]Installed[/bold green] {len(catalog)} entries from "
+        f"{source.name} -> {path}"
+    )
+    console.print(f"Severity distribution: {counts}")
+    console.print(f"Knowledge dir: {knowledge_dir()}")
+
+
+@knowledge_app.command("set-template")
+def knowledge_set_template(
+    source: Annotated[
+        Path,
+        typer.Argument(
+            help="Path to a report-template .docx to genericize and install.",
+        ),
+    ],
+) -> None:
+    """Install a report template into the pack, genericizing vendor names."""
+
+    from saarthi_ai.config import knowledge_dir
+    from saarthi_ai.knowledge.template_import import (
+        TemplateImportError,
+        import_report_template,
+    )
+
+    try:
+        dest = import_report_template(source, base=knowledge_dir())
+    except TemplateImportError as exc:
+        console.print(f"[bold red]Import failed:[/bold red] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    console.print(
+        f"[bold green]Installed report template[/bold green] -> {dest}"
+    )
+    console.print(
+        "[dim]Vendor names were replaced with placeholders; company, author, "
+        "and reviewer are filled from SAARTHI_REPORT_* settings at "
+        "report time.[/dim]"
+    )
+
+
+@knowledge_app.command("status")
+def knowledge_status() -> None:
+    """Show what the local knowledge pack currently contains."""
+
+    from saarthi_ai.config import knowledge_dir
+    from saarthi_ai.knowledge.loader import (
+        BibleNotAvailableError,
+        load_bible_catalog,
+        report_template_path,
+    )
+
+    root = knowledge_dir()
+    console.print(f"[bold]Knowledge pack[/bold]: {root}")
+
+    try:
+        catalog = load_bible_catalog()
+    except BibleNotAvailableError as exc:
+        console.print(f"  vulnerability library : [yellow]not installed[/yellow] ({exc})")
+    else:
+        counts: dict[str, int] = {}
+        for entry in catalog.entries:
+            counts[entry.severity.value] = counts.get(entry.severity.value, 0) + 1
+        console.print(
+            f"  vulnerability library : [green]{len(catalog)} entries[/green] "
+            f"(source: {catalog.source or 'unknown'})"
+        )
+        console.print(f"  severity distribution : {counts}")
+
+    template = report_template_path()
+    if template is None:
+        console.print("  report template       : [yellow]not installed[/yellow]")
+    else:
+        console.print(f"  report template       : [green]{template}[/green]")
+
+
+@app.command()
+def report(
+    orchestration: Annotated[
+        str | None,
+        typer.Option(
+            "--orchestration",
+            help="Orchestration id to report on. Defaults to the latest run.",
+        ),
+    ] = None,
+    org: Annotated[
+        str | None,
+        typer.Option("--org", help="Client organization name for the report."),
+    ] = None,
+    app_name: Annotated[
+        str | None,
+        typer.Option("--app", help="Application name for the report."),
+    ] = None,
+    status_label: Annotated[
+        str,
+        typer.Option("--status", help="Report status label (e.g. FINAL)."),
+    ] = "FINAL",
+    test_type: Annotated[
+        str,
+        typer.Option("--test-type", help="Test type (Black/Gray/White)."),
+    ] = "Gray",
+    no_ai: Annotated[
+        bool,
+        typer.Option("--no-ai", help="Skip the local-LLM narrative/coverage."),
+    ] = False,
+) -> None:
+    """Phase 8A: build a VAPT report (.docx + JSON) from a run's evidence."""
+
+    from urllib.parse import urlparse
+
+    from saarthi_ai.orchestration.models import OrchestrationContext
+
+    database = get_database()
+
+    parent = None
+    for execution in database.list_executions(limit=1_000):
+        meta = execution.metadata or {}
+        if meta.get("execution_role") != "orchestration_parent":
+            continue
+        if orchestration and meta.get("orchestration_id") != orchestration:
+            continue
+        parent = execution  # keep the most recent match
+
+    if parent is None:
+        console.print(
+            "[bold red]No orchestration run found to report on.[/bold red] "
+            "Run `saarthi workflow run` first."
+        )
+        raise typer.Exit(code=1)
+
+    meta = parent.metadata or {}
+    target = parent.targets[0] if parent.targets else ""
+    oid = str(meta.get("orchestration_id"))
+    context = OrchestrationContext(
+        orchestration_id=oid,
+        parent_execution_id=parent.execution_id,
+        target_url=target or "https://unknown.invalid",
+        target_domain=(meta.get("target_domain") or urlparse(target).netloc or "unknown"),
+        project_id=meta.get("project_id"),
+        project_slug=meta.get("project_slug"),
+    )
+
+    engagement = engagement_from_settings(
+        org_name=org,
+        app_name=app_name or target,
+        status_label=status_label,
+        test_type=test_type,
+    )
+
+    evidence_root = Path.cwd() / "evidence" / "orchestrations" / oid
+    console.print(f"[bold]Generating report for orchestration {oid}[/bold]")
+
+    try:
+        reporting = run_reporting_phases(
+            database,
+            context,
+            evidence_root=evidence_root,
+            engagement=engagement,
+            use_ai=not no_ai,
+            on_log=lambda message: console.print(message, markup=False),
+        )
+    except Exception as exc:  # noqa: BLE001 - surface any failure cleanly
+        console.print(f"[bold red]Report generation failed:[/bold red] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    model = reporting.report.model
+    console.print()
+    console.print("[bold green]Report complete.[/bold green]")
+    console.print(f"Findings       : {len(model.findings)}")
+    console.print(f"Highest severity: {model.highest_severity.value}")
+    console.print(f"Overall posture : {model.overall_posture}")
+    console.print(f"DOCX           : {reporting.report.docx_path}")
+    console.print(f"JSON           : {reporting.report.json_path}")
+    console.print(f"Markdown       : {reporting.report.markdown_path}")
+    console.print(f"HTML           : {reporting.report.html_path}")
+    if reporting.report.pdf_path:
+        console.print(f"PDF            : {reporting.report.pdf_path}")
+    else:
+        console.print(
+            "PDF            : [dim]skipped (install LibreOffice for PDF, or "
+            "print the HTML)[/dim]"
+        )
 
 
 @app.command()
@@ -4943,6 +5165,27 @@ def workflow_run(
         f"Parent execution: {result.context.parent_execution_id}"
     )
     console.print(f"Final state: {overall_status.value}")
+
+    console.print()
+    console.print(
+        "[bold]Phase 4E bible coverage + Phase 8A reporting...[/bold]"
+    )
+    try:
+        reporting = run_reporting_phases(
+            database,
+            result.context,
+            evidence_root=evidence_root,
+            on_log=lambda message: console.print(message, markup=False),
+        )
+        console.print(
+            "[bold green]Report generated.[/bold green] "
+            f"docx: {reporting.report.docx_path}"
+        )
+        console.print(f"json: {reporting.report.json_path}")
+    except Exception as exc:  # noqa: BLE001 - reporting must never abort a run
+        console.print(
+            f"[bold yellow]Reporting phase failed:[/bold yellow] {exc}"
+        )
 
     if not auto_validate:
         return

@@ -3392,6 +3392,7 @@ BASE_PHASES = [
     ("4B", "Blind Validation"),
     ("4C", "OAST Manager"),
     ("4D", "Confirmation Engine"),
+    ("4E", "Bible Coverage (AI)"),
     ("5A", "Assessment Planner"),
     ("5B", "Dependency Outcomes"),
     ("5C", "Parent Outcome Handling"),
@@ -6099,6 +6100,27 @@ class SaarthiDashboard(App[None]):
             )
         except Exception as exc:  # non-fatal
             log_line(f"[4B/4C/4D] validator evaluation skipped: {exc}")
+
+        # Phase 4E — bible coverage (AI): match the local vulnerability library
+        # against the run's evidence. Phase 8A — reporting: assemble the .docx
+        # deliverable + JSON sidecar. Deterministic findings; AI writes only the
+        # narrative and refines coverage. Non-fatal — a run is never aborted by
+        # reporting.
+        self.call_from_thread(self._set_run_stage, "Reporting (4E/8A)")
+        try:
+            from saarthi_ai.reporting.pipeline import run_reporting_phases
+
+            reporting = run_reporting_phases(
+                database,
+                context,
+                evidence_root=evidence_root,
+                on_log=log_line,
+            )
+            log_line(
+                f"[OK ] 8A report: {reporting.report.docx_path}"
+            )
+        except Exception as exc:  # non-fatal reporting
+            log_line(f"[4E/8A] reporting skipped: {exc}")
 
         log_line("[OK ] Full assessment complete — all phases recorded.")
         self.call_from_thread(

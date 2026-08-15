@@ -1,4 +1,5 @@
 from functools import lru_cache
+from pathlib import Path
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -20,6 +21,42 @@ class Settings(BaseSettings):
     ollama_model: str = "qwen3.5:9b"
     request_timeout_seconds: float = Field(default=180, gt=0)
 
+    knowledge_dir: str = Field(
+        default="",
+        description=(
+            "Directory holding the local, git-ignored knowledge pack "
+            "(parsed vulnerability library `wapt_bible.json` and the report "
+            "template `report_template.docx`). Empty resolves to "
+            "~/.saarthi/knowledge. Set SAARTHI_KNOWLEDGE_DIR to override."
+        ),
+    )
+
+    # Report identity — vendor-neutral placeholders filled into the report
+    # template so no company/author is hard-coded in the repo.
+    report_company: str = Field(
+        default="Your Security Team",
+        description="Testing organization name printed on the report.",
+    )
+    report_company_short: str = Field(
+        default="",
+        description=(
+            "Short/abbreviated testing-org name used in prose. Empty falls "
+            "back to report_company."
+        ),
+    )
+    report_author: str = Field(
+        default="Saarthi Operator",
+        description="Report author / 'Prepared By' name.",
+    )
+    report_reviewer: str = Field(
+        default="",
+        description="Report reviewer / 'Reviewed By' name.",
+    )
+    report_classification: str = Field(
+        default="Confidential",
+        description="Document classification printed on the report.",
+    )
+
     verify_tls: bool = Field(
         default=False,
         description=(
@@ -35,6 +72,20 @@ class Settings(BaseSettings):
 @lru_cache
 def get_settings() -> Settings:
     return Settings()
+
+
+def knowledge_dir() -> Path:
+    """Resolve the local knowledge-pack directory.
+
+    Defaults to ``~/.saarthi/knowledge`` (alongside the execution database) so
+    the proprietary vulnerability library and report template stay local and
+    out of the repository. Override with ``SAARTHI_KNOWLEDGE_DIR``.
+    """
+
+    configured = get_settings().knowledge_dir.strip()
+    if configured:
+        return Path(configured).expanduser()
+    return Path.home() / ".saarthi" / "knowledge"
 
 
 def tls_verify() -> bool:

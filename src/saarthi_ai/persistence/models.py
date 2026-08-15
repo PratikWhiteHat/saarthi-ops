@@ -49,6 +49,8 @@ class EvidenceType(StrEnum):
     CRAWL_RESULT = "crawl_result"
     JAVASCRIPT_INTELLIGENCE_RESULT = "javascript_intelligence_result"
     DIRECT_CHECK_RESULT = "direct_check_result"
+    BIBLE_COVERAGE_RESULT = "bible_coverage_result"
+    ASSESSMENT_REPORT = "assessment_report"
     BLIND_VALIDATION_RESULT = "blind_validation_result"
     OAST_OBSERVATION = "oast_observation"
     CONFIRMATION_RESULT = "confirmation_result"

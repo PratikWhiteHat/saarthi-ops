@@ -368,7 +368,9 @@ def test_phase_rows_marks_4d_done() -> None:
 
     assert row_map["4C"][3] == "DONE"
     assert row_map["4D"][3] == "DONE"
-    assert row_map["5A"][3] == "NEXT"
+    # 4E (bible coverage) now sits between 4D and 5A, so it is NEXT.
+    assert row_map["4E"][3] == "NEXT"
+    assert row_map["5A"][3] == "PLANNED"
 
 
 def test_phase_rows_cover_complete_product_workflow() -> None:
@@ -377,7 +379,8 @@ def test_phase_rows_cover_complete_product_workflow() -> None:
     rows = phase_rows("6C — LOW-RISK ATTACK VALIDATORS")
     row_map = {row[1]: row for row in rows}
 
-    assert len(rows) == 23
+    assert len(rows) == 24
+    assert row_map["4E"][2] == "Bible Coverage (AI)"
     assert row_map["5A"][2] == "Assessment Planner"
     assert row_map["6A"][2] == "Attack Hypothesis Engine"
     assert row_map["6C"][3] == "DONE"
