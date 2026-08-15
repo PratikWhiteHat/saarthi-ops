@@ -69,6 +69,10 @@ class RunDigest:
     wayback_summary: str | None = None
     archive_summary: str | None = None
     authz_summary: str | None = None
+    exploit_summary: str | None = None
+    post_exploitation_summary: str | None = None
+    cleanup_summary: str | None = None
+    phase4_validation_summary: str | None = None
 
 
 def _metadata(execution: ExecutionRecord) -> dict:
@@ -329,6 +333,133 @@ def _summarize_authenticated_evidence(evidence: object) -> str | None:
     return header + ("\n  - " + "\n  - ".join(lines) if lines else "")
 
 
+def _summarize_exploit_evidence(evidence: object) -> str | None:
+    """Summarize a Phase 6E exploit-confirmation evidence record."""
+
+    path = getattr(evidence, "path", None)
+    if not path:
+        return None
+    try:
+        payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, TypeError):
+        return None
+    findings = payload.get("findings", []) or []
+    header = (
+        f"{payload.get('confirmed_count', 0)} confirmed of {len(findings)}; "
+        f"highest {payload.get('highest_severity', 'info')}"
+    )
+    lines = [
+        f"{f.get('severity')} {f.get('verdict')} "
+        f"{f.get('source_tool')}/{f.get('kind')}"
+        + (
+            f" [extract:{f.get('extraction_kind')}]"
+            if f.get("extraction_kind")
+            else ""
+        )
+        for f in findings[:12]
+        if isinstance(f, dict)
+    ]
+    return header + ("\n  - " + "\n  - ".join(lines) if lines else "")
+
+
+def _summarize_post_exploitation_evidence(evidence: object) -> str | None:
+    """Summarize a Phase 6F post-exploitation-simulation evidence record."""
+
+    path = getattr(evidence, "path", None)
+    if not path:
+        return None
+    try:
+        payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, TypeError):
+        return None
+    scenarios = payload.get("scenarios", []) or []
+    header = (
+        f"{payload.get('demonstrated_count', 0)} demonstrated of "
+        f"{len(scenarios)}; highest {payload.get('highest_severity', 'info')}; "
+        f"widest blast {payload.get('max_blast_radius', 'single_object')}"
+    )
+    lines = [
+        f"{s.get('severity')} {s.get('confidence')} {s.get('kind')} -> "
+        f"{s.get('blast_radius')}"
+        + (
+            f" [{', '.join(s.get('capabilities') or [])}]"
+            if s.get("capabilities")
+            else ""
+        )
+        for s in scenarios[:12]
+        if isinstance(s, dict)
+    ]
+    return header + ("\n  - " + "\n  - ".join(lines) if lines else "")
+
+
+def _summarize_cleanup_evidence(evidence: object) -> str | None:
+    """Summarize a Phase 6G cleanup-manifest evidence record."""
+
+    path = getattr(evidence, "path", None)
+    if not path:
+        return None
+    try:
+        payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, TypeError):
+        return None
+    items = payload.get("items", []) or []
+    header = (
+        f"footprint {payload.get('footprint', 'no_target_footprint')}; "
+        f"{len(items)} item(s); "
+        f"{payload.get('reversible_count', 0)} auto-reversible, "
+        f"{payload.get('operator_action_count', 0)} operator-action"
+    )
+    lines = [
+        f"{i.get('artifact_type')} -> {i.get('action')} "
+        f"({i.get('reversibility')}) @ {i.get('location')}"
+        for i in items[:12]
+        if isinstance(i, dict)
+    ]
+    return header + ("\n  - " + "\n  - ".join(lines) if lines else "")
+
+
+# Phase-4 candidate-driven validators (blind/OAST/confirmation). In the auto
+# chain these are prerequisite gates; their outcomes live in audit events, not
+# evidence, so they are surfaced separately for the analyst.
+_PHASE4_VALIDATION_NAMES: dict[str, str] = {
+    "4B": "Blind Validation",
+    "4C": "OAST Manager",
+    "4D": "Confirmation Engine",
+}
+
+_PHASE4_EVIDENCE_LABELS: tuple[tuple[str, str], ...] = (
+    ("blind_validation_result", "blind-validation records"),
+    ("oast_observation", "OAST observations"),
+    ("confirmation_result", "confirmation decisions"),
+)
+
+
+def _phase4_validation_summary(
+    gates: dict[str, tuple[str, str]],
+    evidence_counts: dict[str, int],
+) -> str | None:
+    """Render the Phase-4 blind/OAST/confirmation status for the analyst."""
+
+    lines: list[str] = []
+    for code, name in _PHASE4_VALIDATION_NAMES.items():
+        if code in gates:
+            outcome, reason = gates[code]
+            line = f"{code} {name}: {outcome}"
+            if reason:
+                line += f" — {reason}"
+            lines.append(line)
+    active = [
+        f"{count} {label}"
+        for key, label in _PHASE4_EVIDENCE_LABELS
+        if (count := evidence_counts.get(key, 0))
+    ]
+    if active:
+        lines.append("recorded evidence: " + ", ".join(active))
+    if not lines:
+        return None
+    return "\n  - ".join(lines)
+
+
 def gather_run_digest(
     database: SaarthiDatabase,
     *,
@@ -374,6 +505,10 @@ def gather_run_digest(
     evidence_counts: Counter[str] = Counter()
     evidence_signals: list[str] = []
     authz_summary: str | None = None
+    exploit_summary: str | None = None
+    post_exploitation_summary: str | None = None
+    cleanup_summary: str | None = None
+    phase4_gates: dict[str, tuple[str, str]] = {}
 
     for execution in [parent, *children]:
         phase_code = _metadata(execution).get("phase_code", "-")
@@ -386,6 +521,16 @@ def gather_run_digest(
                 )
             elif event.event_type is AuditEventType.TOOL_FAILED:
                 failures.append(f"[{phase_code}] {event.message}"[:200])
+            else:
+                details = event.details or {}
+                gate_code = str(details.get("phase_code") or "")
+                if gate_code in _PHASE4_VALIDATION_NAMES and (
+                    details.get("gate_evaluated") or details.get("outcome")
+                ):
+                    phase4_gates[gate_code] = (
+                        str(details.get("outcome") or "evaluated"),
+                        str(details.get("reason") or ""),
+                    )
 
         for evidence in database.list_evidence(execution.execution_id):
             evidence_counts[evidence.evidence_type.value] += 1
@@ -401,6 +546,28 @@ def gather_run_digest(
                 summary = _summarize_authenticated_evidence(evidence)
                 if summary:
                     authz_summary = summary
+            elif (
+                evidence.evidence_type
+                is EvidenceType.EXPLOIT_CONFIRMATION_RESULT
+            ):
+                summary = _summarize_exploit_evidence(evidence)
+                if summary:
+                    exploit_summary = summary
+            elif (
+                evidence.evidence_type
+                is EvidenceType.POST_EXPLOITATION_SIMULATION
+            ):
+                summary = _summarize_post_exploitation_evidence(evidence)
+                if summary:
+                    post_exploitation_summary = summary
+            elif evidence.evidence_type is EvidenceType.CLEANUP_MANIFEST:
+                summary = _summarize_cleanup_evidence(evidence)
+                if summary:
+                    cleanup_summary = summary
+
+    phase4_validation_summary = _phase4_validation_summary(
+        phase4_gates, dict(evidence_counts)
+    )
 
     nuclei_summary = sqlmap_summary = None
     ghauri_summary = xsstrike_summary = wayback_summary = None
@@ -435,6 +602,10 @@ def gather_run_digest(
         wayback_summary=wayback_summary,
         archive_summary=archive_summary,
         authz_summary=authz_summary,
+        exploit_summary=exploit_summary,
+        post_exploitation_summary=post_exploitation_summary,
+        cleanup_summary=cleanup_summary,
+        phase4_validation_summary=phase4_validation_summary,
     )
 
 
@@ -532,11 +703,39 @@ def build_analysis_prompt(digest: RunDigest) -> str:
             "Local page archive:",
             f"  {digest.archive_summary}",
         ]
+    if digest.phase4_validation_summary:
+        lines += [
+            "",
+            "Blind / OAST / confirmation validators (4B/4C/4D — candidate-"
+            "driven OAST-callback loop; loopback-only collaborator, so external "
+            "targets cannot correlate a callback):",
+            f"  - {digest.phase4_validation_summary}",
+        ]
     if digest.authz_summary:
         lines += [
             "",
             "Authenticated workflows (6D — authZ + token hygiene):",
             f"  {digest.authz_summary}",
+        ]
+    if digest.exploit_summary:
+        lines += [
+            "",
+            "Exploit confirmation (6E — impact verdicts):",
+            f"  {digest.exploit_summary}",
+        ]
+    if digest.post_exploitation_summary:
+        lines += [
+            "",
+            "Post-exploitation simulation (6F — impact projection; "
+            "capabilities/blast radius, no new active testing):",
+            f"  {digest.post_exploitation_summary}",
+        ]
+    if digest.cleanup_summary:
+        lines += [
+            "",
+            "Cleanup & rollback (6G — engagement footprint + residual "
+            "artifacts; no target-side action taken):",
+            f"  {digest.cleanup_summary}",
         ]
 
     if digest.failures:

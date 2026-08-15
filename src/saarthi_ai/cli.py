@@ -189,6 +189,10 @@ from saarthi_ai.recon.javascript_collector import (
     JavaScriptCollectionError,
 )
 from saarthi_ai.recon.subdomain_collector import SubdomainCollectionError
+from saarthi_ai.reporting.pipeline import (
+    engagement_from_settings,
+    run_reporting_phases,
+)
 from saarthi_ai.schemas import Message
 
 app = typer.Typer(
@@ -249,6 +253,16 @@ authenticated_app = typer.Typer(
     help="Run Phase 6D authenticated (cross-account) workflows.",
 )
 
+cleanup_app = typer.Typer(
+    no_args_is_help=True,
+    help="Inspect and reverse the Phase 6G engagement footprint.",
+)
+
+knowledge_app = typer.Typer(
+    no_args_is_help=True,
+    help="Manage the local knowledge pack (vulnerability library + template).",
+)
+
 app.add_typer(project_app, name="project")
 app.add_typer(execution_app, name="execution")
 app.add_typer(evidence_app, name="evidence")
@@ -259,6 +273,8 @@ app.add_typer(confirm_app, name="confirm")
 app.add_typer(controlled_app, name="controlled")
 app.add_typer(workflow_app, name="workflow")
 app.add_typer(authenticated_app, name="authenticated")
+app.add_typer(cleanup_app, name="cleanup")
+app.add_typer(knowledge_app, name="knowledge")
 
 console = Console()
 
@@ -430,6 +446,562 @@ def analyze(
 
     console.print()
     console.print(Markdown(content))
+
+
+@knowledge_app.command("import-bible")
+def knowledge_import_bible(
+    source: Annotated[
+        Path,
+        typer.Argument(
+            help="Path to a vulnerability-library .docx to parse and install.",
+        ),
+    ],
+) -> None:
+    """Parse a vulnerability library (.docx) into the local knowledge pack."""
+
+    from saarthi_ai.config import knowledge_dir
+    from saarthi_ai.knowledge.bible_parser import (
+        BibleParseError,
+        parse_bible_docx,
+    )
+    from saarthi_ai.knowledge.loader import save_bible_catalog
+
+    try:
+        catalog = parse_bible_docx(source)
+    except BibleParseError as exc:
+        console.print(f"[bold red]Import failed:[/bold red] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    path = save_bible_catalog(catalog)
+    counts: dict[str, int] = {}
+    for entry in catalog.entries:
+        counts[entry.severity.value] = counts.get(entry.severity.value, 0) + 1
+    console.print(
+        f"[bold green]Installed[/bold green] {len(catalog)} entries from "
+        f"{source.name} -> {path}"
+    )
+    console.print(f"Severity distribution: {counts}")
+    console.print(f"Knowledge dir: {knowledge_dir()}")
+
+
+@knowledge_app.command("set-template")
+def knowledge_set_template(
+    source: Annotated[
+        Path,
+        typer.Argument(
+            help="Path to a report-template .docx to genericize and install.",
+        ),
+    ],
+) -> None:
+    """Install a report template into the pack, genericizing vendor names."""
+
+    from saarthi_ai.config import knowledge_dir
+    from saarthi_ai.knowledge.template_import import (
+        TemplateImportError,
+        import_report_template,
+    )
+
+    try:
+        dest = import_report_template(source, base=knowledge_dir())
+    except TemplateImportError as exc:
+        console.print(f"[bold red]Import failed:[/bold red] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    console.print(
+        f"[bold green]Installed report template[/bold green] -> {dest}"
+    )
+    console.print(
+        "[dim]Vendor names were replaced with placeholders; company, author, "
+        "and reviewer are filled from SAARTHI_REPORT_* settings at "
+        "report time.[/dim]"
+    )
+
+
+@knowledge_app.command("status")
+def knowledge_status() -> None:
+    """Show what the local knowledge pack currently contains."""
+
+    from saarthi_ai.config import knowledge_dir
+    from saarthi_ai.knowledge.loader import (
+        BibleNotAvailableError,
+        load_bible_catalog,
+        report_template_path,
+    )
+
+    root = knowledge_dir()
+    console.print(f"[bold]Knowledge pack[/bold]: {root}")
+
+    try:
+        catalog = load_bible_catalog()
+    except BibleNotAvailableError as exc:
+        console.print(f"  vulnerability library : [yellow]not installed[/yellow] ({exc})")
+    else:
+        counts: dict[str, int] = {}
+        for entry in catalog.entries:
+            counts[entry.severity.value] = counts.get(entry.severity.value, 0) + 1
+        console.print(
+            f"  vulnerability library : [green]{len(catalog)} entries[/green] "
+            f"(source: {catalog.source or 'unknown'})"
+        )
+        console.print(f"  severity distribution : {counts}")
+
+    template = report_template_path()
+    if template is None:
+        console.print("  report template       : [yellow]not installed[/yellow]")
+    else:
+        console.print(f"  report template       : [green]{template}[/green]")
+
+
+@app.command()
+def report(
+    orchestration: Annotated[
+        str | None,
+        typer.Option(
+            "--orchestration",
+            help="Orchestration id to report on. Defaults to the latest run.",
+        ),
+    ] = None,
+    org: Annotated[
+        str | None,
+        typer.Option("--org", help="Client organization name for the report."),
+    ] = None,
+    app_name: Annotated[
+        str | None,
+        typer.Option("--app", help="Application name for the report."),
+    ] = None,
+    status_label: Annotated[
+        str,
+        typer.Option("--status", help="Report status label (e.g. FINAL)."),
+    ] = "FINAL",
+    test_type: Annotated[
+        str,
+        typer.Option("--test-type", help="Test type (Black/Gray/White)."),
+    ] = "Gray",
+    no_ai: Annotated[
+        bool,
+        typer.Option("--no-ai", help="Skip the local-LLM narrative/coverage."),
+    ] = False,
+) -> None:
+    """Phase 8A: build a VAPT report (.docx + JSON) from a run's evidence."""
+
+    from urllib.parse import urlparse
+
+    from saarthi_ai.orchestration.models import OrchestrationContext
+
+    database = get_database()
+
+    parent = None
+    for execution in database.list_executions(limit=1_000):
+        meta = execution.metadata or {}
+        if meta.get("execution_role") != "orchestration_parent":
+            continue
+        if orchestration and meta.get("orchestration_id") != orchestration:
+            continue
+        parent = execution  # keep the most recent match
+
+    if parent is None:
+        console.print(
+            "[bold red]No orchestration run found to report on.[/bold red] "
+            "Run `saarthi workflow run` first."
+        )
+        raise typer.Exit(code=1)
+
+    meta = parent.metadata or {}
+    target = parent.targets[0] if parent.targets else ""
+    oid = str(meta.get("orchestration_id"))
+    context = OrchestrationContext(
+        orchestration_id=oid,
+        parent_execution_id=parent.execution_id,
+        target_url=target or "https://unknown.invalid",
+        target_domain=(meta.get("target_domain") or urlparse(target).netloc or "unknown"),
+        project_id=meta.get("project_id"),
+        project_slug=meta.get("project_slug"),
+    )
+
+    engagement = engagement_from_settings(
+        org_name=org,
+        app_name=app_name or target,
+        status_label=status_label,
+        test_type=test_type,
+    )
+
+    evidence_root = Path.cwd() / "evidence" / "orchestrations" / oid
+    console.print(f"[bold]Generating report for orchestration {oid}[/bold]")
+
+    try:
+        reporting = run_reporting_phases(
+            database,
+            context,
+            evidence_root=evidence_root,
+            engagement=engagement,
+            use_ai=not no_ai,
+            on_log=lambda message: console.print(message, markup=False),
+        )
+    except Exception as exc:  # noqa: BLE001 - surface any failure cleanly
+        console.print(f"[bold red]Report generation failed:[/bold red] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    model = reporting.report.model
+    console.print()
+    console.print("[bold green]Report complete.[/bold green]")
+    console.print(f"Findings       : {len(model.findings)}")
+    console.print(f"Highest severity: {model.highest_severity.value}")
+    console.print(f"Overall posture : {model.overall_posture}")
+    console.print(f"DOCX           : {reporting.report.docx_path}")
+    console.print(f"JSON           : {reporting.report.json_path}")
+    console.print(f"Markdown       : {reporting.report.markdown_path}")
+    console.print(f"HTML           : {reporting.report.html_path}")
+    if reporting.report.pdf_path:
+        console.print(f"PDF            : {reporting.report.pdf_path}")
+    else:
+        console.print(
+            "PDF            : [dim]skipped (install LibreOffice for PDF, or "
+            "print the HTML)[/dim]"
+        )
+
+
+@app.command()
+def simulate(
+    orchestration: Annotated[
+        str | None,
+        typer.Option(
+            "--orchestration",
+            help="Orchestration id to project. Defaults to the most recent run.",
+        ),
+    ] = None,
+) -> None:
+    """Phase 6F: project post-exploitation impact from a run's confirmed findings.
+
+    Read-only and offline. Reads the run's persisted 6F simulation, or
+    regenerates it deterministically from the 6E exploit-confirmation result.
+    Executes NOTHING against the target — no approval needed.
+    """
+
+    import json
+    from pathlib import Path
+
+    from saarthi_ai.persistence.models import EvidenceType
+    from saarthi_ai.post_exploitation.simulator import (
+        simulate_post_exploitation,
+    )
+
+    database = get_database()
+    executions = database.list_executions(limit=1_000)  # newest-first
+
+    target_oid = orchestration
+    if target_oid is None:
+        for record in executions:
+            oid = (record.metadata or {}).get("orchestration_id")
+            if oid:
+                target_oid = oid
+                break
+    if target_oid is None:
+        console.print("[bold red]No orchestration run found.[/bold red]")
+        raise typer.Exit(code=1)
+
+    def _read(path: str | None) -> dict | None:
+        if not path:
+            return None
+        try:
+            return json.loads(Path(path).read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return None
+
+    sim_payload: dict | None = None
+    exploit_payload: dict | None = None
+    for record in executions:
+        if (record.metadata or {}).get("orchestration_id") != target_oid:
+            continue
+        for evidence in database.list_evidence(record.execution_id):
+            if (
+                evidence.evidence_type
+                is EvidenceType.POST_EXPLOITATION_SIMULATION
+                and sim_payload is None
+            ):
+                sim_payload = _read(evidence.path)
+            elif (
+                evidence.evidence_type
+                is EvidenceType.EXPLOIT_CONFIRMATION_RESULT
+                and exploit_payload is None
+            ):
+                exploit_payload = _read(evidence.path)
+
+    regenerated = False
+    if sim_payload is None:
+        if exploit_payload is None:
+            console.print(
+                f"[bold red]No 6E/6F evidence[/bold red] for {target_oid!r}. "
+                "Run an assessment first."
+            )
+            raise typer.Exit(code=1)
+        sim_payload = simulate_post_exploitation(
+            exploit_confirmation_payload=exploit_payload
+        ).as_dict()
+        regenerated = True
+
+    scenarios = sim_payload.get("scenarios", []) or []
+    console.print("[bold]Phase 6F — post-exploitation simulation[/bold]")
+    console.print(f"Target        : {sim_payload.get('target', '-')}")
+    console.print(f"Orchestration : {target_oid}")
+    console.print(
+        f"Scenarios     : "
+        f"{sim_payload.get('scenario_count', len(scenarios))} | "
+        f"demonstrated: {sim_payload.get('demonstrated_count', 0)} | "
+        f"highest: {sim_payload.get('highest_severity', 'info')} | "
+        f"widest blast: {sim_payload.get('max_blast_radius', 'single_object')}"
+    )
+    if regenerated:
+        console.print(
+            "[dim](regenerated on the fly from the 6E result; not persisted)"
+            "[/dim]"
+        )
+    console.print(
+        "[dim]Simulation only — projected from confirmed findings; nothing was "
+        "executed against the target.[/dim]"
+    )
+
+    if not scenarios:
+        console.print(
+            "\n[yellow]No post-exploitation scenarios projected.[/yellow]"
+        )
+        raise typer.Exit(code=0)
+
+    table = Table(show_header=True, header_style="bold")
+    table.add_column("Severity")
+    table.add_column("Confidence")
+    table.add_column("Finding")
+    table.add_column("Blast radius")
+    table.add_column("Capabilities")
+    for scenario in scenarios:
+        if not isinstance(scenario, dict):
+            continue
+        table.add_row(
+            str(scenario.get("severity", "-")),
+            str(scenario.get("confidence", "-")),
+            str(scenario.get("kind", "-")),
+            str(scenario.get("blast_radius", "-")),
+            ", ".join(scenario.get("capabilities") or []) or "-",
+        )
+    console.print()
+    console.print(table)
+
+
+def _load_cleanup_manifest(database, orchestration: str | None) -> tuple[str, dict]:
+    """Resolve the run and return (orchestration_id, manifest dict).
+
+    Prefers the persisted 6G manifest; regenerates deterministically from the
+    run's evidence when none exists. Read-only.
+    """
+
+    import json
+    from pathlib import Path
+
+    from saarthi_ai.cleanup.planner import build_cleanup_manifest
+    from saarthi_ai.persistence.cleanup_workflow import _gather_run_evidence
+    from saarthi_ai.persistence.models import EvidenceType
+
+    executions = database.list_executions(limit=1_000)  # newest-first
+    target_oid = orchestration
+    if target_oid is None:
+        for record in executions:
+            oid = (record.metadata or {}).get("orchestration_id")
+            if oid:
+                target_oid = oid
+                break
+    if target_oid is None:
+        console.print("[bold red]No orchestration run found.[/bold red]")
+        raise typer.Exit(code=1)
+
+    for record in executions:
+        if (record.metadata or {}).get("orchestration_id") != target_oid:
+            continue
+        for evidence in database.list_evidence(record.execution_id):
+            if (
+                evidence.evidence_type is EvidenceType.CLEANUP_MANIFEST
+                and evidence.path
+            ):
+                try:
+                    return target_oid, json.loads(
+                        Path(evidence.path).read_text(encoding="utf-8")
+                    )
+                except (OSError, json.JSONDecodeError):
+                    pass
+
+    target, records = _gather_run_evidence(database, target_oid)
+    manifest = build_cleanup_manifest(target=target, evidence_records=records)
+    return target_oid, manifest.as_dict()
+
+
+@cleanup_app.command("show")
+def cleanup_show(
+    orchestration: Annotated[
+        str | None,
+        typer.Option(
+            "--orchestration",
+            help="Orchestration id. Defaults to the most recent run.",
+        ),
+    ] = None,
+) -> None:
+    """Phase 6G: show the run's cleanup/rollback manifest (read-only)."""
+
+    database = get_database()
+    target_oid, manifest = _load_cleanup_manifest(database, orchestration)
+    items = manifest.get("items", []) or []
+
+    console.print("[bold]Phase 6G — cleanup & rollback manifest[/bold]")
+    console.print(f"Target        : {manifest.get('target', '-')}")
+    console.print(f"Orchestration : {target_oid}")
+    console.print(
+        f"Footprint     : {manifest.get('footprint', 'no_target_footprint')} | "
+        f"items: {manifest.get('item_count', len(items))} | "
+        f"auto-reversible: {manifest.get('reversible_count', 0)} | "
+        f"operator-action: {manifest.get('operator_action_count', 0)}"
+    )
+    console.print(
+        "[dim]Read-only — no target-side action taken. Reversal is an "
+        "explicit, approval-gated `cleanup rollback` step.[/dim]"
+    )
+
+    if not items:
+        console.print(
+            "\n[green]No residual artifacts — engagement left no footprint "
+            "to roll back.[/green]"
+        )
+        raise typer.Exit(code=0)
+
+    table = Table(show_header=True, header_style="bold")
+    table.add_column("Item")
+    table.add_column("Artifact")
+    table.add_column("Action")
+    table.add_column("Reversible")
+    table.add_column("Location")
+    for entry in items:
+        if not isinstance(entry, dict):
+            continue
+        table.add_row(
+            str(entry.get("item_id", "-")),
+            str(entry.get("artifact_type", "-")),
+            str(entry.get("action", "-")),
+            str(entry.get("reversibility", "-")),
+            str(entry.get("location", "-")),
+        )
+    console.print()
+    console.print(table)
+
+
+@cleanup_app.command("rollback")
+def cleanup_rollback(
+    item: Annotated[
+        str,
+        typer.Option("--item", help="item_id from `cleanup show`."),
+    ],
+    orchestration: Annotated[
+        str | None,
+        typer.Option(
+            "--orchestration",
+            help="Orchestration id. Defaults to the most recent run.",
+        ),
+    ] = None,
+    approved: Annotated[
+        bool,
+        typer.Option(
+            "--approved",
+            help="REQUIRED: authorize this target-side rollback action.",
+        ),
+    ] = False,
+) -> None:
+    """Phase 6G: approval-gated reversal of one auto-reversible cleanup item.
+
+    Only auto-reversible target-side artifacts (e.g. a self-uploaded test file)
+    are executed, and only within the run's target host. Operator-action items
+    (local disposal, session invalidation) are reported as guidance, never run.
+    """
+
+    from urllib.parse import urlparse
+
+    database = get_database()
+    _target_oid, manifest = _load_cleanup_manifest(database, orchestration)
+
+    entry = next(
+        (
+            i
+            for i in manifest.get("items", []) or []
+            if isinstance(i, dict) and i.get("item_id") == item
+        ),
+        None,
+    )
+    if entry is None:
+        console.print(
+            f"[bold red]Item {item!r} not found[/bold red] in the manifest."
+        )
+        raise typer.Exit(code=1)
+
+    if (
+        entry.get("reversibility") != "auto_reversible"
+        or entry.get("action") != "delete_target_artifact"
+    ):
+        console.print(
+            f"[yellow]Item {item} is '{entry.get('reversibility')}' / "
+            f"'{entry.get('action')}' — handle manually per the manifest "
+            f"guidance:[/yellow] {entry.get('detail', '')}"
+        )
+        raise typer.Exit(code=0)
+
+    location = str(entry.get("location", ""))
+    manifest_target = str(manifest.get("target", ""))
+    parsed = urlparse(location)
+    target_host = urlparse(manifest_target).hostname
+    if (
+        parsed.scheme.lower() not in {"http", "https"}
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+    ):
+        console.print(
+            "[bold red]Refusing rollback:[/bold red] artifact location is not a "
+            "valid credential-free HTTP(S) URL."
+        )
+        raise typer.Exit(code=1)
+    if not target_host or parsed.hostname != target_host:
+        console.print(
+            f"[bold red]Refusing rollback:[/bold red] artifact host "
+            f"'{parsed.hostname}' is outside the run target '{target_host}'."
+        )
+        raise typer.Exit(code=1)
+
+    if not approved:
+        console.print(
+            "[bold yellow]Approval required.[/bold yellow] This sends a DELETE "
+            f"to {location} on the live target. Re-run with --approved."
+        )
+        raise typer.Exit(code=1)
+
+    import httpx
+
+    console.print(
+        f"[bold yellow]WARNING:[/bold yellow] removing self-created artifact "
+        f"via DELETE {location}."
+    )
+    try:
+        response = httpx.request(
+            "DELETE",
+            location,
+            timeout=15.0,
+            follow_redirects=False,
+        )
+        status = response.status_code
+    except httpx.HTTPError as exc:
+        console.print(f"[bold red]Rollback request failed:[/bold red] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    removed = status in {200, 202, 204, 404}
+    console.print(
+        f"[bold]{'Artifact removed' if removed else 'Rollback uncertain'}"
+        f"[/bold] (HTTP {status})."
+    )
+    console.print(
+        "[dim]404 is treated as already-gone. Verify manually if needed.[/dim]"
+    )
 
 
 @project_app.command("create")
@@ -4594,6 +5166,27 @@ def workflow_run(
     )
     console.print(f"Final state: {overall_status.value}")
 
+    console.print()
+    console.print(
+        "[bold]Phase 4E bible coverage + Phase 8A reporting...[/bold]"
+    )
+    try:
+        reporting = run_reporting_phases(
+            database,
+            result.context,
+            evidence_root=evidence_root,
+            on_log=lambda message: console.print(message, markup=False),
+        )
+        console.print(
+            "[bold green]Report generated.[/bold green] "
+            f"docx: {reporting.report.docx_path}"
+        )
+        console.print(f"json: {reporting.report.json_path}")
+    except Exception as exc:  # noqa: BLE001 - reporting must never abort a run
+        console.print(
+            f"[bold yellow]Reporting phase failed:[/bold yellow] {exc}"
+        )
+
     if not auto_validate:
         return
 
@@ -4772,3 +5365,174 @@ def authenticated_run(
         console.print(f"[dim]AI note unavailable: {exc}[/dim]")
     except Exception as exc:  # defensive: never fail on the AI note
         console.print(f"[dim]AI note failed: {exc}[/dim]")
+
+
+@confirm_app.command("extract")
+def confirm_extract(
+    execution: Annotated[
+        str,
+        typer.Option(
+            "--execution",
+            help="Orchestration id of the run (the 'orchestration-...' id).",
+        ),
+    ],
+    finding: Annotated[
+        str,
+        typer.Option(
+            "--finding",
+            help="finding_id from the Phase 6E exploit-confirmation report.",
+        ),
+    ],
+    approved: Annotated[
+        bool,
+        typer.Option(
+            "--approved",
+            help="REQUIRED: authorize this single-row data extraction.",
+        ),
+    ] = False,
+) -> None:
+    """Phase 6E: approval-gated single-row data extraction for a confirmed finding.
+
+    Reads exactly ONE row via the already-confirmed SQLi to prove data impact.
+    Never automatic — requires --approved. Raw output is shown in the console;
+    the persisted evidence is redacted (proof only, no data).
+    """
+
+    import hashlib
+    import json
+    from pathlib import Path
+
+    from saarthi_ai.exploit_confirmation.extraction import (
+        ExtractionError,
+        run_single_row_extraction,
+    )
+    from saarthi_ai.persistence.models import AuditEventType, EvidenceType
+
+    if not approved:
+        console.print(
+            "[bold yellow]Approval required.[/bold yellow] This reads ONE real "
+            "row from the target's database. Re-run with --approved."
+        )
+        raise typer.Exit(code=1)
+
+    database = get_database()
+    target_finding: dict | None = None
+    child_execution_id: str | None = None
+    for record in database.list_executions(limit=1_000):
+        if (record.metadata or {}).get("orchestration_id") != execution:
+            continue
+        for evidence in database.list_evidence(record.execution_id):
+            if (
+                evidence.evidence_type
+                is EvidenceType.EXPLOIT_CONFIRMATION_RESULT
+                and evidence.path
+            ):
+                try:
+                    payload = json.loads(
+                        Path(evidence.path).read_text(encoding="utf-8")
+                    )
+                except (OSError, json.JSONDecodeError):
+                    continue
+                for item in payload.get("findings", []) or []:
+                    if item.get("finding_id") == finding:
+                        target_finding = item
+                        child_execution_id = record.execution_id
+                        break
+            if target_finding:
+                break
+        if target_finding:
+            break
+
+    if target_finding is None:
+        console.print(
+            f"[bold red]Finding {finding!r} not found[/bold red] in the 6E "
+            f"report for {execution!r}."
+        )
+        raise typer.Exit(code=1)
+
+    kind = target_finding.get("extraction_kind")
+    if kind != "sqli_row":
+        if kind == "idor_object":
+            console.print(
+                "[yellow]IDOR object extraction is not implemented yet; 6E "
+                "already proves this non-extractively (cross-account "
+                "signature match).[/yellow]"
+            )
+        else:
+            console.print(
+                "[yellow]This finding has no data-extraction step.[/yellow]"
+            )
+        raise typer.Exit(code=0)
+
+    url = target_finding.get("target", "")
+    parameter = target_finding.get("parameter")
+    console.print(
+        f"[bold yellow]WARNING:[/bold yellow] extracting ONE real row via "
+        f"confirmed SQLi on '{parameter}' at {url}."
+    )
+
+    def on_output(event) -> None:
+        console.print(
+            f"[dim][{event.tool_name}:{event.stream}] {event.line}[/dim]"
+        )
+
+    out_dir = Path.cwd() / "evidence" / "extractions" / finding
+    out_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        result = run_single_row_extraction(
+            url,
+            parameter,
+            out_dir / "sqlmap-output",
+            authorized=True,
+            on_output=on_output,
+        )
+    except ExtractionError as exc:
+        console.print(f"[bold red]Extraction failed:[/bold red] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    console.print()
+    console.print(
+        f"[bold]{'Row extracted' if result.extracted else 'No row extracted'}"
+        f"[/bold] (exit {result.exit_code})."
+    )
+    console.print(
+        "[dim]Raw output shown above (console only); persisted proof is "
+        "redacted.[/dim]"
+    )
+
+    proof = {
+        "finding_id": finding,
+        "target": url,
+        "parameter": parameter,
+        "extraction_kind": "sqli_row",
+        "extracted": result.extracted,
+        "exit_code": result.exit_code,
+        "stdout_sha256": result.stdout_sha256,
+        "note": "single-row dump; raw data console-only, not persisted",
+    }
+    body = json.dumps(proof, indent=2).encode("utf-8")
+    proof_path = (
+        out_dir / f"extraction-proof-{hashlib.sha256(body).hexdigest()[:12]}.json"
+    )
+    proof_path.write_bytes(body)
+    console.print(f"Redacted proof: {proof_path}")
+
+    if child_execution_id:
+        try:
+            database.add_audit_event(
+                child_execution_id,
+                event_type=AuditEventType.TOOL_COMPLETED,
+                actor="6e-extract",
+                message=(
+                    f"[6E][extract] Operator-approved single-row extraction "
+                    f"on {parameter} @ {url}: extracted={result.extracted}."
+                ),
+                details={
+                    "phase_code": "6E",
+                    "tool": "exploit-confirmation-extract",
+                    "finding_id": finding,
+                    "extracted": result.extracted,
+                },
+            )
+        except Exception:  # audit is best-effort
+            pass

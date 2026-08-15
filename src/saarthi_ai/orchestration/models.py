@@ -39,12 +39,17 @@ class OrchestrationPhase(StrEnum):
     BLIND_VALIDATION = "4B"
     OAST_MANAGER = "4C"
     CONFIRMATION = "4D"
+    BIBLE_COVERAGE = "4E-bible-coverage"
     ATTACK_HYPOTHESIS = "6A"
     NUCLEI = "6C-nuclei"
     NUCLEI_PREVIEW = "6C-nuclei-preview"
     SQLMAP_PREVIEW = "6C-sqlmap-preview"
     SAFE_VALIDATOR = "6C-safe-validator"
     AUTHENTICATED_WORKFLOW = "6D-authenticated-workflow"
+    EXPLOIT_CONFIRMATION = "6E-exploit-confirmation"
+    POST_EXPLOITATION = "6F-post-exploitation"
+    CLEANUP = "6G-cleanup-rollback"
+    REPORT = "8A-report"
 
 
 class OrchestrationContext(BaseModel):
