@@ -2956,9 +2956,10 @@ def build_phase6_chain_status(
             return "ANALYZING"
         if state == "failed":
             return "FAILED"
-        # No preview/approval job pending → the tool runs automatically as
-        # part of AUTHORIZE & RUN. Show it as enabled, not approval-gated.
-        return "ENABLED"
+        # No preview/approval job pending yet. nuclei and sqlmap are always
+        # approval-gated (never auto-launched), so surface that rather than
+        # implying they run automatically.
+        return "APPROVAL REQUIRED"
 
     def validator_status(action: str) -> str:
         state = child_states.get(action)
@@ -3550,8 +3551,8 @@ TOOLS = [
     ("wayback-cdx", "Historical URL Intelligence (3D)", "ENABLED"),
     ("local-archive", "Local Page Snapshot (3D · local-only)", "ENABLED"),
     ("Saarthi JS", "JavaScript Intelligence", "ENABLED"),
-    ("nuclei", "Controlled Preview / Execution", "ENABLED"),
-    ("sqlmap", "External Result Handoff / Import", "ENABLED"),
+    ("nuclei", "Controlled Preview / Execution", "APPROVAL"),
+    ("sqlmap", "External Result Handoff / Import", "6C.1 HANDOFF"),
     ("ghauri", "Blind SQLi Cross-check (auto 6C)", "ENABLED"),
     ("xsstrike", "XSS Detection (reflected/DOM, auto 6C)", "ENABLED"),
     ("OAST Manager", "Out-of-band Correlation", "PHASE 6"),
@@ -3607,8 +3608,8 @@ def worker_rows(
     """Build truthful execution-worker rows from persisted workflow state."""
 
     phase6 = snapshot.phase6_chain_status
-    nuclei_status = phase6.get("nuclei", "ENABLED")
-    sqlmap_status = phase6.get("sqlmap", "ENABLED")
+    nuclei_status = phase6.get("nuclei", "APPROVAL REQUIRED")
+    sqlmap_status = phase6.get("sqlmap", "APPROVAL REQUIRED")
     latest_jobs: dict[str, dict[str, str]] = {}
     for job in snapshot.recent_worker_jobs:
         latest_jobs.setdefault(job.get("tool_name", ""), job)
@@ -3736,8 +3737,8 @@ def build_orchestration_summary_lines(
         "validator_total",
         str(len(PHASE6_SAFE_ACTIONS)),
     )
-    nuclei_status = phase6.get("nuclei", "ENABLED")
-    sqlmap_status = phase6.get("sqlmap", "ENABLED")
+    nuclei_status = phase6.get("nuclei", "APPROVAL REQUIRED")
+    sqlmap_status = phase6.get("sqlmap", "APPROVAL REQUIRED")
 
     return [
         "[bold cyan]ORCHESTRATION SUMMARY[/bold cyan]",
@@ -4923,6 +4924,9 @@ class SaarthiDashboard(App[None]):
         ("t", "focus_tools", "Tools"),
         ("e", "focus_executions", "Evidence"),
         ("u", "focus_url", "URL"),
+        ("v", "run_validation", "Validate"),
+        ("V", "run_validation_dump", "Validate+dump"),
+        ("a", "ai_analyze", "AI analyze"),
         ("h", "help", "Help"),
     ]
 
@@ -5257,8 +5261,9 @@ class SaarthiDashboard(App[None]):
     def action_help(self) -> None:
         self.notify(
             "R refresh · U focus URL (Enter = full assessment) · "
+            "V run nuclei+sqlmap (Shift+V = +1-row dump) · A AI analyze · "
             "P phases · T tools · E evidence · Q quit. "
-            "AI analyzes automatically during the run.",
+            "AI also analyzes automatically during the run.",
             timeout=7,
         )
 
@@ -5693,14 +5698,24 @@ class SaarthiDashboard(App[None]):
             )
             return
 
-        # AUTHORIZE & RUN is itself the operator authorization — there is no
-        # secondary approval prompt. Testing stays bound to the authorized
-        # scope (allowed_hosts). Launch directly.
-        self.notify(
-            f"Authorized launch on {parsed.hostname} — full assessment "
-            "(recon → Phase 6 → nuclei + sqlmap)."
+        # A full assessment ends in REAL nuclei + sqlmap against the target, so
+        # confirm the authorized launch before starting. Testing stays bound to
+        # the authorized scope (allowed_hosts).
+        body = (
+            f"Target : {url}\n"
+            f"Host   : {parsed.hostname}\n"
+            "Runs   : recon → Phase 6 safe chain → nuclei + sqlmap\n\n"
+            "This performs REAL active testing against the target.\n"
+            "Proceed only on a target you are authorized to test.\n"
+            "[Y] Run   ·   [N]/[Esc] Cancel"
         )
-        self._launch_full_assessment(url, True)
+        self.push_screen(
+            ConfirmScanScreen("⚠  AUTHORIZE & RUN FULL ASSESSMENT?", body),
+            lambda confirmed: self._launch_full_assessment(
+                url,
+                bool(confirmed),
+            ),
+        )
 
     def _launch_full_assessment(self, url: str, confirmed: bool) -> None:
         """Start the assessment worker once the operator has confirmed."""

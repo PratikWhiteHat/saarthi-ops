@@ -3554,10 +3554,12 @@ def test_tui_lists_all_official_validator_families() -> None:
     ]
 
     assert len(family_rows) == 7
+    # Counts/status come from the authoritative validator registry; 6C.5's nine
+    # authorization validators are partial (all require authenticated workflows).
     assert (
         "Saarthi 6C.5",
-        "Authorization & Access Control (0 ready, 0 partial, 9 total)",
-        "PLANNED",
+        "Authorization & Access Control (0 ready, 9 partial, 9 total)",
+        "IN PROGRESS",
     ) in family_rows
 
 
