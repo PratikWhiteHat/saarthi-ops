@@ -2956,10 +2956,10 @@ def build_phase6_chain_status(
             return "ANALYZING"
         if state == "failed":
             return "FAILED"
-        # No preview/approval job pending yet. nuclei and sqlmap are always
-        # approval-gated (never auto-launched), so surface that rather than
-        # implying they run automatically.
-        return "APPROVAL REQUIRED"
+        # The full TUI workflow launches both tools automatically after the
+        # operator authorizes the complete assessment.  There is no second
+        # per-tool approval prompt.
+        return "ENABLED"
 
     def validator_status(action: str) -> str:
         state = child_states.get(action)
@@ -3551,8 +3551,8 @@ TOOLS = [
     ("wayback-cdx", "Historical URL Intelligence (3D)", "ENABLED"),
     ("local-archive", "Local Page Snapshot (3D · local-only)", "ENABLED"),
     ("Saarthi JS", "JavaScript Intelligence", "ENABLED"),
-    ("nuclei", "Controlled Preview / Execution", "APPROVAL"),
-    ("sqlmap", "External Result Handoff / Import", "6C.1 HANDOFF"),
+    ("nuclei", "Automatic bounded validation (full run)", "ENABLED"),
+    ("sqlmap", "Automatic SQLi detection (full run)", "ENABLED"),
     ("ghauri", "Blind SQLi Cross-check (auto 6C)", "ENABLED"),
     ("xsstrike", "XSS Detection (reflected/DOM, auto 6C)", "ENABLED"),
     ("OAST Manager", "Out-of-band Correlation", "PHASE 6"),
@@ -3577,15 +3577,15 @@ TOOLS = [
 WORKER_DEFINITIONS = (
     (
         "nuclei",
-        "Controlled local adapter",
-        "TUI approval",
-        "Configured",
+        "Automatic bounded local adapter",
+        "Workflow authorization",
+        "Ready",
     ),
     (
         "sqlmap",
-        "External handoff + import",
-        "TUI approval",
-        "No launcher",
+        "Automatic bounded local adapter",
+        "Workflow authorization",
+        "Ready",
     ),
     (
         "ffuf",
@@ -3608,8 +3608,8 @@ def worker_rows(
     """Build truthful execution-worker rows from persisted workflow state."""
 
     phase6 = snapshot.phase6_chain_status
-    nuclei_status = phase6.get("nuclei", "APPROVAL REQUIRED")
-    sqlmap_status = phase6.get("sqlmap", "APPROVAL REQUIRED")
+    nuclei_status = phase6.get("nuclei", "ENABLED")
+    sqlmap_status = phase6.get("sqlmap", "ENABLED")
     latest_jobs: dict[str, dict[str, str]] = {}
     for job in snapshot.recent_worker_jobs:
         latest_jobs.setdefault(job.get("tool_name", ""), job)
@@ -3637,8 +3637,8 @@ def worker_rows(
                 gate = "Approved"
             state = (
                 f"{sqlmap_status} · EXTERNAL"
-                if sqlmap_status != "APPROVAL REQUIRED"
-                else "NO LAUNCHER"
+                if sqlmap_status in {"AWAITING RESULT", "IMPORTED"}
+                else sqlmap_status
             )
         rows.append((tool, mode, gate, state))
 
@@ -3737,8 +3737,8 @@ def build_orchestration_summary_lines(
         "validator_total",
         str(len(PHASE6_SAFE_ACTIONS)),
     )
-    nuclei_status = phase6.get("nuclei", "APPROVAL REQUIRED")
-    sqlmap_status = phase6.get("sqlmap", "APPROVAL REQUIRED")
+    nuclei_status = phase6.get("nuclei", "ENABLED")
+    sqlmap_status = phase6.get("sqlmap", "ENABLED")
 
     return [
         "[bold cyan]ORCHESTRATION SUMMARY[/bold cyan]",

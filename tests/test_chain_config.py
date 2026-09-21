@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
+
 import pytest
 
 from saarthi_ai.automation.chain_config import (
@@ -9,7 +12,11 @@ from saarthi_ai.automation.chain_config import (
     build_auto_validation_config_from_chain,
 )
 from saarthi_ai.persistence.database import SaarthiDatabase
-from saarthi_ai.persistence.models import ExecutionCreate
+from saarthi_ai.persistence.models import (
+    EvidenceCreate,
+    EvidenceType,
+    ExecutionCreate,
+)
 
 
 def _database(tmp_path) -> SaarthiDatabase:
@@ -48,6 +55,44 @@ def _create_parent(
     return execution.execution_id
 
 
+def _add_crawl_evidence(
+    database: SaarthiDatabase,
+    tmp_path,
+    *,
+    orchestration_id: str = "orchestration-test-1",
+    forms: list[dict[str, object]],
+    tamper_hash: bool = False,
+) -> None:
+    execution = database.create_execution(
+        ExecutionCreate(
+            assessment_name="Phase 3D crawl",
+            asset_types=["url"],
+            targets=["https://app.example.com/"],
+            authorization_confirmed=True,
+            active_testing_allowed=True,
+            metadata={
+                "execution_role": "orchestration_child",
+                "orchestration_id": orchestration_id,
+                "phase_code": "3D",
+            },
+        )
+    )
+    path = tmp_path / f"{execution.execution_id}-crawl.json"
+    content = json.dumps({"forms": forms}).encode()
+    path.write_bytes(content)
+    database.add_evidence(
+        execution.execution_id,
+        EvidenceCreate(
+            evidence_type=EvidenceType.CRAWL_RESULT,
+            source="test-crawl",
+            path=str(path),
+            sha256=("0" * 64 if tamper_hash else hashlib.sha256(content).hexdigest()),
+            size_bytes=len(content),
+            content_type="application/json",
+        ),
+    )
+
+
 def test_derives_target_and_candidates_from_parent(tmp_path) -> None:
     database = _database(tmp_path)
     parent_id = _create_parent(
@@ -62,9 +107,7 @@ def test_derives_target_and_candidates_from_parent(tmp_path) -> None:
 
     assert derived.source_execution_id == parent_id
     assert derived.orchestration_id == "orchestration-test-1"
-    assert derived.config.target_url == (
-        "https://app.example.com/item?id=1&cat=books"
-    )
+    assert derived.config.target_url == ("https://app.example.com/item?id=1&cat=books")
     assert "app.example.com" in derived.config.allowed_hosts
     assert derived.sqlmap_parameters == ("id", "cat")
     assert {c.parameter for c in derived.config.sqlmap_candidates} == {
@@ -96,6 +139,153 @@ def test_intrusive_disabled_yields_nuclei_only(tmp_path) -> None:
     # Confirmed-PoC is force-disabled when intrusive testing is not allowed.
     assert derived.config.sqlmap_confirmed_poc is False
     assert derived.config.sqlmap_poc_single_row_dump is False
+
+
+def test_derives_post_candidates_from_same_chain_crawl_evidence(
+    tmp_path,
+) -> None:
+    database = _database(tmp_path)
+    _create_parent(
+        database,
+        target="https://app.example.com/catalog",
+    )
+    _add_crawl_evidence(
+        database,
+        tmp_path,
+        forms=[
+            {
+                "page_url": "https://app.example.com/catalog",
+                "action_url": "https://app.example.com/search",
+                "method": "POST",
+                "parameters": [
+                    {"name": "query", "location": "form", "value": "old"},
+                    {"name": "category", "location": "form", "value": "books"},
+                ],
+            }
+        ],
+    )
+
+    derived = build_auto_validation_config_from_chain(
+        database,
+        approved=True,
+    )
+
+    assert derived.sqlmap_parameters == ("query", "category")
+    assert len(derived.config.sqlmap_candidates) == 2
+    for candidate in derived.config.sqlmap_candidates:
+        assert candidate.url == "https://app.example.com/search"
+        assert candidate.method == "POST"
+        assert candidate.data == "query=1&category=1"
+        assert candidate.content_type == "application/x-www-form-urlencoded"
+
+
+def test_get_and_post_candidates_share_global_limit(tmp_path) -> None:
+    database = _database(tmp_path)
+    _create_parent(
+        database,
+        target="https://app.example.com/catalog?id=1&sort=asc",
+    )
+    _add_crawl_evidence(
+        database,
+        tmp_path,
+        forms=[
+            {
+                "action_url": "https://app.example.com/search",
+                "method": "POST",
+                "parameters": [
+                    {"name": "query"},
+                    {"name": "category"},
+                ],
+            }
+        ],
+    )
+
+    derived = build_auto_validation_config_from_chain(
+        database,
+        approved=True,
+        max_sqlmap_candidates=3,
+    )
+
+    assert derived.sqlmap_parameters == ("id", "sort", "query")
+    assert len(derived.config.sqlmap_candidates) == 3
+
+
+@pytest.mark.parametrize(
+    "form",
+    [
+        {
+            "action_url": "https://outside.example.net/search",
+            "method": "POST",
+            "parameters": [{"name": "query"}],
+        },
+        {
+            "action_url": "https://app.example.com/login",
+            "method": "POST",
+            "parameters": [{"name": "username"}],
+        },
+        {
+            "action_url": "https://app.example.com/search",
+            "method": "POST",
+            "parameters": [{"name": "csrf_token"}],
+        },
+        {
+            "action_url": "https://app.example.com/search",
+            "method": "GET",
+            "parameters": [{"name": "query"}],
+        },
+    ],
+)
+def test_unsafe_or_non_post_crawl_forms_are_not_candidates(
+    tmp_path,
+    form,
+) -> None:
+    database = _database(tmp_path)
+    _create_parent(
+        database,
+        target="https://app.example.com/catalog",
+    )
+    _add_crawl_evidence(database, tmp_path, forms=[form])
+
+    derived = build_auto_validation_config_from_chain(
+        database,
+        approved=True,
+    )
+
+    assert derived.config.sqlmap_candidates == ()
+
+
+def test_post_candidates_require_matching_orchestration_and_hash(
+    tmp_path,
+) -> None:
+    database = _database(tmp_path)
+    _create_parent(
+        database,
+        target="https://app.example.com/catalog",
+    )
+    form = {
+        "action_url": "https://app.example.com/search",
+        "method": "POST",
+        "parameters": [{"name": "query"}],
+    }
+    _add_crawl_evidence(
+        database,
+        tmp_path,
+        orchestration_id="orchestration-other",
+        forms=[form],
+    )
+    _add_crawl_evidence(
+        database,
+        tmp_path,
+        forms=[form],
+        tamper_hash=True,
+    )
+
+    derived = build_auto_validation_config_from_chain(
+        database,
+        approved=True,
+    )
+
+    assert derived.config.sqlmap_candidates == ()
 
 
 def test_confirmed_poc_flags_flow_through_when_intrusive(tmp_path) -> None:

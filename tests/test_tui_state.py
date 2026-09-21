@@ -407,7 +407,7 @@ def test_orchestration_summary_shows_validator_coverage() -> None:
     assert "Phase 6C Safe Chain" in rendered
     assert "0/9 complete" in rendered
     assert "Nuclei / SQLmap" in rendered
-    assert "APPROVAL REQUIRED" in rendered
+    assert "ENABLED" in rendered
 
 
 def test_activity_text_styles_without_interpreting_markup() -> None:
@@ -500,7 +500,7 @@ def test_phase6_chain_status_tracks_permissions_and_validators() -> None:
         len(PHASE6_SAFE_ACTIONS)
     )
     assert status["nuclei"] == "PREVIEW READY"
-    assert status["sqlmap"] == "APPROVAL REQUIRED"
+    assert status["sqlmap"] == "ENABLED"
     assert status["browser_attack_surface_validation"] == "DONE"
     assert status["server_parser_surface_validation"] == "DONE"
     assert status["injection_surface_validation"] == "APPROVAL"
@@ -642,7 +642,7 @@ def test_tui_uses_dynamic_phase6_tool_labels() -> None:
             "validator_completed": "9",
             "validator_total": "9",
             "nuclei": "PREVIEW READY",
-            "sqlmap": "APPROVAL REQUIRED",
+            "sqlmap": "ENABLED",
             "browser_attack_surface_validation": "DONE",
             "server_parser_surface_validation": "DONE",
         },
@@ -651,13 +651,13 @@ def test_tui_uses_dynamic_phase6_tool_labels() -> None:
 
     assert (
         "nuclei",
-        "Controlled Preview / Execution",
+        "Automatic bounded validation (full run)",
         "PREVIEW READY",
     ) in rows
     assert (
         "sqlmap",
-        "External Result Handoff / Import",
-        "APPROVAL REQUIRED",
+        "Automatic SQLi detection (full run)",
+        "ENABLED",
     ) in rows
     assert (
         "Saarthi 6B",
@@ -1926,7 +1926,7 @@ def test_scope_lines_without_controlled_evidence_remain_normal() -> None:
     assert "CONTROLLED NUCLEI PREVIEW" not in rendered
 
 
-def test_nuclei_tool_row_requires_approval() -> None:
+def test_nuclei_tool_row_shows_automatic_full_run() -> None:
     from saarthi_ai.tui.app import TOOLS
 
     nuclei_rows = [
@@ -1938,8 +1938,8 @@ def test_nuclei_tool_row_requires_approval() -> None:
     assert nuclei_rows == [
         (
             "nuclei",
-            "Controlled Preview / Execution",
-            "APPROVAL",
+            "Automatic bounded validation (full run)",
+            "ENABLED",
         )
     ]
 
@@ -3563,17 +3563,17 @@ def test_tui_lists_all_official_validator_families() -> None:
     ) in family_rows
 
 
-def test_sqlmap_tui_row_shows_handoff_and_import() -> None:
+def test_sqlmap_tui_row_shows_automatic_full_run() -> None:
     from saarthi_ai.tui.app import TOOLS
 
     assert (
         "sqlmap",
-        "External Result Handoff / Import",
-        "6C.1 HANDOFF",
+        "Automatic SQLi detection (full run)",
+        "ENABLED",
     ) in TOOLS
 
 
-def test_worker_rows_do_not_claim_sqlmap_automatic_execution() -> None:
+def test_worker_rows_show_sqlmap_automatic_after_workflow_authorization() -> None:
     from saarthi_ai.tui.app import demo_snapshot, worker_rows
 
     snapshot = demo_snapshot()
@@ -3581,9 +3581,9 @@ def test_worker_rows_do_not_claim_sqlmap_automatic_execution() -> None:
 
     assert rows["sqlmap"] == (
         "sqlmap",
-        "External handoff + import",
-        "TUI approval",
-        "NO LAUNCHER",
+        "Automatic bounded local adapter",
+        "Workflow authorization",
+        "ENABLED",
     )
     assert rows["ffuf"][-1] == "Not configured"
     assert rows["callback"][-1] == "Not configured"
@@ -3602,7 +3602,7 @@ def test_worker_rows_show_approved_sqlmap_handoff_state() -> None:
 
     assert rows["sqlmap"] == (
         "sqlmap",
-        "External handoff + import",
+        "Automatic bounded local adapter",
         "Approved",
         "AWAITING RESULT · EXTERNAL",
     )
