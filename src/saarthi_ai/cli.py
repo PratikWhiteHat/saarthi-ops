@@ -11,8 +11,10 @@ from rich.table import Table
 
 from saarthi_ai.analysis import (
     AnalysisError,
-    analyze_run,
+    analyze_run_quality,
     gather_run_digest,
+    persist_quality_analysis,
+    render_quality_analysis,
 )
 from saarthi_ai.assessments.planner import build_assessment_plan
 from saarthi_ai.assessments.schemas import (
@@ -434,18 +436,31 @@ def analyze(
         f"Findings     : {len(digest.findings)} | "
         f"phases: {len(digest.phases)} | state: {digest.parent_state}"
     )
-    console.print("[dim]Asking the local model to triage the evidence…[/dim]")
+    console.print(
+        "[dim]Running grounded extraction, analysis, and critical review…[/dim]"
+    )
 
     client = SaarthiOllamaClient(get_settings())
 
     try:
-        content = asyncio.run(analyze_run(client, digest))
+        result = asyncio.run(analyze_run_quality(client, digest))
+        evidence = persist_quality_analysis(
+            database,
+            digest.parent_execution_id,
+            result,
+            evidence_root=Path.cwd() / "evidence" / "ai-quality",
+        )
+        content = render_quality_analysis(result)
     except OllamaUnavailableError as exc:
         console.print(f"[bold red]Error:[/bold red] {exc}")
         raise typer.Exit(code=1) from exc
 
     console.print()
     console.print(Markdown(content))
+    console.print(
+        f"[dim]Structured analysis evidence: {evidence.evidence_id} "
+        f"({evidence.path})[/dim]"
+    )
 
 
 @knowledge_app.command("import-bible")

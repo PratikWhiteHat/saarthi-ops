@@ -14,6 +14,7 @@ async def test_pressing_a_streams_ai_analysis(tmp_path, monkeypatch):
     digest = SimpleNamespace(
         target="https://app.example.com/item?id=1",
         orchestration_id="orchestration-x",
+        parent_execution_id="execution-parent",
         findings=("SQLi on id",),
         phases=(("3A", "completed"),),
         parent_state="completed",
@@ -23,10 +24,26 @@ async def test_pressing_a_streams_ai_analysis(tmp_path, monkeypatch):
         lambda database, **kwargs: digest,
     )
 
-    async def fake_analyze(client, run_digest, **kwargs):
-        return "Executive summary: 1 High SQLi.\nRemediation: parameterize."
+    result = SimpleNamespace(findings=("finding",))
 
-    monkeypatch.setattr("saarthi_ai.analysis.analyze_run", fake_analyze)
+    async def fake_analyze(client, run_digest, **kwargs):
+        return result
+
+    monkeypatch.setattr(
+        "saarthi_ai.analysis.analyze_run_quality", fake_analyze
+    )
+    monkeypatch.setattr(
+        "saarthi_ai.analysis.render_quality_analysis",
+        lambda value: (
+            "Executive summary: 1 High SQLi.\nRemediation: parameterize."
+        ),
+    )
+    monkeypatch.setattr(
+        "saarthi_ai.analysis.persist_quality_analysis",
+        lambda *args, **kwargs: SimpleNamespace(
+            evidence_id="evidence-ai", path="/tmp/evidence-ai.json"
+        ),
+    )
 
     app = SaarthiDashboard(database_path=tmp_path / "missing.db")
     async with app.run_test() as pilot:
@@ -46,7 +63,9 @@ async def test_ai_analyze_reports_missing_run(tmp_path, monkeypatch):
     from saarthi_ai.analysis import AnalysisError
 
     def raise_no_run(database, **kwargs):
-        raise AnalysisError("No orchestration-parent execution found to analyze.")
+        raise AnalysisError(
+            "No orchestration parent [type=missing_record] found to analyze."
+        )
 
     monkeypatch.setattr(
         "saarthi_ai.analysis.gather_run_digest", raise_no_run
@@ -58,7 +77,9 @@ async def test_ai_analyze_reports_missing_run(tmp_path, monkeypatch):
         ran["analyze"] = True
         return "should not be called"
 
-    monkeypatch.setattr("saarthi_ai.analysis.analyze_run", fake_analyze)
+    monkeypatch.setattr(
+        "saarthi_ai.analysis.analyze_run_quality", fake_analyze
+    )
 
     app = SaarthiDashboard(database_path=tmp_path / "missing.db")
     async with app.run_test() as pilot:
@@ -69,6 +90,41 @@ async def test_ai_analyze_reports_missing_run(tmp_path, monkeypatch):
         assert app._analysis_running is False
         assert ran["analyze"] is False
         assert "[AI][ERR]" in "\n".join(app._live_validation_lines)
+
+
+@pytest.mark.asyncio
+async def test_ai_analyze_waits_for_running_assessment(tmp_path, monkeypatch):
+    digest = SimpleNamespace(
+        target="https://app.example.com/item?id=1",
+        orchestration_id="orchestration-running",
+        parent_execution_id="execution-parent",
+        findings=(),
+        phases=(("3A", "completed"), ("3B", "running")),
+        parent_state="running",
+    )
+    monkeypatch.setattr(
+        "saarthi_ai.analysis.gather_run_digest",
+        lambda database, **kwargs: digest,
+    )
+    called = False
+
+    async def fake_analyze(client, run_digest, **kwargs):
+        nonlocal called
+        called = True
+
+    monkeypatch.setattr(
+        "saarthi_ai.analysis.analyze_run_quality",
+        fake_analyze,
+    )
+
+    app = SaarthiDashboard(database_path=tmp_path / "running.db")
+    async with app.run_test() as pilot:
+        await pilot.press("a")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+
+        assert called is False
+        assert "still running" in "\n".join(app._live_validation_lines)
 
 
 @pytest.mark.asyncio
@@ -131,10 +187,22 @@ async def test_ai_observer_comments_per_phase(tmp_path, monkeypatch):
         return f"- suggestion for {digest.phase_code}"
 
     async def fake_run(client, digest, **kwargs):
-        return "Final triage: nothing critical."
+        return SimpleNamespace(findings=())
 
     monkeypatch.setattr("saarthi_ai.analysis.suggest_for_phase", fake_phase)
-    monkeypatch.setattr("saarthi_ai.analysis.analyze_run", fake_run)
+    monkeypatch.setattr(
+        "saarthi_ai.analysis.analyze_run_quality", fake_run
+    )
+    monkeypatch.setattr(
+        "saarthi_ai.analysis.render_quality_analysis",
+        lambda result: "Final triage: nothing critical.",
+    )
+    monkeypatch.setattr(
+        "saarthi_ai.analysis.persist_quality_analysis",
+        lambda *args, **kwargs: SimpleNamespace(
+            evidence_id="evidence-ai", path="/tmp/evidence-ai.json"
+        ),
+    )
 
     app = SaarthiDashboard(database_path=path)
     async with app.run_test() as pilot:

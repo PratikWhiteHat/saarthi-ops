@@ -5317,8 +5317,10 @@ class SaarthiDashboard(App[None]):
 
         from saarthi_ai.analysis import (
             AnalysisError,
-            analyze_run,
+            analyze_run_quality,
             gather_run_digest,
+            persist_quality_analysis,
+            render_quality_analysis,
         )
         from saarthi_ai.config import get_settings
         from saarthi_ai.llm.ollama_client import (
@@ -5334,8 +5336,9 @@ class SaarthiDashboard(App[None]):
             log(f"[AI][ERR] {message}")
             self.call_from_thread(
                 self.notify,
-                message,
+                message[:500],
                 severity="error",
+                markup=False,
             )
             self.call_from_thread(self._finish_analysis)
 
@@ -5349,16 +5352,33 @@ class SaarthiDashboard(App[None]):
             fail(f"Could not gather run evidence: {error}")
             return
 
+        if digest.parent_state not in {"completed", "failed", "cancelled"}:
+            fail(
+                "Assessment is still running. Wait for the workflow to finish "
+                "before starting final AI quality analysis."
+            )
+            return
+
         log(
             f"[AI] Target: {digest.target} | "
             f"findings={len(digest.findings)} | "
             f"phases={len(digest.phases)} | state={digest.parent_state}"
         )
-        log("[AI] Querying the local model (this can take a moment)…")
+        log(
+            "[AI] Running grounded extractor → analyst → critical reviewer "
+            "(this can take a moment)…"
+        )
 
         client = SaarthiOllamaClient(get_settings())
         try:
-            content = asyncio.run(analyze_run(client, digest))
+            result = asyncio.run(analyze_run_quality(client, digest))
+            evidence = persist_quality_analysis(
+                database,
+                digest.parent_execution_id,
+                result,
+                evidence_root=Path.cwd() / "evidence" / "ai-quality",
+            )
+            content = render_quality_analysis(result)
         except OllamaUnavailableError as error:
             fail(str(error))
             return
@@ -5366,7 +5386,11 @@ class SaarthiDashboard(App[None]):
             fail(f"Analysis failed: {error}")
             return
 
-        log("[AI] ── Analysis ─────────────────────────────")
+        log(
+            f"[AI] Structured analysis persisted as {evidence.evidence_id} "
+            f"({evidence.path})."
+        )
+        log("[AI] ── Quality analysis ─────────────────────")
         for line in content.splitlines() or ["(empty response)"]:
             log(f"[AI] {line}")
         log("[AI] ── End of analysis ──────────────────────")
@@ -5547,9 +5571,11 @@ class SaarthiDashboard(App[None]):
         import time
 
         from saarthi_ai.analysis import (
-            analyze_run,
+            analyze_run_quality,
             gather_phase_digest,
             gather_run_digest,
+            persist_quality_analysis,
+            render_quality_analysis,
             suggest_for_phase,
         )
         from saarthi_ai.config import get_settings
@@ -5633,8 +5659,20 @@ class SaarthiDashboard(App[None]):
                 run_digest = gather_run_digest(
                     database, orchestration_id=orchestration_id
                 )
-                text = asyncio.run(analyze_run(client, run_digest))
-                log("[AI] ══ Final triage ══")
+                result = asyncio.run(
+                    analyze_run_quality(client, run_digest)
+                )
+                evidence = persist_quality_analysis(
+                    database,
+                    run_digest.parent_execution_id,
+                    result,
+                    evidence_root=Path.cwd() / "evidence" / "ai-quality",
+                )
+                text = render_quality_analysis(result)
+                log(
+                    f"[AI] ══ Final quality triage "
+                    f"({evidence.evidence_id}) ══"
+                )
                 for line in text.splitlines():
                     if line.strip():
                         log(f"[AI] {line.strip()}")

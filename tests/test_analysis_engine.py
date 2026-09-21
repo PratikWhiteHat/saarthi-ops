@@ -68,6 +68,12 @@ def test_gather_digest_collects_findings_and_phases(tmp_path):
     assert digest.target == "https://app.example.com/item?id=1"
     assert ("6C-sqlmap", digest.phases[0][1]) == digest.phases[0]
     assert any("SQL injection confirmed" in f for f in digest.findings)
+    assert digest.parent_execution_id.startswith("execution-")
+    assert any(
+        ref.source_type == "finding_created"
+        and "SQL injection confirmed" in ref.summary
+        for ref in digest.source_references
+    )
 
 
 def test_build_prompt_includes_target_and_findings(tmp_path):
@@ -139,6 +145,7 @@ def test_gather_phase_digest_and_prompt(tmp_path):
     assert "6C-sqlmap" in prompt
     assert "SQL injection confirmed" in prompt
     assert "live suggestions" in prompt
+    assert digest.findings[0].startswith("[event-")
 
 
 @pytest.mark.asyncio
@@ -151,6 +158,7 @@ async def test_suggest_for_phase_uses_advisor_prompt(tmp_path):
     digest = gather_phase_digest(
         database, child, target="https://app.example.com/item?id=1"
     )
+    reference_id = digest.findings[0].split("]", maxsplit=1)[0][1:]
 
     captured = {}
 
@@ -158,10 +166,34 @@ async def test_suggest_for_phase_uses_advisor_prompt(tmp_path):
         async def chat(self, messages, *, system_prompt=None, num_predict=150):
             captured["system_prompt"] = system_prompt
             captured["num_predict"] = num_predict
-            return "- Try enumerating databases on `id`.", None
+            return (
+                f"- INFERENCE [{reference_id}] confidence=medium: "
+                "review `id` manually.",
+                None,
+            )
 
     text = await suggest_for_phase(FakeClient(), digest)
 
-    assert "enumerating databases" in text
+    assert "review `id` manually" in text
     assert captured["system_prompt"] == PHASE_ADVISOR_SYSTEM_PROMPT
     assert captured["num_predict"] > 150
+
+
+@pytest.mark.asyncio
+async def test_suggest_for_phase_withholds_uncited_model_output(tmp_path):
+    from saarthi_ai.analysis import gather_phase_digest, suggest_for_phase
+
+    database = _seed_run(tmp_path)
+    digest = gather_phase_digest(
+        database,
+        _child_execution(database),
+        target="https://app.example.com/item?id=1",
+    )
+
+    class FakeClient:
+        async def chat(self, messages, **kwargs):
+            return "- This unsupported suggestion has no citation.", None
+
+    text = await suggest_for_phase(FakeClient(), digest)
+
+    assert "withheld" in text

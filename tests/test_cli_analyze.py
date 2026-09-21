@@ -30,6 +30,7 @@ def test_analyze_success_prints_model_output(tmp_path, monkeypatch):
     digest = SimpleNamespace(
         target="https://app.example.com/item?id=1",
         orchestration_id="orchestration-x",
+        parent_execution_id="execution-parent",
         findings=("SQLi on id",),
         phases=(("3A", "completed"),),
         parent_state="completed",
@@ -39,9 +40,21 @@ def test_analyze_success_prints_model_output(tmp_path, monkeypatch):
     )
 
     async def fake_analyze(client, run_digest, **kwargs):
-        return "Executive summary: one High-severity SQLi on `id`."
+        return SimpleNamespace(findings=("finding",))
 
-    monkeypatch.setattr(cli, "analyze_run", fake_analyze)
+    monkeypatch.setattr(cli, "analyze_run_quality", fake_analyze)
+    monkeypatch.setattr(
+        cli,
+        "render_quality_analysis",
+        lambda result: "Executive summary: one High-severity SQLi on `id`.",
+    )
+    monkeypatch.setattr(
+        cli,
+        "persist_quality_analysis",
+        lambda *args, **kwargs: SimpleNamespace(
+            evidence_id="evidence-ai", path="/tmp/evidence-ai.json"
+        ),
+    )
     monkeypatch.setattr(cli, "SaarthiOllamaClient", lambda settings: object())
 
     result = runner.invoke(cli.app, ["analyze"])

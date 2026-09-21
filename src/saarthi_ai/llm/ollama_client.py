@@ -52,15 +52,17 @@ class SaarthiOllamaClient:
         messages: Sequence[Message],
         *,
         think: bool = False,
+        json_mode: bool = False,
         system_prompt: str | None = None,
         num_predict: int = 150,
     ) -> tuple[str, str | None]:
         """Send a chat request to the configured Ollama model.
 
         ``system_prompt`` overrides the default assistant prompt (used by the
-        result-analysis feature to apply a security-triage prompt) and
-        ``num_predict`` bounds the response length (analysis needs a longer
-        answer than interactive chat).
+        result-analysis feature to apply a security-triage prompt),
+        ``json_mode`` asks Ollama to constrain the response to a JSON object,
+        and ``num_predict`` bounds the response length (analysis needs a
+        longer answer than interactive chat).
         """
 
         ollama_messages: list[dict[str, Any]] = [
@@ -82,6 +84,7 @@ class SaarthiOllamaClient:
                 model=self.settings.ollama_model,
                 messages=ollama_messages,
                 think=think,
+                format="json" if json_mode else None,
                 options={
                     "temperature": 0.2,
                     "num_predict": num_predict,
