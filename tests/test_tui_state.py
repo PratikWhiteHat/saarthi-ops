@@ -503,7 +503,7 @@ def test_phase6_chain_status_tracks_permissions_and_validators() -> None:
     assert status["sqlmap"] == "ENABLED"
     assert status["browser_attack_surface_validation"] == "DONE"
     assert status["server_parser_surface_validation"] == "DONE"
-    assert status["injection_surface_validation"] == "APPROVAL"
+    assert status["injection_surface_validation"] == "ENABLED"
     assert phase_execution_label(
         json.loads(rows[1]["metadata_json"])
     ) == "6C Browser"

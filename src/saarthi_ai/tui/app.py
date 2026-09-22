@@ -3058,7 +3058,10 @@ def build_phase6_chain_status(
             return "FAILED"
         if state in {"created", "validated", "planned", "running"}:
             return "IN PROGRESS"
-        return "APPROVAL"
+        # The operator authorizes the complete assessment once at the TUI
+        # boundary. Validators that have not started remain available in the
+        # authorized chain; they do not require another per-validator prompt.
+        return "ENABLED"
 
     status = {
         "validator_completed": str(len(completed_actions)),
