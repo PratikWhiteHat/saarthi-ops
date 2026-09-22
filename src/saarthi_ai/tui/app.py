@@ -5963,6 +5963,52 @@ class SaarthiDashboard(App[None]):
                 "collected so far."
             )
 
+        # Advisory AI quality pass before 6E. The model reviews only the
+        # locally persisted, integrity-addressed evidence. Failure or absence
+        # of the local model never changes policy or blocks deterministic 6E.
+        try:
+            from saarthi_ai.analysis.engine import gather_run_digest
+            from saarthi_ai.analysis.quality import (
+                analyze_run_quality,
+                persist_quality_analysis,
+            )
+            from saarthi_ai.config import get_settings
+            from saarthi_ai.llm.ollama_client import SaarthiOllamaClient
+
+            self.call_from_thread(self._set_run_stage, "AI evidence review")
+            log_line(
+                "[AI ] Running grounded pre-6E evidence-quality review "
+                "(advisory; policy remains deterministic)…"
+            )
+            digest = gather_run_digest(
+                database,
+                orchestration_id=context.orchestration_id,
+            )
+            quality_result = asyncio.run(
+                analyze_run_quality(
+                    SaarthiOllamaClient(get_settings()),
+                    digest,
+                )
+            )
+            quality_evidence = persist_quality_analysis(
+                database,
+                digest.parent_execution_id,
+                quality_result,
+                evidence_root=Path.cwd() / "evidence" / "ai-quality",
+            )
+            log_line(
+                f"[AI ] Pre-6E review stored: "
+                f"facts={len(quality_result.facts)}, "
+                f"findings={len(quality_result.findings)}, "
+                f"warnings={len(quality_result.warnings)}, "
+                f"evidence={quality_evidence.evidence_id}."
+            )
+        except Exception as exc:  # advisory and deliberately non-fatal
+            log_line(
+                f"[AI ] Pre-6E review unavailable; deterministic 6E will "
+                f"continue: {exc}"
+            )
+
         # Phase 6E — exploit confirmation: aggregate this run's confirmed
         # findings (auto-validation + 6D) into impact verdicts. Deterministic
         # (no network); non-fatal.

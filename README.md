@@ -95,10 +95,13 @@ systems you do not own or are not authorized to assess.
 
 ## Roadmap
 
-Phases 1–6D are implemented. Upcoming: **6E** Exploit Confirmation, **6F**
-Post-Exploitation Simulation, **6G** Cleanup & Rollback, **Phase 7** (attack
-chaining), **Phase 8** (reporting & remediation) — with explicit per-action
-approval for higher-risk steps.
+Phases 1–6G are implemented, including evidence-grounded AI review, verified
+Phase 6E impact confirmation, offline Phase 6F impact simulation, and Phase 6G
+cleanup accounting. Phase 6E confirms impact only from integrity-checked
+evidence already produced by the authorized workflow; it does not perform new
+exploitation or data extraction. Upcoming: **Phase 7** (attack chaining) and
+the remaining **Phase 8** reporting/remediation work, with policy controls for
+higher-risk actions.
 
 ## Author
 

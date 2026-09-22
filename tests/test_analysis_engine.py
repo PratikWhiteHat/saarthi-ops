@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
+
 import pytest
 
 from saarthi_ai.analysis import (
@@ -74,6 +77,45 @@ def test_gather_digest_collects_findings_and_phases(tmp_path):
         and "SQL injection confirmed" in ref.summary
         for ref in digest.source_references
     )
+
+
+def test_gather_digest_adds_verified_auto_validation_source(tmp_path):
+    database = _seed_run(tmp_path)
+    root = tmp_path / "orchestrations"
+    output = (
+        root
+        / "orchestration-analysis-1"
+        / "auto-validation"
+        / "run-1"
+        / "automatic-validation.json"
+    )
+    output.parent.mkdir(parents=True)
+    payload = {
+        "configuration": {
+            "target_url": "https://app.example.com/item?id=1"
+        },
+        "nuclei": {"exit_code": 0, "stdout": ""},
+        "sqlmap": [],
+        "ghauri": [],
+        "xsstrike": [],
+        "verified_findings": [],
+    }
+    canonical = json.dumps(payload, sort_keys=True, default=str).encode()
+    payload["evidence_sha256"] = hashlib.sha256(canonical).hexdigest()
+    output.write_text(json.dumps(payload), encoding="utf-8")
+
+    digest = gather_run_digest(database, evidence_root=root)
+
+    references = [
+        item
+        for item in digest.source_references
+        if item.source_type == "automatic_validation"
+    ]
+    assert len(references) == 1
+    assert references[0].reference_id.startswith(
+        "evidence-auto-validation-"
+    )
+    assert "sqlmap_runs=0" in references[0].summary
 
 
 def test_build_prompt_includes_target_and_findings(tmp_path):

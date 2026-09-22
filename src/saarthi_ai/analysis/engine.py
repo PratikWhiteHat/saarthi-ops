@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import glob
+import hashlib
 import json
 import re
 from collections import Counter
@@ -251,6 +252,56 @@ def _read_auto_validation(
         ghauri_summary,
         xsstrike_summary,
         verified_lines,
+    )
+
+
+def _auto_validation_source_reference(
+    orchestration_id: str,
+    evidence_root: Path,
+) -> SourceReference | None:
+    """Return a stable, integrity-checked source for pre-6E AI review."""
+
+    pattern = str(
+        evidence_root
+        / orchestration_id
+        / "auto-validation"
+        / "*"
+        / "automatic-validation.json"
+    )
+    files = sorted(glob.glob(pattern))
+    if not files:
+        return None
+    try:
+        payload = json.loads(Path(files[-1]).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    supplied = payload.get("evidence_sha256")
+    unsigned = dict(payload)
+    unsigned.pop("evidence_sha256", None)
+    canonical = json.dumps(
+        unsigned, sort_keys=True, default=str
+    ).encode("utf-8")
+    actual = hashlib.sha256(canonical).hexdigest()
+    if not isinstance(supplied, str) or supplied != actual:
+        return None
+
+    configuration = payload.get("configuration", {}) or {}
+    nuclei = payload.get("nuclei", {}) or {}
+    summary = (
+        f"target={configuration.get('target_url', 'unknown')}; "
+        f"nuclei_exit={nuclei.get('exit_code')}; "
+        f"sqlmap_runs={len(payload.get('sqlmap', []) or [])}; "
+        f"ghauri_runs={len(payload.get('ghauri', []) or [])}; "
+        f"xsstrike_runs={len(payload.get('xsstrike', []) or [])}; "
+        f"verified_findings={len(payload.get('verified_findings', []) or [])}"
+    )
+    return SourceReference(
+        reference_id=f"evidence-auto-validation-{actual[:16]}",
+        phase_code="6C",
+        source_type="automatic_validation",
+        summary=summary[:500],
     )
 
 
@@ -609,6 +660,13 @@ def gather_run_digest(
             xsstrike_summary,
             verified_lines,
         ) = _read_auto_validation(oid, evidence_root)
+        automatic_reference = _auto_validation_source_reference(
+            oid, evidence_root
+        )
+        if automatic_reference is not None:
+            # Keep the current run's consolidated validation source inside the
+            # bounded model context even when earlier phases are very noisy.
+            source_references.insert(0, automatic_reference)
         wayback_summary = _read_wayback_intel(oid, evidence_root)
         archive_summary = _read_local_archive(oid, evidence_root)
 
