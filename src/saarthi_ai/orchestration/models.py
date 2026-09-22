@@ -49,6 +49,7 @@ class OrchestrationPhase(StrEnum):
     EXPLOIT_CONFIRMATION = "6E-exploit-confirmation"
     POST_EXPLOITATION = "6F-post-exploitation"
     CLEANUP = "6G-cleanup-rollback"
+    EVIDENCE_FINDINGS = "6H-evidence-findings"
     REPORT = "8A-report"
 
 

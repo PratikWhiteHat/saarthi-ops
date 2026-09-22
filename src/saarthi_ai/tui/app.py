@@ -76,6 +76,7 @@ class DashboardSnapshot:
     controlled_nuclei_execution: dict[str, str] | None = None
     controlled_nuclei_preparation: dict[str, str] | None = None
     controlled_nuclei_preview: dict[str, str] | None = None
+    evidence_findings_summary: dict[str, str] | None = None
     phase6_chain_status: dict[str, str] = field(default_factory=dict)
     recent_worker_jobs: list[dict[str, str]] = field(default_factory=list)
 
@@ -457,6 +458,22 @@ class ReadOnlySaarthiRepository:
             )
             controlled_nuclei_preview.update(preview_reuse)
 
+        evidence_findings_summary = next(
+            (
+                summary
+                for related_execution_id in orchestration_execution_ids
+                if (
+                    summary
+                    := self._load_evidence_findings_summary(
+                        connection,
+                        tables,
+                        related_execution_id,
+                    )
+                )
+            ),
+            None,
+        )
+
         return DashboardSnapshot(
             project_name=value(
                 latest,
@@ -495,6 +512,7 @@ class ReadOnlySaarthiRepository:
                 controlled_nuclei_preparation
             ),
             controlled_nuclei_preview=controlled_nuclei_preview,
+            evidence_findings_summary=evidence_findings_summary,
             phase6_chain_status=phase6_chain_status,
             recent_worker_jobs=self._load_worker_jobs(
                 connection,
@@ -502,6 +520,77 @@ class ReadOnlySaarthiRepository:
                 orchestration_execution_ids,
             ),
         )
+
+    def _load_evidence_findings_summary(
+        self,
+        connection: sqlite3.Connection,
+        tables: set[str],
+        execution_id: str,
+    ) -> dict[str, str] | None:
+        """Load the persisted Phase 6H integrity and finding totals."""
+
+        table = next(
+            (name for name in ("evidence", "evidence_items") if name in tables),
+            None,
+        )
+        if table is None:
+            return None
+        columns = self._columns(connection, table)
+        execution_column = self._pick(columns, "execution_id", "execution")
+        type_column = self._pick(columns, "evidence_type", "type", "kind")
+        metadata_column = self._pick(columns, "metadata_json", "metadata")
+        evidence_id_column = self._pick(columns, "evidence_id", "id")
+        sha256_column = self._pick(columns, "sha256")
+        created_column = self._pick(columns, "created_at", "timestamp")
+        if not execution_column or not type_column or not metadata_column:
+            return None
+        order_sql = (
+            f'ORDER BY "{created_column}" DESC' if created_column else ""
+        )
+        row = connection.execute(
+            f'''
+            SELECT * FROM "{table}"
+            WHERE "{execution_column}" = ?
+              AND LOWER("{type_column}") = ?
+            {order_sql}
+            LIMIT 1
+            ''',
+            (execution_id, "evidence_findings_bundle"),
+        ).fetchone()
+        if row is None:
+            return None
+        try:
+            metadata = json.loads(str(row[metadata_column]))
+        except (json.JSONDecodeError, TypeError, ValueError):
+            return None
+        if not isinstance(metadata, dict):
+            return None
+
+        def value(key: str, default: str = "0") -> str:
+            raw = metadata.get(key, default)
+            return safe_tui_display(raw, max_length=72)
+
+        return {
+            "execution_id": execution_id,
+            "evidence_id": (
+                safe_tui_display(row[evidence_id_column], max_length=72)
+                if evidence_id_column
+                else "—"
+            ),
+            "evidence_sha256": (
+                safe_tui_display(row[sha256_column], max_length=72)
+                if sha256_column
+                else "—"
+            ),
+            "evidence_count": value("evidence_count"),
+            "verified_evidence_count": value("verified_evidence_count"),
+            "rejected_evidence_count": value("rejected_evidence_count"),
+            "finding_count": value("count"),
+            "confirmed_count": value("confirmed_count"),
+            "critical": value("critical"),
+            "high": value("high"),
+            "classification": value("classification", "—"),
+        }
 
     def _load_worker_jobs(
         self,
@@ -3150,6 +3239,8 @@ def infer_phase(
     normalized_evidence = {evidence_type.strip().lower() for evidence_type in evidence_types}
 
     if normalized == "completed":
+        if "evidence_findings_bundle" in normalized_evidence:
+            return "6H — EVIDENCE & FINDINGS"
         if "attack_hypothesis_set" in normalized_evidence:
             return "6A — ATTACK HYPOTHESIS & PATH GENERATION"
         if (
@@ -3185,6 +3276,8 @@ def infer_phase(
         return "3B — SUBDOMAIN ENUMERATION"
 
     if normalized in {"running", "analyzing"}:
+        if "evidence_findings_bundle" in normalized_evidence:
+            return "6H — EVIDENCE & FINDINGS"
         if "attack_hypothesis_set" in normalized_evidence:
             return "6A — ATTACK HYPOTHESIS & PATH GENERATION"
         if (
@@ -3557,20 +3650,21 @@ TOOLS = [
     ("xsstrike", "XSS Detection (reflected/DOM, auto 6C)", "ENABLED"),
     ("OAST Manager", "Out-of-band Correlation", "PHASE 6"),
     ("Saarthi 6A", "Attack Hypothesis Engine", "ENABLED"),
-    ("Saarthi 6B", "Policy & Approval Gate", "APPROVAL"),
-    ("Saarthi 6C.1", "Injection Surface Validator", "APPROVAL"),
-    ("Saarthi 6C.2", "Browser Attack Surface Validator", "APPROVAL"),
-    ("Saarthi 6C.3", "Server/Parser Surface Validator", "APPROVAL"),
-    ("Saarthi 6C.2", "Clickjacking Header Validator", "APPROVAL"),
-    ("Saarthi 6C.2", "CSRF Protection Surface Validator", "APPROVAL"),
-    ("Saarthi 6C.3", "HTTP Parameter Surface Validator", "APPROVAL"),
-    ("Saarthi 6C.4", "Session Cookie Attribute Validator", "APPROVAL"),
-    ("Saarthi 6C.6", "File Upload Surface Validator", "APPROVAL"),
-    ("Saarthi 6C.7", "API Data-Exposure Surface Validator", "APPROVAL"),
+    ("Saarthi 6B", "Workflow Authorization Gate", "ENABLED"),
+    ("Saarthi 6C.1", "Injection Surface Validator", "ENABLED"),
+    ("Saarthi 6C.2", "Browser Attack Surface Validator", "ENABLED"),
+    ("Saarthi 6C.3", "Server/Parser Surface Validator", "ENABLED"),
+    ("Saarthi 6C.2", "Clickjacking Header Validator", "ENABLED"),
+    ("Saarthi 6C.2", "CSRF Protection Surface Validator", "ENABLED"),
+    ("Saarthi 6C.3", "HTTP Parameter Surface Validator", "ENABLED"),
+    ("Saarthi 6C.4", "Session Cookie Attribute Validator", "ENABLED"),
+    ("Saarthi 6C.6", "File Upload Surface Validator", "ENABLED"),
+    ("Saarthi 6C.7", "API Data-Exposure Surface Validator", "ENABLED"),
     ("Saarthi 6D", "Authenticated Workflows (authZ + tokens)", "ENABLED"),
     ("Saarthi 6E", "Exploit Confirmation (impact verdicts)", "ENABLED"),
     ("Saarthi 6F", "Post-Exploitation Simulation (impact projection)", "ENABLED"),
     ("Saarthi 6G", "Cleanup & Rollback (footprint + reversal)", "ENABLED"),
+    ("Saarthi 6H", "Evidence & Findings Consolidation", "ENABLED"),
     *validator_module_tool_rows(),
 ]
 
@@ -3845,7 +3939,61 @@ def build_scope_lines(
             ]
         )
 
-    if snapshot.attack_hypothesis_set:
+    if snapshot.evidence_findings_summary:
+        summary = snapshot.evidence_findings_summary
+
+        def summary_value(key: str, *, max_length: int = 96) -> str:
+            return safe_tui_display(
+                summary.get(key),
+                max_length=max_length,
+            )
+
+        scope_lines.extend(
+            [
+                "",
+                "[bold cyan]PHASE 6H — EVIDENCE & FINDINGS[/bold cyan]",
+                (
+                    "Bundle Evidence    : "
+                    f"{summary_value('evidence_id', max_length=72)}"
+                ),
+                (
+                    "Evidence Checked   : "
+                    f"{summary_value('evidence_count', max_length=12)}"
+                ),
+                (
+                    "Verified / Rejected: "
+                    f"{summary_value('verified_evidence_count', max_length=12)}"
+                    " / "
+                    f"{summary_value('rejected_evidence_count', max_length=12)}"
+                ),
+                (
+                    "Findings / Confirmed: "
+                    f"{summary_value('finding_count', max_length=12)}"
+                    " / "
+                    f"{summary_value('confirmed_count', max_length=12)}"
+                ),
+                (
+                    "Critical / High    : "
+                    f"{summary_value('critical', max_length=12)} / "
+                    f"{summary_value('high', max_length=12)}"
+                ),
+                (
+                    "Classification     : "
+                    f"{summary_value('classification', max_length=48)}"
+                ),
+                (
+                    "Bundle SHA-256     : "
+                    f"{summary_value('evidence_sha256', max_length=72)}"
+                ),
+                (
+                    "[dim]Read-only, hash-verified and redacted Phase 6H "
+                    "evidence index. Rejected records are retained as "
+                    "integrity warnings and never treated as findings.[/dim]"
+                ),
+            ]
+        )
+
+    elif snapshot.attack_hypothesis_set:
         hypothesis_set = snapshot.attack_hypothesis_set
 
         def hypothesis_value(
@@ -5947,7 +6095,8 @@ class SaarthiDashboard(App[None]):
             live_stop()
 
         # Auto-validation (active nuclei/sqlmap) is the only step that can fail
-        # on a live host; the deterministic wrap-up phases below (6E-6G, 4B/4C/4D)
+        # on a live host; the deterministic wrap-up phases below (6E-6H,
+        # 4B/4C/4D)
         # do not depend on it, so continue regardless instead of aborting the run.
         if validation is not None:
             nuclei_exit = validation.nuclei.get("exit_code")
@@ -5959,7 +6108,7 @@ class SaarthiDashboard(App[None]):
         else:
             log_line(
                 "[WARN] Auto-validation did not complete; continuing to the "
-                "deterministic wrap-up phases (6E-6G, 4B/4C/4D) on the evidence "
+                "deterministic wrap-up phases (6E-6H, 4B/4C/4D) on the evidence "
                 "collected so far."
             )
 
@@ -6199,6 +6348,47 @@ class SaarthiDashboard(App[None]):
             )
         except Exception as exc:  # non-fatal
             log_line(f"[4B/4C/4D] validator evaluation skipped: {exc}")
+
+        # Phase 6H — evidence & findings: verify every persisted evidence file,
+        # reject integrity failures, and consolidate structured 6E/AI findings
+        # into one redacted, hash-linked bundle for reporting and the TUI.
+        self.call_from_thread(self._set_run_stage, "Evidence & findings (6H)")
+        try:
+            from saarthi_ai.orchestration.models import OrchestrationPhase
+            from saarthi_ai.persistence.evidence_findings_workflow import (
+                run_tracked_evidence_findings,
+            )
+
+            child_6h = create_phase_execution(
+                database,
+                context,
+                phase=OrchestrationPhase.EVIDENCE_FINDINGS,
+                phase_name="evidence_findings",
+                active_testing_allowed=False,
+            )
+            tracked_6h = run_tracked_evidence_findings(
+                database,
+                child_6h.execution_id,
+                orchestration_id=context.orchestration_id,
+                evidence_root=evidence_root / "evidence-findings",
+                actor=actor,
+            )
+            complete_phase_execution(
+                database,
+                child_6h.execution_id,
+                actor=actor,
+                reason="Phase 6H evidence and findings bundle completed.",
+            )
+            bundle_6h = tracked_6h.bundle
+            log_line(
+                f"[OK ] 6H evidence & findings: "
+                f"{bundle_6h.verified_evidence_count} verified, "
+                f"{bundle_6h.rejected_evidence_count} rejected, "
+                f"{len(bundle_6h.findings)} finding(s), "
+                f"{bundle_6h.confirmed_finding_count} confirmed."
+            )
+        except Exception as exc:  # non-fatal consolidation
+            log_line(f"[6H] evidence & findings skipped: {exc}")
 
         # Phase 4E — bible coverage (AI): match the local vulnerability library
         # against the run's evidence. Phase 8A — reporting: assemble the .docx

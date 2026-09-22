@@ -80,6 +80,7 @@ def test_completed_phase_children_render_done(database: SaarthiDatabase) -> None
         OrchestrationPhase.EXPLOIT_CONFIRMATION,
         OrchestrationPhase.POST_EXPLOITATION,
         OrchestrationPhase.CLEANUP,
+        OrchestrationPhase.EVIDENCE_FINDINGS,
     ]
     for phase in phases:
         child = create_phase_execution(
@@ -107,5 +108,5 @@ def test_completed_phase_children_render_done(database: SaarthiDatabase) -> None
             "6G — CLEANUP & ROLLBACK", list(completed)
         )
     }
-    for code in ("4B", "4C", "4D", "6E", "6F", "6G"):
+    for code in ("4B", "4C", "4D", "6E", "6F", "6G", "6H"):
         assert status[code] == "DONE", (code, status[code])

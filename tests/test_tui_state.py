@@ -661,7 +661,7 @@ def test_tui_uses_dynamic_phase6_tool_labels() -> None:
     ) in rows
     assert (
         "Saarthi 6B",
-        "Policy & Approval Gate",
+        "Workflow Authorization Gate",
         "DONE",
     ) in rows
     assert (
@@ -1944,6 +1944,53 @@ def test_nuclei_tool_row_shows_automatic_full_run() -> None:
     ]
 
 
+def test_completed_evidence_findings_bundle_maps_to_phase_6h() -> None:
+    assert (
+        infer_phase("completed", {"evidence_findings_bundle"})
+        == "6H — EVIDENCE & FINDINGS"
+    )
+
+
+def test_scope_lines_render_phase_6h_summary() -> None:
+    from dataclasses import replace
+
+    from saarthi_ai.tui.app import build_scope_lines, demo_snapshot
+
+    snapshot = replace(
+        demo_snapshot(),
+        evidence_findings_summary={
+            "evidence_id": "evidence-6h",
+            "evidence_sha256": "a" * 64,
+            "evidence_count": "12",
+            "verified_evidence_count": "11",
+            "rejected_evidence_count": "1",
+            "finding_count": "3",
+            "confirmed_count": "2",
+            "critical": "1",
+            "high": "1",
+            "classification": "findings_consolidated",
+        },
+    )
+
+    rendered = "\n".join(build_scope_lines(snapshot))
+
+    assert "PHASE 6H — EVIDENCE & FINDINGS" in rendered
+    assert "Verified / Rejected: 11 / 1" in rendered
+    assert "Findings / Confirmed: 3 / 2" in rendered
+    assert "Critical / High    : 1 / 1" in rendered
+    assert "findings_consolidated" in rendered
+
+
+def test_phase_6h_tool_row_is_enabled() -> None:
+    from saarthi_ai.tui.app import TOOLS
+
+    assert (
+        "Saarthi 6H",
+        "Evidence & Findings Consolidation",
+        "ENABLED",
+    ) in TOOLS
+
+
 def test_planned_nuclei_preparation_maps_to_phase_6c() -> None:
     assert (
         infer_phase(
@@ -2974,13 +3021,13 @@ def test_scope_lines_render_linked_phase_6b_plan() -> None:
     assert "No validation request was sent" in rendered
 
 
-def test_phase_6b_policy_gate_tool_row_requires_approval() -> None:
+def test_phase_6b_workflow_authorization_gate_is_enabled() -> None:
     from saarthi_ai.tui.app import TOOLS
 
     assert (
         "Saarthi 6B",
-        "Policy & Approval Gate",
-        "APPROVAL",
+        "Workflow Authorization Gate",
+        "ENABLED",
     ) in TOOLS
 
 
@@ -3028,13 +3075,13 @@ def test_scope_lines_render_clickjacking_validator_summary() -> None:
     assert "Payload Generated  : false" in rendered
 
 
-def test_clickjacking_validator_tool_row_requires_approval() -> None:
+def test_clickjacking_validator_tool_row_is_enabled() -> None:
     from saarthi_ai.tui.app import TOOLS
 
     assert (
         "Saarthi 6C.2",
         "Clickjacking Header Validator",
-        "APPROVAL",
+        "ENABLED",
     ) in TOOLS
 
 
@@ -3087,13 +3134,13 @@ def test_scope_lines_render_parameter_surface_summary() -> None:
     assert "Payload Generated  : false" in rendered
 
 
-def test_parameter_surface_validator_tool_row_requires_approval() -> None:
+def test_parameter_surface_validator_tool_row_is_enabled() -> None:
     from saarthi_ai.tui.app import TOOLS
 
     assert (
         "Saarthi 6C.3",
         "HTTP Parameter Surface Validator",
-        "APPROVAL",
+        "ENABLED",
     ) in TOOLS
 
 
@@ -3146,13 +3193,13 @@ def test_scope_lines_render_session_cookie_summary() -> None:
     assert "Payload Generated  : false" in rendered
 
 
-def test_session_cookie_validator_tool_row_requires_approval() -> None:
+def test_session_cookie_validator_tool_row_is_enabled() -> None:
     from saarthi_ai.tui.app import TOOLS
 
     assert (
         "Saarthi 6C.4",
         "Session Cookie Attribute Validator",
-        "APPROVAL",
+        "ENABLED",
     ) in TOOLS
 
 
@@ -3209,13 +3256,13 @@ def test_scope_lines_render_csrf_surface_summary() -> None:
     assert "Request Body Sent  : false" in rendered
 
 
-def test_csrf_surface_validator_tool_row_requires_approval() -> None:
+def test_csrf_surface_validator_tool_row_is_enabled() -> None:
     from saarthi_ai.tui.app import TOOLS
 
     assert (
         "Saarthi 6C.2",
         "CSRF Protection Surface Validator",
-        "APPROVAL",
+        "ENABLED",
     ) in TOOLS
 
 
@@ -3268,13 +3315,13 @@ def test_scope_lines_render_api_exposure_summary() -> None:
     assert "Authentication Used: false" in rendered
 
 
-def test_api_exposure_validator_tool_row_requires_approval() -> None:
+def test_api_exposure_validator_tool_row_is_enabled() -> None:
     from saarthi_ai.tui.app import TOOLS
 
     assert (
         "Saarthi 6C.7",
         "API Data-Exposure Surface Validator",
-        "APPROVAL",
+        "ENABLED",
     ) in TOOLS
 
 
@@ -3494,43 +3541,43 @@ def test_scope_lines_render_upload_surface_summary() -> None:
     assert "Request Body Sent  : false" in rendered
 
 
-def test_upload_surface_validator_tool_row_requires_approval() -> None:
+def test_upload_surface_validator_tool_row_is_enabled() -> None:
     from saarthi_ai.tui.app import TOOLS
 
     assert (
         "Saarthi 6C.6",
         "File Upload Surface Validator",
-        "APPROVAL",
+        "ENABLED",
     ) in TOOLS
 
 
-def test_injection_surface_validator_tool_row_requires_approval() -> None:
+def test_injection_surface_validator_tool_row_is_enabled() -> None:
     from saarthi_ai.tui.app import TOOLS
 
     assert (
         "Saarthi 6C.1",
         "Injection Surface Validator",
-        "APPROVAL",
+        "ENABLED",
     ) in TOOLS
 
 
-def test_browser_surface_validator_tool_row_requires_approval() -> None:
+def test_browser_surface_validator_tool_row_is_enabled() -> None:
     from saarthi_ai.tui.app import TOOLS
 
     assert (
         "Saarthi 6C.2",
         "Browser Attack Surface Validator",
-        "APPROVAL",
+        "ENABLED",
     ) in TOOLS
 
 
-def test_server_parser_surface_tool_row_requires_approval() -> None:
+def test_server_parser_surface_tool_row_is_enabled() -> None:
     from saarthi_ai.tui.app import TOOLS
 
     assert (
         "Saarthi 6C.3",
         "Server/Parser Surface Validator",
-        "APPROVAL",
+        "ENABLED",
     ) in TOOLS
 
 
