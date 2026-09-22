@@ -37,6 +37,12 @@ From a single authorized URL, Saarthi orchestrates:
   - **6D** Authenticated Workflows — auto-login multiple accounts and replay
     requests across them to surface IDOR/BOLA, vertical privilege escalation,
     and tenant-isolation breaks, plus JWT/session-token hygiene.
+  - **6E–6H** evidence-only impact confirmation, offline post-exploitation
+    simulation, cleanup accounting, and hash-verified findings consolidation.
+
+Interrupted local runs are recovered automatically at the next TUI startup.
+Only `RUNNING` or `ANALYZING` records inactive for at least six hours are
+closed, and every recovery is recorded in the local audit trail.
 
 Throughout, an **AI co-pilot** watches each phase live, triages and ranks
 findings, cross-checks them with independent tools (e.g., ghauri confirming

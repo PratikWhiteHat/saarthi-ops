@@ -5200,12 +5200,40 @@ class SaarthiDashboard(App[None]):
 
     def on_mount(self) -> None:
         self._configure_tables()
+        self._recover_stale_executions()
         self.set_interval(1.0, self._update_runtime)
         self.set_interval(
             DASHBOARD_REFRESH_SECONDS,
             self._refresh_snapshot_silently,
         )
         self.action_refresh()
+
+    def _recover_stale_executions(self) -> None:
+        """Close abandoned active records before loading the dashboard."""
+
+        if not self.repository.database_path.exists():
+            return
+        try:
+            from saarthi_ai.persistence.database import SaarthiDatabase
+            from saarthi_ai.persistence.execution_recovery import (
+                recover_stale_executions,
+            )
+
+            recovery = recover_stale_executions(
+                SaarthiDatabase(self.repository.database_path)
+            )
+        except Exception as exc:  # startup recovery must never block the TUI
+            self.notify(
+                f"Stale-run recovery could not complete: {exc}",
+                severity="warning",
+            )
+            return
+        if recovery.recovered_count:
+            self.notify(
+                f"Recovered {recovery.recovered_count} interrupted "
+                "execution record(s).",
+                severity="warning",
+            )
 
     def _configure_tables(self) -> None:
         phase_table = self.query_one("#phase-table", DataTable)
