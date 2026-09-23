@@ -3494,6 +3494,7 @@ BASE_PHASES = [
     ("5B", "Dependency Outcomes"),
     ("5C", "Parent Outcome Handling"),
     ("5D", "Optional Phase Handling"),
+    ("5E", "CVE Intelligence"),
     ("6A", "Attack Hypothesis Engine"),
     ("6B", "Policy & Approval Gate"),
     ("6C", "Low-Risk Attack Validators"),
@@ -3647,6 +3648,7 @@ TOOLS = [
     ("wayback-cdx", "Historical URL Intelligence (3D)", "ENABLED"),
     ("local-archive", "Local Page Snapshot (3D · local-only)", "ENABLED"),
     ("Saarthi JS", "JavaScript Intelligence", "ENABLED"),
+    ("CVE Intelligence", "Online NVD + CISA KEV / local fallback", "ENABLED"),
     ("nuclei", "Automatic bounded validation (full run)", "ENABLED"),
     ("sqlmap", "Automatic SQLi detection (full run)", "ENABLED"),
     ("ghauri", "Blind SQLi Cross-check (auto 6C)", "ENABLED"),
@@ -3748,9 +3750,6 @@ def tool_rows(
     """Apply live Phase 6C permission and completion labels."""
 
     status = snapshot.phase6_chain_status
-    if not status:
-        return TOOLS
-
     rows: list[tuple[str, str, str]] = []
     purpose_actions = {
         "Injection Surface Validator": (
@@ -3784,7 +3783,10 @@ def tool_rows(
 
     for tool, purpose, default_status in TOOLS:
         dynamic_status = default_status
-        if tool == "nuclei":
+        if tool == "CVE Intelligence":
+            if any(normalize_phase_code(code) == "5E" for code in snapshot.completed_phases):
+                dynamic_status = "DONE"
+        elif tool == "nuclei":
             dynamic_status = status.get("nuclei", default_status)
         elif tool == "sqlmap":
             dynamic_status = status.get("sqlmap", default_status)
@@ -5979,6 +5981,7 @@ class SaarthiDashboard(App[None]):
             ChainConfigError,
             build_auto_validation_config_from_chain,
         )
+        from saarthi_ai.cve.workflow import run_cve_intelligence
         from saarthi_ai.execution.tool_runner import (
             ToolOutputEvent,
             ToolRunnerError,
@@ -6046,6 +6049,29 @@ class SaarthiDashboard(App[None]):
                 log_line(
                     f"[{phase.phase.value}] {phase.outcome.value}"
                 )
+
+            if result.http_intelligence.evidence_path:
+                self.call_from_thread(self._set_run_stage, "CVE intelligence")
+                log_line("[INF] Checking observed CPEs against public and local CVE data…")
+                try:
+                    cve_result = run_cve_intelligence(
+                        database, result.context, result.http_intelligence,
+                        evidence_root=evidence_root / "cve-intelligence",
+                        actor=actor,
+                    )
+                    log_line(
+                        "[5E] CVE intelligence completed: "
+                        f"{cve_result.observed_cpes} CPEs, "
+                        f"{cve_result.candidates} candidates, "
+                        f"{cve_result.catalog_cves} cached CVEs "
+                        f"(feed={cve_result.refresh_status}, "
+                        f"online={cve_result.online_status}, "
+                        f"queried={cve_result.online_queried_cpes})."
+                    )
+                except Exception as error:
+                    log_line(f"[5E] CVE intelligence unavailable: {error}")
+            else:
+                log_line("[5E] CVE intelligence skipped: no Phase 3C evidence.")
 
             self.call_from_thread(self._set_run_stage, "Phase 6 chain")
             log_line("[INF] Running permission-gated Phase 6 chain…")

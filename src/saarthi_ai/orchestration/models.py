@@ -40,6 +40,7 @@ class OrchestrationPhase(StrEnum):
     OAST_MANAGER = "4C"
     CONFIRMATION = "4D"
     BIBLE_COVERAGE = "4E-bible-coverage"
+    CVE_INTELLIGENCE = "5E-cve-intelligence"
     ATTACK_HYPOTHESIS = "6A"
     NUCLEI = "6C-nuclei"
     NUCLEI_PREVIEW = "6C-nuclei-preview"

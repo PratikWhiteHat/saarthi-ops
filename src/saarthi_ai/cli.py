@@ -56,6 +56,7 @@ from saarthi_ai.controlled_validation.validator_registry import (
     list_phase6_validators,
     summarize_phase6_validator_modules,
 )
+from saarthi_ai.cve.commands import app as cve_app
 from saarthi_ai.execution.http_collector import HttpCollectionError
 from saarthi_ai.execution.http_models import HttpMetadataCollectionRequest
 from saarthi_ai.execution.nuclei_adapter import (
@@ -277,6 +278,7 @@ app.add_typer(workflow_app, name="workflow")
 app.add_typer(authenticated_app, name="authenticated")
 app.add_typer(cleanup_app, name="cleanup")
 app.add_typer(knowledge_app, name="knowledge")
+app.add_typer(cve_app, name="cve")
 
 console = Console()
 

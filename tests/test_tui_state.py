@@ -379,9 +379,10 @@ def test_phase_rows_cover_complete_product_workflow() -> None:
     rows = phase_rows("6C — LOW-RISK ATTACK VALIDATORS")
     row_map = {row[1]: row for row in rows}
 
-    assert len(rows) == 24
+    assert len(rows) == 25
     assert row_map["4E"][2] == "Bible Coverage (AI)"
     assert row_map["5A"][2] == "Assessment Planner"
+    assert row_map["5E"][2] == "CVE Intelligence"
     assert row_map["6A"][2] == "Attack Hypothesis Engine"
     assert row_map["6C"][3] == "DONE"
     assert row_map["6D"][3] == "NEXT"

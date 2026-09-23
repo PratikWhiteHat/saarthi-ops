@@ -90,6 +90,32 @@ uv run saarthi doctor           # environment diagnostics
 uv run saarthi authenticated run --config authenticated-sessions.json --approved
 ```
 
+### Local CVE intelligence
+
+The CVE catalog is separate from active testing. When an operator selects
+**Authorize & Run** in the TUI, Phase 3C collects CPE fingerprints and Phase 5E
+automatically refreshes the local NVD/CISA KEV cache when stale, queries the
+public NVD CVE API for observed CPEs, matches candidates, and writes hashed
+evidence. Online requests include product CPEs, but never the target URL or
+hostname. A feed/API outage does not stop the assessment; Phase 5E uses the
+existing cache and records the online status. Product/CPE matching does not
+confirm a vulnerability. The cache lives at `~/.saarthi/cve.db`.
+
+```bash
+uv run saarthi cve sync --days 7
+uv run saarthi cve status
+uv run saarthi cve match --cpe 'cpe:2.3:a:vendor:product:1.2:*:*:*:*:*:*:*'
+```
+
+For offline use, export official NVD API 2.0 and CISA KEV JSON files, then use
+`saarthi cve import-nvd FILE` and `saarthi cve import-kev FILE`. The sync command
+is an incremental modified-date import, not a full historical NVD mirror.
+Version-unknown and complex configuration matches require manual review. Online
+CPE lookup is bounded to five distinct CPEs and two API pages per CPE; evidence
+marks a partial result if those limits are reached. The TUI's Phase 5E activity
+line reports CPE/candidate counts and online status; the evidence catalog
+contains the full result JSON.
+
 Default local model: `qwen3.5:9b` (configurable in `.env`).
 
 ## Authorized use only
