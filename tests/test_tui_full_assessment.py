@@ -12,7 +12,10 @@ from types import SimpleNamespace
 import pytest
 from textual.widgets import Input
 
-from saarthi_ai.automation.auto_validation import AutomaticValidationResult
+from saarthi_ai.automation.auto_validation import (
+    AutoValidationConfig,
+    AutomaticValidationResult,
+)
 from saarthi_ai.execution.tool_runner import ToolOutputEvent
 from saarthi_ai.orchestration.models import OrchestrationContext
 from saarthi_ai.persistence.database import SaarthiDatabase
@@ -67,7 +70,14 @@ def _install_stubs(monkeypatch, calls, captured, *, cve_evidence=False):
         calls.append("build_config")
         captured["confirmed_poc"] = kwargs.get("confirmed_poc")
         return SimpleNamespace(
-            config=SimpleNamespace(),
+            config=AutoValidationConfig(
+                target_url="https://app.example.com/item?id=1",
+                allowed_hosts=("app.example.com",),
+                authorized=True,
+                active_testing=True,
+                intrusive_testing=True,
+                approved=True,
+            ),
             target_url="https://app.example.com/item?id=1",
             sqlmap_parameters=("id",),
         )

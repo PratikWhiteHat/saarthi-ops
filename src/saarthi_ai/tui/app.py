@@ -6115,6 +6115,7 @@ class SaarthiDashboard(App[None]):
 
         from saarthi_ai.automation.auto_validation import (
             AutoValidationError,
+            nuclei_scope_notice,
             run_automatic_validation,
         )
         from saarthi_ai.automation.chain_config import (
@@ -6228,6 +6229,64 @@ class SaarthiDashboard(App[None]):
                 )
             )
 
+            # Advisory only: the local model reviews aggregate, hash-checked
+            # Phase 3C metadata. Its fixed labels never become Nuclei flags,
+            # template identifiers, or tool-runner inputs.
+            if (
+                getattr(result.http_intelligence, "execution_id", None)
+                and getattr(result.http_intelligence, "evidence_id", None)
+                and getattr(result.http_intelligence, "evidence_path", None)
+            ):
+                try:
+                    from saarthi_ai.analysis.nuclei_scope import (
+                        recommend_nuclei_scope,
+                    )
+                    from saarthi_ai.config import get_settings
+                    from saarthi_ai.llm.ollama_client import SaarthiOllamaClient
+                    from saarthi_ai.persistence.models import AuditEventType
+
+                    evidence = next(
+                        item
+                        for item in database.list_evidence(
+                            result.http_intelligence.execution_id
+                        )
+                        if item.evidence_id == result.http_intelligence.evidence_id
+                    )
+                    advice = asyncio.run(
+                        asyncio.wait_for(
+                            recommend_nuclei_scope(
+                                SaarthiOllamaClient(get_settings()),
+                                Path(evidence.path),
+                                evidence.sha256 or "",
+                            ),
+                            timeout=60,
+                        )
+                    )
+                    database.add_audit_event(
+                        context.parent_execution_id,
+                        event_type=AuditEventType.TOOL_OUTPUT,
+                        actor="saarthi-ai-nuclei-advisor",
+                        message="Non-executing Nuclei scope advice recorded.",
+                        details={
+                            "source_evidence_id": evidence.evidence_id,
+                            "mode": advice.mode,
+                            "areas": list(advice.areas),
+                            "live_services": advice.live_services,
+                            "applied_to_scan": False,
+                        },
+                    )
+                    log_line(
+                        "[AI ] Nuclei review advice (not applied): "
+                        f"{advice.mode} breadth; "
+                        f"areas={', '.join(advice.areas) or 'none'}; "
+                        f"observed services={advice.live_services}."
+                    )
+                except Exception as error:
+                    log_line(
+                        "[AI ] Nuclei review advice unavailable; "
+                        f"scan configuration unchanged: {error}"
+                    )
+
             self.call_from_thread(
                 self._set_run_stage,
                 "Nuclei + SQLMap",
@@ -6258,6 +6317,9 @@ class SaarthiDashboard(App[None]):
             )
         else:
             log_line("[INF] SQLMap params  : none (Nuclei-only run)")
+
+        for notice in nuclei_scope_notice(derived.config):
+            log_line(notice)
 
         live_feed, live_stop = self._spawn_live_scan_ai(derived.target_url)
 
@@ -6864,6 +6926,7 @@ class SaarthiDashboard(App[None]):
 
         from saarthi_ai.automation.auto_validation import (
             AutoValidationError,
+            nuclei_scope_notice,
             run_automatic_validation,
         )
         from saarthi_ai.execution.tool_runner import (
@@ -6897,6 +6960,9 @@ class SaarthiDashboard(App[None]):
                 "[INF] SQLMap params  : none "
                 "(intrusive testing not authorized; nuclei-only run)"
             )
+
+        for notice in nuclei_scope_notice(derived.config):
+            log_line(notice)
 
         live_feed, live_stop = self._spawn_live_scan_ai(derived.target_url)
 
