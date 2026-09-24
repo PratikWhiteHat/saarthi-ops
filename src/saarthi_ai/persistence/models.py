@@ -34,6 +34,7 @@ class AuditEventType(StrEnum):
     TOOL_FAILED = "tool_failed"
     EVIDENCE_ADDED = "evidence_added"
     FINDING_CREATED = "finding_created"
+    FINDING_REVIEWED = "finding_reviewed"
     EXECUTION_CANCELLED = "execution_cancelled"
 
 

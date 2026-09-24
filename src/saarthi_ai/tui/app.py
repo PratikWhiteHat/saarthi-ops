@@ -5144,7 +5144,7 @@ class SkillsScreen(ModalScreen[None]):
         enabled = sum(record.enabled for record in records)
         self.query_one("#skills-status", Static).update(
             f"Installed: {installed}/{len(records)} · Enabled: {enabled} · "
-            "Relevant enabled references are selected per AI request (max 3)."
+            "AI quality analysis uses up to 12 enabled references; chat remains topic-matched."
         )
 
     def action_toggle(self) -> None:
@@ -5199,6 +5199,168 @@ class SkillsScreen(ModalScreen[None]):
         self.dismiss()
 
 
+class FindingReviewScreen(ModalScreen[None]):
+    """Review one saved AI analysis; human verdicts remain separate audit events."""
+
+    CSS = """
+    FindingReviewScreen { align: center middle; background: $background 75%; }
+    #finding-review-dialog {
+        width: 110; max-width: 96%; height: 85%;
+        border: solid $accent; background: $surface; padding: 1 2;
+    }
+    #finding-review-table { height: 1fr; margin: 1 0; }
+    #finding-review-detail { height: 6; overflow-y: auto; }
+    #finding-review-note { margin: 1 0; }
+    #finding-review-actions { height: 3; }
+    #finding-review-actions Button { margin-right: 1; }
+    """
+
+    BINDINGS = [("escape", "close", "Close review")]
+
+    def __init__(self, database_path: Path, evidence: Any, analysis: Any) -> None:
+        super().__init__()
+        self.database_path = database_path
+        self.evidence = evidence
+        self.analysis = analysis
+        self._reviews: dict[str, Any] = {}
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="finding-review-dialog"):
+            yield Label("[ AI FINDINGS · OPERATOR REVIEW ]", classes="panel-title")
+            yield Static(id="finding-review-summary")
+            yield DataTable(id="finding-review-table")
+            yield Static(id="finding-review-detail")
+            yield Input(
+                placeholder="Reason for your verdict (required, 1–500 characters)",
+                id="finding-review-note",
+            )
+            with Horizontal(id="finding-review-actions"):
+                yield Button("Confirm", id="review-confirm", variant="success")
+                yield Button("False positive", id="review-false-positive", variant="warning")
+                yield Button("Needs evidence", id="review-needs-evidence", variant="primary")
+                yield Button("Close", id="review-close")
+
+    def on_mount(self) -> None:
+        table = self.query_one("#finding-review-table", DataTable)
+        table.cursor_type = "row"
+        table.add_column("ID", width=12)
+        table.add_column("AI verdict", width=20)
+        table.add_column("Operator", width=20)
+        table.add_column("Title", width=52)
+        self._reload()
+        table.focus()
+
+    def _reload(self) -> None:
+        from saarthi_ai.analysis.operator_review import (
+            OperatorVerdict,
+            latest_operator_reviews,
+            operator_review_counts,
+        )
+        from saarthi_ai.persistence.database import SaarthiDatabase
+
+        database = SaarthiDatabase(self.database_path)
+        self._reviews = latest_operator_reviews(
+            database,
+            self.evidence.execution_id,
+            self.evidence.evidence_id,
+        )
+        totals = operator_review_counts(database)
+        table = self.query_one("#finding-review-table", DataTable)
+        selected = table.cursor_row
+        table.clear(columns=False)
+        for finding in self.analysis.findings:
+            review = self._reviews.get(finding.finding_id)
+            table.add_row(
+                finding.finding_id,
+                finding.final_disposition.value,
+                review.verdict.value if review else "unreviewed",
+                finding.title,
+            )
+        reviewed = len(self._reviews)
+        self.query_one("#finding-review-summary", Static).update(
+            Text(
+                f"Analysis {self.evidence.evidence_id} · "
+                f"{reviewed}/{len(self.analysis.findings)} reviewed · "
+                "All analyses: "
+                f"{totals[OperatorVerdict.CONFIRMED]} confirmed, "
+                f"{totals[OperatorVerdict.FALSE_POSITIVE]} false positive, "
+                f"{totals[OperatorVerdict.NEEDS_EVIDENCE]} need evidence. "
+                "Select a row, inspect its evidence, enter a reason, then record a verdict."
+            )
+        )
+        if self.analysis.findings:
+            table.move_cursor(row=min(max(selected, 0), len(self.analysis.findings) - 1))
+            self._show_finding(table.cursor_row)
+
+    def _show_finding(self, row: int) -> None:
+        if row < 0 or row >= len(self.analysis.findings):
+            return
+        finding = self.analysis.findings[row]
+        source_lookup = {item.reference_id: item for item in self.analysis.sources}
+        references = [
+            f"{ref}: {source_lookup[ref].summary}"
+            if ref in source_lookup else f"{ref}: source summary unavailable"
+            for ref in finding.evidence_refs
+        ]
+        review = self._reviews.get(finding.finding_id)
+        details = [
+            f"{finding.title} · {finding.severity.value} · AI {finding.final_disposition.value} "
+            f"({finding.confidence}% confidence)",
+            finding.statement,
+            "Evidence: " + ("; ".join(references) or "none cited"),
+            "Missing: " + ("; ".join(finding.missing_evidence) or "none listed"),
+            "Operator: " + (
+                f"{review.verdict.value} — {review.note}" if review else "unreviewed"
+            ),
+        ]
+        self.query_one("#finding-review-detail", Static).update(Text("\n".join(details)))
+
+    def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
+        if event.data_table.id == "finding-review-table":
+            self._show_finding(event.cursor_row)
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        from saarthi_ai.analysis.operator_review import (
+            OperatorVerdict,
+            record_operator_review,
+        )
+        from saarthi_ai.persistence.database import SaarthiDatabase
+
+        if event.button.id == "review-close":
+            self.dismiss()
+            return
+        verdicts = {
+            "review-confirm": OperatorVerdict.CONFIRMED,
+            "review-false-positive": OperatorVerdict.FALSE_POSITIVE,
+            "review-needs-evidence": OperatorVerdict.NEEDS_EVIDENCE,
+        }
+        verdict = verdicts.get(event.button.id or "")
+        if verdict is None:
+            return
+        row = self.query_one("#finding-review-table", DataTable).cursor_row
+        if row < 0 or row >= len(self.analysis.findings):
+            self.notify("Select a finding to review.", severity="warning")
+            return
+        note_input = self.query_one("#finding-review-note", Input)
+        try:
+            record_operator_review(
+                SaarthiDatabase(self.database_path),
+                self.evidence,
+                self.analysis.findings[row].finding_id,
+                verdict,
+                note_input.value,
+            )
+        except (OSError, ValueError, sqlite3.Error) as error:
+            self.notify(f"Review not saved: {error}", severity="error", markup=False)
+            return
+        note_input.value = ""
+        self._reload()
+        self.notify("Operator verdict saved to the audit log.")
+
+    def action_close(self) -> None:
+        self.dismiss()
+
+
 class SaarthiDashboard(App[None]):
     CSS_PATH = "styles.tcss"
     TITLE = "Saarthi OPS"
@@ -5216,6 +5378,7 @@ class SaarthiDashboard(App[None]):
         ("v", "run_validation", "Validate"),
         ("V", "run_validation_dump", "Validate+dump"),
         ("a", "ai_analyze", "AI analyze"),
+        ("f", "review_findings", "Review findings"),
         ("s", "skills", "Skills"),
         ("h", "help", "Help"),
     ]
@@ -5579,11 +5742,32 @@ class SaarthiDashboard(App[None]):
     def action_skills(self) -> None:
         self.push_screen(SkillsScreen())
 
+    def action_review_findings(self) -> None:
+        """Open the latest saved, hash-checked AI findings for human review."""
+
+        from saarthi_ai.analysis.operator_review import latest_quality_analysis
+        from saarthi_ai.persistence.database import SaarthiDatabase
+
+        try:
+            loaded = latest_quality_analysis(
+                SaarthiDatabase(self.repository.database_path)
+            )
+        except (OSError, ValueError, sqlite3.Error) as error:
+            self.notify(f"Could not load AI findings: {error}", severity="error", markup=False)
+            return
+        if loaded is None:
+            self.notify("No saved AI analysis with findings is available yet.")
+            return
+        evidence, analysis = loaded
+        self.push_screen(
+            FindingReviewScreen(self.repository.database_path, evidence, analysis)
+        )
+
     def action_help(self) -> None:
         self.notify(
             "R refresh · U focus URL (Enter = full assessment) · "
             "V run nuclei+sqlmap (Shift+V = +1-row dump) · A AI analyze · "
-            "S skills · P phases · T tools · E evidence · Q quit. "
+            "F review AI findings · S skills · P phases · T tools · E evidence · Q quit. "
             "AI also analyzes automatically during the run.",
             timeout=7,
         )

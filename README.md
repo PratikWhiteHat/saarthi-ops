@@ -131,15 +131,30 @@ internet access; subsequent local AI analysis does not.
 Enabled skills provide bounded, topic-matched reference excerpts to the local
 Ollama model. This is **not model fine-tuning** and does not retrain weights.
 Skills cannot change authorization, tool execution, or evidence requirements;
-Saarthi never executes upstream scripts. A maximum of three relevant enabled
-skills are included per model request. Imported documentation is attributed to
+Saarthi never executes upstream scripts. AI quality analysis supplies up to 12
+enabled skill references to its analyst and reviewer passes within a bounded
+total context, even when condensed facts do not mention their topics. Chat
+requests remain topic-matched. An enabled skill is analysis guidance, not a
+reason to claim a finding or run a test. Imported documentation is attributed to
 its authors and licensed under [CC BY 4.0](https://github.com/elementalsouls/Claude-BugHunter/blob/main/LICENSE-CONTENT);
 the local `ATTRIBUTION.txt` records the pinned source revision.
 
-Saved three-pass AI quality analyses record which skill references were actually
-supplied in each pass, the summaries behind cited evidence IDs, missing evidence,
-and finding-disposition counts. An enabled skill is not necessarily selected,
-and a supplied skill is not proof that it caused a finding.
+Saved AI quality analyses record which skill references were supplied in each
+pass and a separate, evidence-linked assessment for each selected enabled skill.
+The skill review uses small model requests and retries a failed group in smaller
+parts, so one malformed response does not erase other skills' results.
+They also disclose whether consolidated Nuclei/SQLmap evidence was verified,
+missing, or unverified. A missing scanner result is not treated as a negative
+test. The finding view names only skill references explicitly mentioned for
+that finding; a supplied or mentioned skill is not proof that it caused a finding.
+
+Press **F** in the TUI after an AI analysis has produced findings to review the
+latest saved analysis. Select a finding, inspect its cited evidence, enter a
+short reason, and mark it **Confirmed**, **False positive**, or **Needs evidence**.
+Each operator decision is appended to the local audit log; later decisions
+supersede earlier ones in the review display without changing the original AI
+analysis, scanner results, or tool execution. The review screen also shows
+aggregate latest-verdict counts across saved analyses.
 
 ## Authorized use only
 

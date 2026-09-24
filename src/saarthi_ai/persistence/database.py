@@ -532,6 +532,24 @@ class SaarthiDatabase:
 
         return [self._evidence_from_row(row) for row in rows]
 
+    def list_recent_evidence(
+        self,
+        evidence_type: EvidenceType,
+        *,
+        limit: int = 100,
+    ) -> list[EvidenceRecord]:
+        """List recent evidence of one type across executions."""
+
+        if limit < 1 or limit > 1_000:
+            raise PersistenceError("Evidence list limit must be between 1 and 1000.")
+        with self.connect() as connection:
+            rows = connection.execute(
+                """SELECT * FROM evidence WHERE evidence_type = ?
+                   ORDER BY created_at DESC, rowid DESC LIMIT ?""",
+                (evidence_type.value, limit),
+            ).fetchall()
+        return [self._evidence_from_row(row) for row in rows]
+
     def _insert_audit_event(
         self,
         *,

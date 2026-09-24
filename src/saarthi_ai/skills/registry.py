@@ -22,8 +22,9 @@ CONTENT_LICENSE_URL = f"{SOURCE_URL}/blob/{SOURCE_COMMIT}/LICENSE-CONTENT"
 MAX_ARCHIVE_BYTES = 10 * 1024 * 1024
 MAX_MARKDOWN_BYTES = 200 * 1024
 MAX_TOTAL_MARKDOWN_BYTES = 6 * 1024 * 1024
-MAX_SKILLS_PER_PROMPT = 3
+MAX_SKILLS_PER_PROMPT = 12
 MAX_SKILL_CONTEXT_CHARS = 7_500
+MAX_SKILL_DESCRIPTION_CHARS = 160
 
 SKILL_IDS = (
     "apk-redteam-pipeline", "bb-local-toolkit", "bb-methodology", "bug-bounty",
@@ -265,10 +266,16 @@ class SkillStore:
         _selected_ids, context = self.context_selection_for(messages)
         return context
 
-    def context_selection_for(self, messages: object) -> tuple[tuple[str, ...], str]:
-        """Return the exact skill IDs and excerpts selected for one request."""
+    def context_selection_for(
+        self, messages: object, *, include_enabled: bool = False,
+        allowed_skill_ids: tuple[str, ...] | None = None,
+        context_char_limit: int = MAX_SKILL_CONTEXT_CHARS,
+    ) -> tuple[tuple[str, ...], str]:
+        """Return bounded skill references; optionally include enabled analysis guides."""
 
         enabled = self.enabled_ids()
+        if allowed_skill_ids is not None:
+            enabled &= set(allowed_skill_ids)
         if not enabled:
             return (), ""
         query = "\n".join(
@@ -290,22 +297,26 @@ class SkillStore:
             slug_words = _words(skill_id.replace("-", " "))
             score = 4 * len(slug_words & query_words)
             score += 8 * sum(alias in query_lower for alias in _ALIASES.get(skill_id, ()))
-            if score == 0:
+            if score == 0 and not include_enabled:
                 continue
             score += min(3, len(_words(description) & query_words))
             ranked.append((score, skill_id, content))
         ranked.sort(key=lambda item: (-item[0], item[1]))
+        selected = ranked[:MAX_SKILLS_PER_PROMPT]
+        if not selected:
+            return (), ""
+        # Reserve a complete, bounded slot for each selected skill. Truncating the
+        # joined context would silently drop lower-ranked skills from the model.
+        context_budget = min(MAX_SKILL_CONTEXT_CHARS, max(0, context_char_limit))
+        entry_budget = max(0, (context_budget - 2 * (len(selected) - 1)) // len(selected))
         excerpts = []
         selected_ids = []
-        for _, skill_id, content in ranked[:MAX_SKILLS_PER_PROMPT]:
-            excerpt = _reference_excerpt(content, query)
-            description = _description(content)
+        for _, skill_id, content in selected:
+            description = _description(content)[:min(
+                MAX_SKILL_DESCRIPTION_CHARS, max(0, entry_budget - len(skill_id) - 4),
+            )]
+            excerpt_budget = max(0, entry_budget - len(skill_id) - len(description) - 4)
+            excerpt = _reference_excerpt(content, query, limit=min(2_200, excerpt_budget))
             excerpts.append(f"[{skill_id}] {description}\n{excerpt}".strip())
             selected_ids.append(skill_id)
-        context = "\n\n".join(excerpts)[:MAX_SKILL_CONTEXT_CHARS]
-        included_ids = tuple(
-            skill_id
-            for skill_id in selected_ids
-            if re.search(rf"(?m)^\[{re.escape(skill_id)}\]", context)
-        )
-        return included_ids, context
+        return tuple(selected_ids), "\n\n".join(excerpts)

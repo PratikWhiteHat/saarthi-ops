@@ -77,6 +77,7 @@ class RunDigest:
     post_exploitation_summary: str | None = None
     cleanup_summary: str | None = None
     phase4_validation_summary: str | None = None
+    auto_validation_status: str = "unknown"
     source_references: tuple[SourceReference, ...] = ()
 
 
@@ -132,6 +133,30 @@ def _compact_metadata(metadata: dict) -> str:
     return ", ".join(parts)
 
 
+def _verified_auto_validation_payload(
+    orchestration_id: str, evidence_root: Path,
+) -> tuple[dict, str] | None:
+    pattern = str(
+        evidence_root / orchestration_id / "auto-validation" / "*"
+        / "automatic-validation.json"
+    )
+    files = sorted(glob.glob(pattern))
+    if not files:
+        return None
+    try:
+        payload = json.loads(Path(files[-1]).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    supplied = payload.get("evidence_sha256")
+    unsigned = dict(payload)
+    unsigned.pop("evidence_sha256", None)
+    canonical = json.dumps(unsigned, sort_keys=True, default=str).encode("utf-8")
+    actual = hashlib.sha256(canonical).hexdigest()
+    return (payload, actual) if isinstance(supplied, str) and supplied == actual else None
+
+
 def _read_auto_validation(
     orchestration_id: str,
     evidence_root: Path,
@@ -145,21 +170,10 @@ def _read_auto_validation(
         None,
         [],
     )
-    pattern = str(
-        evidence_root
-        / orchestration_id
-        / "auto-validation"
-        / "*"
-        / "automatic-validation.json"
-    )
-    files = sorted(glob.glob(pattern))
-    if not files:
+    verified = _verified_auto_validation_payload(orchestration_id, evidence_root)
+    if verified is None:
         return empty
-
-    try:
-        payload = json.loads(Path(files[-1]).read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return empty
+    payload, _checksum = verified
 
     nuclei = payload.get("nuclei", {}) or {}
     stdout = nuclei.get("stdout", "") or ""
@@ -191,11 +205,15 @@ def _read_auto_validation(
     sqlmap_lines: list[str] = []
     for run in sqlmap_runs:
         std = (run.get("stdout") or "").lower()
-        vulnerable = (
-            "is vulnerable" in std
-            or "injectable" in std
-            or "sqlmap identified" in std
-        )
+        negative = any(marker in std for marker in (
+            "do not appear to be injectable", "does not seem to be injectable",
+            "not injectable",
+        ))
+        vulnerable = not negative and any(marker in std for marker in (
+            "is vulnerable", "appears to be injectable",
+            "sqlmap identified the following injection",
+            "the following injection point",
+        ))
         dbms = ""
         marker = "the back-end dbms is"
         if marker in std:
@@ -261,31 +279,10 @@ def _auto_validation_source_reference(
 ) -> SourceReference | None:
     """Return a stable, integrity-checked source for pre-6E AI review."""
 
-    pattern = str(
-        evidence_root
-        / orchestration_id
-        / "auto-validation"
-        / "*"
-        / "automatic-validation.json"
-    )
-    files = sorted(glob.glob(pattern))
-    if not files:
+    verified = _verified_auto_validation_payload(orchestration_id, evidence_root)
+    if verified is None:
         return None
-    try:
-        payload = json.loads(Path(files[-1]).read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return None
-    if not isinstance(payload, dict):
-        return None
-    supplied = payload.get("evidence_sha256")
-    unsigned = dict(payload)
-    unsigned.pop("evidence_sha256", None)
-    canonical = json.dumps(
-        unsigned, sort_keys=True, default=str
-    ).encode("utf-8")
-    actual = hashlib.sha256(canonical).hexdigest()
-    if not isinstance(supplied, str) or supplied != actual:
-        return None
+    payload, actual = verified
 
     configuration = payload.get("configuration", {}) or {}
     nuclei = payload.get("nuclei", {}) or {}
@@ -297,12 +294,80 @@ def _auto_validation_source_reference(
         f"xsstrike_runs={len(payload.get('xsstrike', []) or [])}; "
         f"verified_findings={len(payload.get('verified_findings', []) or [])}"
     )
+    verified_findings = payload.get("verified_findings", []) or []
+    xsstrike_runs = payload.get("xsstrike", []) or []
+    confirmed_count = sum(
+        1 for item in verified_findings
+        if isinstance(item, dict) and item.get("verdict") == "confirmed"
+    )
+    false_positive_count = sum(
+        1 for item in verified_findings
+        if isinstance(item, dict) and item.get("verdict") == "false_positive"
+    )
+    xsstrike_positive = sum(
+        1 for run in xsstrike_runs
+        if isinstance(run, dict) and run.get("vulnerable") is True
+    )
+    summary += (
+        f"; confirmed={confirmed_count}; false_positive={false_positive_count}"
+        f"; xsstrike_positive={xsstrike_positive}"
+    )
     return SourceReference(
         reference_id=f"evidence-auto-validation-{actual[:16]}",
         phase_code="6C",
         source_type="automatic_validation",
         summary=summary[:500],
     )
+
+
+def _auto_validation_tool_references(
+    orchestration_id: str, evidence_root: Path,
+) -> tuple[SourceReference, ...]:
+    """Expose bounded tool outcomes from the same verified consolidated record."""
+
+    verified = _verified_auto_validation_payload(orchestration_id, evidence_root)
+    if verified is None:
+        return ()
+    payload, checksum = verified
+    findings = payload.get("verified_findings", []) or []
+    records = []
+    for tool in ("nuclei", "sqlmap", "xsstrike"):
+        result = payload.get(tool, {} if tool == "nuclei" else [])
+        runs = [item for item in result if isinstance(item, dict)] if isinstance(
+            result, list
+        ) else []
+        verdicts = Counter(
+            str(item.get("verdict"))
+            for item in findings
+            if isinstance(item, dict) and item.get("source_tool") == tool
+        )
+        if tool == "nuclei":
+            summary = (
+                f"nuclei_exit={result.get('exit_code')}; "
+                f"timed_out={result.get('timed_out')}"
+            ) if isinstance(result, dict) else "nuclei_result=invalid"
+        else:
+            summary = (
+                f"{tool}_runs={len(runs)}; "
+                f"timed_out={sum(item.get('timed_out') is True for item in runs)}"
+            )
+        summary += (
+            f"; verified_confirmed={verdicts['confirmed']}"
+            f"; verified_likely={verdicts['likely']}"
+            f"; verified_false_positive={verdicts['false_positive']}"
+        )
+        if tool == "xsstrike":
+            summary += (
+                f"; reported_vulnerable="
+                f"{sum(item.get('vulnerable') is True for item in runs)}"
+            )
+        records.append(SourceReference(
+            reference_id=f"evidence-auto-{tool}-{checksum[:16]}",
+            phase_code="6C",
+            source_type=f"automatic_validation_{tool}",
+            summary=summary[:500],
+        ))
+    return tuple(records)
 
 
 def _read_wayback_intel(
@@ -652,6 +717,7 @@ def gather_run_digest(
     ghauri_summary = xsstrike_summary = wayback_summary = None
     archive_summary = None
     verified_lines: list[str] = []
+    auto_validation_status = "unknown"
     if isinstance(oid, str) and oid:
         (
             nuclei_summary,
@@ -663,10 +729,20 @@ def gather_run_digest(
         automatic_reference = _auto_validation_source_reference(
             oid, evidence_root
         )
+        auto_validation_files = glob.glob(str(
+            evidence_root / oid / "auto-validation" / "*" / "automatic-validation.json"
+        ))
+        auto_validation_status = (
+            "verified" if automatic_reference is not None else
+            "unverified" if auto_validation_files else "missing"
+        )
         if automatic_reference is not None:
             # Keep the current run's consolidated validation source inside the
             # bounded model context even when earlier phases are very noisy.
-            source_references.insert(0, automatic_reference)
+            source_references[0:0] = [
+                automatic_reference,
+                *_auto_validation_tool_references(oid, evidence_root),
+            ]
         wayback_summary = _read_wayback_intel(oid, evidence_root)
         archive_summary = _read_local_archive(oid, evidence_root)
 
@@ -693,6 +769,7 @@ def gather_run_digest(
         post_exploitation_summary=post_exploitation_summary,
         cleanup_summary=cleanup_summary,
         phase4_validation_summary=phase4_validation_summary,
+        auto_validation_status=auto_validation_status,
         source_references=tuple(source_references[:80]),
     )
 

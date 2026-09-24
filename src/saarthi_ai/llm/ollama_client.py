@@ -66,6 +66,9 @@ class SaarthiOllamaClient:
         system_prompt: str | None = None,
         num_predict: int = 150,
         use_skills: bool = True,
+        include_enabled_skills: bool = False,
+        skill_ids: tuple[str, ...] | None = None,
+        skill_context_char_limit: int = 7_500,
         skill_trace: list[str] | None = None,
     ) -> tuple[str, str | None]:
         """Send a chat request to the configured Ollama model.
@@ -76,11 +79,18 @@ class SaarthiOllamaClient:
         and ``num_predict`` bounds the response length (analysis needs a
         longer answer than interactive chat). ``use_skills=False`` keeps
         strictly aggregate advisory requests free of third-party references.
-        ``skill_trace`` receives IDs actually supplied to this request.
+        ``include_enabled_skills`` makes enabled references available to the
+        quality-analysis passes even when their topic was not mentioned in the
+        condensed facts. ``skill_trace`` records IDs actually supplied.
         """
 
         selected_skills, skill_context = (
-            self.skill_store.context_selection_for(messages)
+            self.skill_store.context_selection_for(
+                messages,
+                include_enabled=include_enabled_skills,
+                allowed_skill_ids=skill_ids,
+                context_char_limit=skill_context_char_limit,
+            )
             if use_skills else ((), "")
         )
         if skill_trace is not None:

@@ -100,6 +100,56 @@ def test_skills_require_import_before_enable(tmp_path):
         raise AssertionError("An absent skill must not be enabled")
 
 
+def test_twelve_relevant_skills_fit_without_truncating_selected_references(tmp_path):
+    store = registry.SkillStore(tmp_path / "skills")
+    skill_ids = tuple(registry._ALIASES)[:13]
+    for skill_id in skill_ids:
+        path = store.skill_path(skill_id)
+        path.parent.mkdir(parents=True)
+        path.write_text(
+            f"---\nname: {skill_id}\ndescription: Review {skill_id} observations.\n---\n"
+            f"## Signals\n{('Cite independent evidence before drawing conclusions. ' * 50)}\n"
+        )
+        store.set_enabled(skill_id, True)
+
+    query = "Review " + " ".join(skill_ids)
+    selected, context = store.context_selection_for([Message(role="user", content=query)])
+    assert len(selected) == registry.MAX_SKILLS_PER_PROMPT == 12
+    assert len(context) <= registry.MAX_SKILL_CONTEXT_CHARS
+    assert context.count("## Signals") == 12
+    for skill_id in selected:
+        assert context.count(f"[{skill_id}]") == 1
+    assert "Cite independent evidence" in context.rsplit(f"[{selected[-1]}]", 1)[1]
+    batch_ids = skill_ids[:3]
+    batch_selected, batch_context = store.context_selection_for(
+        [Message(role="user", content=query)],
+        include_enabled=True,
+        allowed_skill_ids=batch_ids,
+        context_char_limit=2_400,
+    )
+    assert set(batch_selected) == set(batch_ids)
+    assert len(batch_context) <= 2_400
+    assert all(f"[{skill_id}]" not in batch_context for skill_id in skill_ids[3:])
+
+
+def test_quality_analysis_can_include_enabled_skills_without_topic_match(tmp_path):
+    store = registry.SkillStore(tmp_path / "skills")
+    for skill_id in ("hunt-sqli", "hunt-xss"):
+        path = store.skill_path(skill_id)
+        path.parent.mkdir(parents=True)
+        path.write_text(
+            f"---\nname: {skill_id}\ndescription: Review {skill_id} evidence.\n---\n"
+            "## Signals\nSeparate an observed surface from a confirmed vulnerability.\n"
+        )
+        store.set_enabled(skill_id, True)
+
+    messages = [Message(role="user", content="Review the clickjacking evidence")]
+    assert store.context_selection_for(messages) == ((), "")
+    selected, context = store.context_selection_for(messages, include_enabled=True)
+    assert selected == ("hunt-sqli", "hunt-xss")
+    assert "[hunt-sqli]" in context and "[hunt-xss]" in context
+
+
 @pytest.mark.asyncio
 async def test_skills_screen_opens_from_dashboard(tmp_path, monkeypatch):
     monkeypatch.setattr(registry, "skills_dir", lambda: tmp_path / "skills")

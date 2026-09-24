@@ -27,11 +27,17 @@ from saarthi_ai.persistence.models import (
     EvidenceType,
 )
 from saarthi_ai.schemas.chat import Message
+from saarthi_ai.skills.registry import MAX_SKILLS_PER_PROMPT
 
 DEFAULT_QUALITY_EVIDENCE_ROOT = Path("evidence/ai-quality")
 MAX_SOURCE_REFERENCES = 80
 MAX_FACTS = 40
 MAX_CANDIDATE_FINDINGS = 20
+EXTRACTOR_BATCH_SIZE = 10
+MAX_EXTRACTOR_BATCH_REQUESTS = 12
+MAX_FULL_EXTRACTOR_SOURCES = 20
+SKILL_COVERAGE_BATCH_SIZE = 3
+SKILL_COVERAGE_CONTEXT_CHARS = 2_400
 
 _SEVERITY_RANK = {
     "info": 0,
@@ -52,6 +58,7 @@ _SEQUENCE_FIELDS = {
     "missing_evidence",
     "supported_evidence_refs",
     "contradictory_evidence_refs",
+    "skills",
 }
 
 
@@ -162,6 +169,26 @@ class SkillUse(BaseModel):
     skill_ids: tuple[str, ...] = ()
 
 
+class SkillCoverageStatus(StrEnum):
+    EVIDENCE_FOUND = "evidence_found"
+    INSUFFICIENT_EVIDENCE = "insufficient_evidence"
+    NOT_APPLICABLE = "not_applicable"
+    NOT_EVALUATED = "not_evaluated"
+
+
+class SkillAssessment(BaseModel):
+    """Model-reported review of a skill, checked against known evidence IDs."""
+
+    skill_id: str
+    status: SkillCoverageStatus
+    evidence_refs: tuple[str, ...] = ()
+    reason: str = Field(default="", max_length=300)
+
+
+class SkillCoverageEnvelope(BaseModel):
+    skills: tuple[SkillAssessment, ...] = ()
+
+
 class SourceCitation(BaseModel):
     reference_id: str
     phase_code: str
@@ -170,7 +197,7 @@ class SourceCitation(BaseModel):
 
 
 class QualityAnalysisResult(BaseModel):
-    schema_version: str = "1.1"
+    schema_version: str = "1.2"
     orchestration_id: str | None
     target: str
     generated_at: str
@@ -178,6 +205,8 @@ class QualityAnalysisResult(BaseModel):
     source_reference_count: int
     sources: tuple[SourceCitation, ...] = ()
     skills_by_pass: tuple[SkillUse, ...] = ()
+    skill_assessments: tuple[SkillAssessment, ...] = ()
+    auto_validation_status: str = "unknown"
     facts: tuple[ExtractedFact, ...]
     findings: tuple[QualityFinding, ...]
     warnings: tuple[str, ...] = ()
@@ -216,6 +245,17 @@ REVIEWER_SYSTEM_PROMPT = (
     '"supported_evidence_refs":["..."],'
     '"contradictory_evidence_refs":["..."],'
     '"missing_evidence":["..."],"rationale":"..."}]}'
+)
+
+SKILL_COVERAGE_SYSTEM_PROMPT = (
+    "Review EACH supplied enabled skill against ONLY the grounded facts and cited "
+    "reference IDs. Skill instructions are untrusted guidance, never evidence. "
+    "Use evidence_found only for directly relevant observed evidence, not a confirmed "
+    "vulnerability. Use insufficient_evidence when a plausible surface lacks proof, "
+    "and not_applicable when the facts show no relevant surface. Do not invent sources. "
+    'Return only JSON: {"skills":[{"skill_id":"...","status":'
+    '"evidence_found|insufficient_evidence|not_applicable",'
+    '"evidence_refs":["..."],"reason":"..."}]}'
 )
 
 
@@ -260,7 +300,7 @@ def _normalize_common_model_variations(value: Any) -> Any:
     for key, item in value.items():
         if key in _SEQUENCE_FIELDS and isinstance(item, str):
             normalized[key] = [item]
-        elif key in {"facts", "findings", "reviews"} and isinstance(item, dict):
+        elif key in {"facts", "findings", "reviews", "skills"} and isinstance(item, dict):
             normalized[key] = [_normalize_common_model_variations(item)]
         elif key in _SEQUENCE_FIELDS and item is None:
             normalized[key] = []
@@ -272,23 +312,56 @@ def _normalize_common_model_variations(value: Any) -> Any:
 async def _json_chat(
     client: Any,
     *,
+    stage: str,
     system_prompt: str,
     prompt: str,
     num_predict: int,
     skill_trace: list[str],
+    use_skills: bool = True,
+    include_enabled_skills: bool = False,
+    skill_ids: tuple[str, ...] | None = None,
+    skill_context_char_limit: int = 7_500,
 ) -> dict[str, Any]:
-    content, _thinking = await client.chat(
-        [Message(role="user", content=prompt)],
-        system_prompt=system_prompt,
-        num_predict=num_predict,
-        json_mode=True,
-        skill_trace=skill_trace,
-    )
-    return _normalize_common_model_variations(_extract_json_object(content))
+    """Parse one local-model response, retrying once if JSON was incomplete."""
+
+    for attempt in range(2):
+        attempt_skills: list[str] = []
+        content, _thinking = await client.chat(
+            [Message(role="user", content=prompt)],
+            system_prompt=(
+                system_prompt if attempt == 0 else
+                system_prompt + " Return a compact, complete JSON object. "
+                "Use short statements and omit unsupported items. "
+                "Do not include prose or a code fence."
+            ),
+            num_predict=num_predict if attempt == 0 else min(num_predict * 2, 4800),
+            json_mode=True,
+            skill_trace=attempt_skills,
+            use_skills=use_skills,
+            include_enabled_skills=include_enabled_skills,
+            skill_ids=skill_ids,
+            skill_context_char_limit=skill_context_char_limit,
+        )
+        skill_trace.extend(
+            skill_id for skill_id in attempt_skills if skill_id not in skill_trace
+        )
+        try:
+            return _normalize_common_model_variations(_extract_json_object(content))
+        except QualityAnalysisError as exc:
+            if attempt == 1:
+                raise QualityAnalysisError(
+                    f"Local model returned invalid JSON for the {stage} stage "
+                    "after one larger-output retry. No result was saved."
+                ) from exc
+    raise AssertionError("Unreachable JSON retry state")
 
 
 def _source_prompt(digest: Any) -> str:
     references = tuple(getattr(digest, "source_references", ()))[:MAX_SOURCE_REFERENCES]
+    return _source_prompt_for(digest, references)
+
+
+def _source_prompt_for(digest: Any, references: tuple[SourceReference, ...]) -> str:
     lines = [
         f"Target: {digest.target}",
         f"Assessment state: {digest.parent_state}",
@@ -309,7 +382,10 @@ def _facts_prompt(digest: Any, facts: tuple[ExtractedFact, ...]) -> str:
         [
             f"Target: {digest.target}",
             "Grounded facts:",
-            json.dumps([fact.model_dump(mode="json") for fact in facts], indent=2),
+            json.dumps(
+                [fact.model_dump(mode="json") for fact in facts],
+                separators=(",", ":"),
+            ),
             "Propose only evidence-grounded security findings.",
         ]
     )
@@ -324,12 +400,140 @@ def _review_prompt(
         [
             f"Target: {digest.target}",
             "Grounded facts:",
-            json.dumps([fact.model_dump(mode="json") for fact in facts], indent=2),
+            json.dumps(
+                [fact.model_dump(mode="json") for fact in facts],
+                separators=(",", ":"),
+            ),
             "Proposed findings:",
-            json.dumps([item.model_dump(mode="json") for item in findings], indent=2),
+            json.dumps(
+                [item.model_dump(mode="json") for item in findings],
+                separators=(",", ":"),
+            ),
             "Critically review every proposed finding.",
         ]
     )
+
+
+def _skill_coverage_prompt(
+    digest: Any, facts: tuple[ExtractedFact, ...], skill_ids: tuple[str, ...],
+) -> str:
+    return "\n".join([
+        f"Target: {digest.target}",
+        f"Automatic validation evidence: {getattr(digest, 'auto_validation_status', 'unknown')}",
+        "Enabled skills to review: " + ", ".join(skill_ids),
+        "Grounded facts with reference IDs:",
+        json.dumps([fact.model_dump(mode="json") for fact in facts], separators=(",", ":")),
+        "Return one concise assessment per listed skill. A supplied skill is not proof.",
+    ])
+
+
+def _resolve_reference(ref: str, aliases: dict[str, str]) -> str | None:
+    """Accept a model's display brackets only when the exact ID is known."""
+
+    value = ref.strip()
+    if value.startswith("[") and value.endswith("]"):
+        value = value[1:-1].strip()
+    return aliases.get(value)
+
+
+def _normalize_skill_assessments(
+    envelope: SkillCoverageEnvelope,
+    skill_ids: tuple[str, ...],
+    reference_aliases: dict[str, str],
+) -> tuple[tuple[SkillAssessment, ...], list[str]]:
+    accepted: dict[str, SkillAssessment] = {}
+    warnings: list[str] = []
+    allowed = set(skill_ids)
+    for item in envelope.skills:
+        if item.skill_id not in allowed or item.skill_id in accepted:
+            continue
+        resolved = tuple(dict.fromkeys(
+            canonical for ref in item.evidence_refs
+            if (canonical := _resolve_reference(ref, reference_aliases)) is not None
+        ))
+        invalid = [ref for ref in item.evidence_refs
+                   if _resolve_reference(ref, reference_aliases) is None]
+        if invalid:
+            warnings.append(
+                f"Skill {item.skill_id} discarded invalid citation(s): {', '.join(invalid)}"
+            )
+        status = item.status
+        if status is SkillCoverageStatus.EVIDENCE_FOUND and not resolved:
+            status = SkillCoverageStatus.INSUFFICIENT_EVIDENCE
+            warnings.append(f"Skill {item.skill_id} had no grounded evidence citation.")
+        accepted[item.skill_id] = item.model_copy(update={
+            "status": status, "evidence_refs": resolved,
+        })
+    for skill_id in skill_ids:
+        if skill_id not in accepted:
+            accepted[skill_id] = SkillAssessment(
+                skill_id=skill_id,
+                status=SkillCoverageStatus.NOT_EVALUATED,
+                reason="The model did not return a valid assessment for this skill.",
+            )
+    return tuple(accepted[skill_id] for skill_id in skill_ids), warnings
+
+
+async def _review_enabled_skills(
+    client: Any,
+    digest: Any,
+    facts: tuple[ExtractedFact, ...],
+    skill_ids: tuple[str, ...],
+    reference_aliases: dict[str, str],
+    skill_trace: list[str],
+) -> tuple[tuple[SkillAssessment, ...], list[str]]:
+    """Review small skill groups; an invalid response cannot erase other groups."""
+
+    async def review_batch(
+        batch: tuple[str, ...],
+    ) -> tuple[tuple[SkillAssessment, ...], list[str]]:
+        try:
+            envelope = SkillCoverageEnvelope.model_validate(await _json_chat(
+                client,
+                stage="skill coverage",
+                system_prompt=SKILL_COVERAGE_SYSTEM_PROMPT,
+                prompt=_skill_coverage_prompt(digest, facts, batch),
+                num_predict=900,
+                skill_trace=skill_trace,
+                include_enabled_skills=True,
+                skill_ids=batch,
+                skill_context_char_limit=SKILL_COVERAGE_CONTEXT_CHARS,
+            ))
+        except (QualityAnalysisError, ValidationError):
+            if len(batch) > 1:
+                middle = len(batch) // 2
+                left, left_warnings = await review_batch(batch[:middle])
+                right, right_warnings = await review_batch(batch[middle:])
+                return left + right, left_warnings + right_warnings
+            return (
+                (SkillAssessment(
+                    skill_id=batch[0],
+                    status=SkillCoverageStatus.NOT_EVALUATED,
+                    reason="The local model did not return valid structured output.",
+                ),),
+                [f"Skill {batch[0]} review returned invalid structured output."],
+            )
+        assessments, warnings = _normalize_skill_assessments(
+            envelope, batch, reference_aliases,
+        )
+        if len(batch) > 1:
+            by_id = {item.skill_id: item for item in assessments}
+            for item in assessments:
+                if item.status is SkillCoverageStatus.NOT_EVALUATED:
+                    retried, retry_warnings = await review_batch((item.skill_id,))
+                    by_id[item.skill_id] = retried[0]
+                    warnings.extend(retry_warnings)
+            assessments = tuple(by_id[skill_id] for skill_id in batch)
+        return assessments, warnings
+
+    assessments: list[SkillAssessment] = []
+    warnings: list[str] = []
+    for start in range(0, len(skill_ids), SKILL_COVERAGE_BATCH_SIZE):
+        batch = skill_ids[start : start + SKILL_COVERAGE_BATCH_SIZE]
+        reviewed, batch_warnings = await review_batch(batch)
+        assessments.extend(reviewed)
+        warnings.extend(batch_warnings)
+    return tuple(assessments), warnings
 
 
 def _normalize_facts(
@@ -343,13 +547,14 @@ def _normalize_facts(
         fact_id = raw.fact_id.strip()
         cited = tuple(
             dict.fromkeys(
-                reference_aliases[ref]
+                resolved
                 for ref in raw.evidence_refs
-                if ref in reference_aliases
+                if (resolved := _resolve_reference(ref, reference_aliases)) is not None
             )
         )
         invalid = sorted(
-            ref for ref in set(raw.evidence_refs) if ref not in reference_aliases
+            ref for ref in set(raw.evidence_refs)
+            if _resolve_reference(ref, reference_aliases) is None
         )
         if invalid:
             warnings.append(f"Fact {fact_id} discarded invalid citation(s): {', '.join(invalid)}")
@@ -358,6 +563,109 @@ def _normalize_facts(
             continue
         seen.add(fact_id)
         facts.append(raw.model_copy(update={"fact_id": fact_id, "evidence_refs": cited}))
+    return tuple(facts), warnings
+
+
+async def _extract_facts(
+    client: Any,
+    digest: Any,
+    references: tuple[SourceReference, ...],
+    reference_aliases: dict[str, str],
+    skill_trace: list[str],
+) -> tuple[tuple[ExtractedFact, ...], list[str]]:
+    """Try the full context, then shrink failed requests without inventing facts."""
+
+    if len(references) <= MAX_FULL_EXTRACTOR_SOURCES:
+        try:
+            envelope = ExtractionEnvelope.model_validate(
+                await _json_chat(
+                    client,
+                    stage="extractor",
+                    system_prompt=EXTRACTOR_SYSTEM_PROMPT,
+                    prompt=_source_prompt_for(digest, references),
+                    num_predict=1800,
+                    skill_trace=skill_trace,
+                    use_skills=False,
+                )
+            )
+            return _normalize_facts(envelope, reference_aliases)
+        except (QualityAnalysisError, ValidationError) as exc:
+            if len(references) < 2:
+                raise QualityAnalysisError(
+                    "Local model could not produce valid extractor JSON. "
+                    "No result was saved."
+                ) from exc
+        warnings = [
+            "Full-context extraction returned invalid structured output; "
+            "retried smaller evidence batches."
+        ]
+    else:
+        warnings = [
+            "Evidence exceeded the full-context extractor limit; "
+            "used smaller evidence batches."
+        ]
+    facts: list[ExtractedFact] = []
+    covered = 0
+    batch_requests = 0
+
+    async def extract_batch(batch: tuple[SourceReference, ...]) -> None:
+        nonlocal covered, batch_requests
+        if batch_requests >= MAX_EXTRACTOR_BATCH_REQUESTS:
+            return
+        batch_requests += 1
+        batch_ids = {item.reference_id for item in batch}
+        aliases = {
+            alias: reference_id
+            for alias, reference_id in reference_aliases.items()
+            if reference_id in batch_ids
+        }
+        try:
+            envelope = ExtractionEnvelope.model_validate(
+                await _json_chat(
+                    client,
+                    stage="extractor batch",
+                    system_prompt=EXTRACTOR_SYSTEM_PROMPT,
+                    prompt=(
+                        _source_prompt_for(digest, batch)
+                        + "\nExtract at most four concise, directly observed facts."
+                    ),
+                    num_predict=1000,
+                    skill_trace=skill_trace,
+                    use_skills=False,
+                )
+            )
+        except (QualityAnalysisError, ValidationError):
+            if len(batch) > 1:
+                midpoint = len(batch) // 2
+                await extract_batch(batch[:midpoint])
+                await extract_batch(batch[midpoint:])
+            else:
+                warnings.append(
+                    f"Extractor could not review source {batch[0].reference_id}; "
+                    "coverage is incomplete."
+                )
+            return
+        covered += len(batch)
+        extracted, batch_warnings = _normalize_facts(envelope, aliases)
+        warnings.extend(batch_warnings)
+        for item in extracted[:4]:
+            if len(facts) >= MAX_FACTS:
+                warnings.append("Extractor fact limit reached; later facts were omitted.")
+                return
+            facts.append(item.model_copy(update={"fact_id": f"F{len(facts) + 1}"}))
+
+    for start in range(0, len(references), EXTRACTOR_BATCH_SIZE):
+        await extract_batch(references[start : start + EXTRACTOR_BATCH_SIZE])
+    if covered == 0:
+        raise QualityAnalysisError(
+            "Local model could not produce valid extractor JSON within "
+            "bounded evidence-batch retries. No result was saved."
+        )
+    if covered < len(references):
+        warnings.append(
+            f"Extractor reviewed {covered}/{len(references)} source references; "
+            "coverage is incomplete."
+        )
     return tuple(facts), warnings
 
 
@@ -379,15 +687,16 @@ def _normalize_candidates(
         evidence_refs = tuple(
             dict.fromkeys(
                 [
-                    reference_aliases[ref]
+                    resolved
                     for ref in raw.evidence_refs
-                    if ref in reference_aliases
+                    if (resolved := _resolve_reference(ref, reference_aliases)) is not None
                 ]
                 + inherited
             )
         )
         invalid = sorted(
-            ref for ref in set(raw.evidence_refs) if ref not in reference_aliases
+            ref for ref in set(raw.evidence_refs)
+            if _resolve_reference(ref, reference_aliases) is None
         )
         if invalid:
             warnings.append(
@@ -472,16 +781,16 @@ def _finalize_findings(
         )
         supported_refs = tuple(
             dict.fromkeys(
-                reference_aliases[ref]
+                resolved
                 for ref in (*candidate.evidence_refs, *review.supported_evidence_refs)
-                if ref in reference_aliases
+                if (resolved := _resolve_reference(ref, reference_aliases)) is not None
             )
         )
         contradictory_refs = tuple(
             dict.fromkeys(
-                reference_aliases[ref]
+                resolved
                 for ref in review.contradictory_evidence_refs
-                if ref in reference_aliases
+                if (resolved := _resolve_reference(ref, reference_aliases)) is not None
             )
         )
         normalized_candidate = candidate.model_copy(update={"evidence_refs": supported_refs})
@@ -546,26 +855,22 @@ async def analyze_run_quality(client: Any, digest: Any) -> QualityAnalysisResult
     extractor_skills: list[str] = []
     analyst_skills: list[str] = []
     reviewer_skills: list[str] = []
+    coverage_skills: list[str] = []
 
     try:
-        extraction = ExtractionEnvelope.model_validate(
-            await _json_chat(
-                client,
-                system_prompt=EXTRACTOR_SYSTEM_PROMPT,
-                prompt=_source_prompt(digest),
-                num_predict=700,
-                skill_trace=extractor_skills,
-            )
+        facts, warnings = await _extract_facts(
+            client, digest, references, reference_aliases, extractor_skills
         )
-        facts, warnings = _normalize_facts(extraction, reference_aliases)
 
         analysis = AnalysisEnvelope.model_validate(
             await _json_chat(
                 client,
+                stage="analyst",
                 system_prompt=ANALYST_QUALITY_SYSTEM_PROMPT,
                 prompt=_facts_prompt(digest, facts),
-                num_predict=900,
+                num_predict=2400,
                 skill_trace=analyst_skills,
+                include_enabled_skills=True,
             )
         )
         candidates, candidate_warnings = _normalize_candidates(
@@ -578,10 +883,12 @@ async def analyze_run_quality(client: Any, digest: Any) -> QualityAnalysisResult
         review = ReviewEnvelope.model_validate(
             await _json_chat(
                 client,
+                stage="reviewer",
                 system_prompt=REVIEWER_SYSTEM_PROMPT,
                 prompt=_review_prompt(digest, facts, candidates),
-                num_predict=700,
+                num_predict=1800,
                 skill_trace=reviewer_skills,
+                include_enabled_skills=True,
             )
         )
     except ValidationError as exc:
@@ -589,11 +896,27 @@ async def analyze_run_quality(client: Any, digest: Any) -> QualityAnalysisResult
             f"Local model returned an invalid analysis schema: {exc}"
         ) from exc
 
+    auto_validation_status = str(getattr(digest, "auto_validation_status", "unknown"))
+    if auto_validation_status in {"missing", "unverified"}:
+        warnings.append(
+            "Consolidated Nuclei/SQLmap validation evidence is "
+            f"{auto_validation_status}; scanner coverage cannot be confirmed."
+        )
+    skill_ids = tuple(dict.fromkeys((*analyst_skills, *reviewer_skills)))[:MAX_SKILLS_PER_PROMPT]
+    skill_assessments: tuple[SkillAssessment, ...] = ()
+    if skill_ids:
+        skill_assessments, coverage_warnings = await _review_enabled_skills(
+            client, digest, facts, skill_ids, reference_aliases, coverage_skills,
+        )
+        warnings.extend(coverage_warnings)
+
     return QualityAnalysisResult(
         orchestration_id=getattr(digest, "orchestration_id", None),
         target=str(digest.target),
         generated_at=datetime.now(UTC).isoformat(),
+        pass_count=4 if skill_ids else 3,
         source_reference_count=len(references),
+        auto_validation_status=auto_validation_status,
         sources=tuple(
             SourceCitation(
                 reference_id=item.reference_id,
@@ -607,7 +930,10 @@ async def analyze_run_quality(client: Any, digest: Any) -> QualityAnalysisResult
             SkillUse(pass_name="extractor", skill_ids=tuple(extractor_skills)),
             SkillUse(pass_name="analyst", skill_ids=tuple(analyst_skills)),
             SkillUse(pass_name="reviewer", skill_ids=tuple(reviewer_skills)),
+            *( (SkillUse(pass_name="skill_coverage", skill_ids=tuple(coverage_skills)),)
+               if skill_ids else () ),
         ),
+        skill_assessments=skill_assessments,
         facts=facts,
         findings=_finalize_findings(
             candidates,
@@ -633,7 +959,7 @@ def render_quality_analysis(result: QualityAnalysisResult) -> str:
         for disposition in FinalDisposition
     }
     lines = [
-        "AI QUALITY ANALYSIS — extractor → analyst → critical reviewer",
+        "AI QUALITY ANALYSIS — extractor → analyst → critical reviewer → skill review",
         (
             f"Grounded facts: {len(result.facts)} | Findings: {len(result.findings)} | "
             f"Sources: {result.source_reference_count}"
@@ -647,12 +973,31 @@ def render_quality_analysis(result: QualityAnalysisResult) -> str:
         "Skills supplied to model (not proof of influence): "
         + "; ".join(
             f"{name}={', '.join(skill_by_pass.get(name, ())) or 'none'}"
-            for name in ("extractor", "analyst", "reviewer")
+            for name in ("extractor", "analyst", "reviewer", "skill_coverage")
         ),
+        f"Consolidated scanner evidence: {result.auto_validation_status}",
     ]
+    if result.skill_assessments:
+        lines.extend(["", "Enabled-skill evidence review (model assessment, not proof):"])
+        for assessment in result.skill_assessments:
+            lines.append(
+                f"- {assessment.skill_id}: {assessment.status.value}; "
+                f"evidence={', '.join(assessment.evidence_refs) or 'none'}; "
+                f"{assessment.reason or 'No reason returned.'}"
+            )
+    if any("coverage is incomplete" in warning for warning in result.warnings):
+        lines.insert(1, "WARNING: evidence extraction coverage is incomplete.")
     if not result.findings:
         lines.append("No evidence-grounded security finding was produced.")
     for finding in result.findings:
+        supplied_ids = tuple(dict.fromkeys(
+            (*skill_by_pass.get("analyst", ()), *skill_by_pass.get("reviewer", ()))
+        ))
+        finding_text = "\n".join((finding.statement, finding.reviewer_rationale))
+        mentioned_ids = tuple(
+            skill_id for skill_id in supplied_ids
+            if re.search(rf"\[{re.escape(skill_id)}\]", finding_text)
+        )
         lines.extend(
             [
                 "",
@@ -663,14 +1008,8 @@ def render_quality_analysis(result: QualityAnalysisResult) -> str:
                 ),
                 finding.statement,
                 "Evidence: " + ", ".join(finding.evidence_refs),
-                "Skill context supplied: "
-                + ", ".join(
-                    dict.fromkeys(
-                        (*skill_by_pass.get("analyst", ()), *skill_by_pass.get("reviewer", ()))
-                    )
-                )
-                if skill_by_pass.get("analyst") or skill_by_pass.get("reviewer")
-                else "Skill context supplied: none",
+                "Skill refs mentioned for this finding (model claim): "
+                + (", ".join(mentioned_ids) or "none"),
                 f"Reviewer: {finding.review_disposition.value} — "
                 f"{finding.reviewer_rationale or 'no rationale returned'}",
             ]
@@ -728,6 +1067,11 @@ def persist_quality_analysis(
                 "fact_count": len(result.facts),
                 "finding_count": len(result.findings),
                 "warning_count": len(result.warnings),
+                "auto_validation_status": result.auto_validation_status,
+                "skill_assessment_count": len(result.skill_assessments),
+                "skill_assessment_statuses": {
+                    item.skill_id: item.status.value for item in result.skill_assessments
+                },
                 "skill_ids_supplied": sorted({
                     skill_id
                     for use in result.skills_by_pass
