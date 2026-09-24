@@ -31,6 +31,14 @@ class Settings(BaseSettings):
         ),
     )
 
+    skills_dir: str = Field(
+        default="",
+        description=(
+            "Local directory for optional, operator-enabled analysis skills. "
+            "Empty resolves to ~/.saarthi/skills."
+        ),
+    )
+
     # Report identity — vendor-neutral placeholders filled into the report
     # template so no company/author is hard-coded in the repo.
     report_company: str = Field(
@@ -86,6 +94,15 @@ def knowledge_dir() -> Path:
     if configured:
         return Path(configured).expanduser()
     return Path.home() / ".saarthi" / "knowledge"
+
+
+def skills_dir() -> Path:
+    """Resolve the local analysis-skill cache; no skill is enabled by default."""
+
+    configured = get_settings().skills_dir.strip()
+    if configured:
+        return Path(configured).expanduser()
+    return Path.home() / ".saarthi" / "skills"
 
 
 def tls_verify() -> bool:

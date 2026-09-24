@@ -12,6 +12,7 @@ from urllib.parse import urlsplit
 
 from rich.markup import escape as escape_markup
 from rich.text import Text
+from textual import work
 from textual.app import App, ComposeResult
 from textual.containers import Grid, Horizontal, Vertical
 from textual.reactive import reactive
@@ -32,6 +33,7 @@ from saarthi_ai.controlled_validation.validator_registry import (
     validator_module_tool_rows,
 )
 from saarthi_ai.execution.tool_runner import terminate_active_tools
+from saarthi_ai.skills import SkillStore
 
 DEFAULT_DB_PATH = Path.home() / ".saarthi" / "saarthi.db"
 
@@ -5063,6 +5065,140 @@ class ConfirmScanScreen(ModalScreen[bool]):
         self.dismiss(False)
 
 
+class SkillsScreen(ModalScreen[None]):
+    """Operator-managed analysis references; no skill grants execution authority."""
+
+    CSS = """
+    SkillsScreen {
+        align: center middle;
+        background: $background 75%;
+    }
+    #skills-dialog {
+        width: 110;
+        max-width: 96%;
+        height: 85%;
+        border: solid $accent;
+        background: $surface;
+        padding: 1 2;
+    }
+    #skills-table {
+        height: 1fr;
+        margin: 1 0;
+    }
+    #skills-actions {
+        height: 3;
+    }
+    #skills-actions Button {
+        margin-right: 1;
+    }
+    """
+
+    BINDINGS = [
+        ("escape", "close", "Close"),
+        ("space", "toggle", "Enable/disable"),
+        ("i", "import_bundle", "Import all"),
+    ]
+
+    def __init__(self, store: SkillStore | None = None) -> None:
+        super().__init__()
+        self.store = store or SkillStore()
+        self._syncing = False
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="skills-dialog"):
+            yield Label("[ SKILLS · LOCAL AI ANALYSIS ]", classes="panel-title")
+            yield Static(
+                "83 upstream references · all disabled by default · select a row and press "
+                "Space to toggle. Enabled skills guide evidence analysis only; "
+                "they do not run tools.",
+            )
+            yield DataTable(id="skills-table")
+            yield Static(id="skills-status")
+            with Horizontal(id="skills-actions"):
+                yield Button("Import 83 skills", id="skills-import", variant="primary")
+                yield Button("Close", id="skills-close")
+
+    def on_mount(self) -> None:
+        table = self.query_one("#skills-table", DataTable)
+        table.add_column("Skill", width=30)
+        table.add_column("State", width=15)
+        table.add_column("Purpose", width=60)
+        table.cursor_type = "row"
+        table.zebra_stripes = True
+        self._reload()
+        table.focus()
+
+    def _reload(self) -> None:
+        table = self.query_one("#skills-table", DataTable)
+        cursor = table.cursor_row
+        table.clear()
+        records = self.store.list_skills()
+        for record in records:
+            state = "ENABLED" if record.enabled else (
+                "DISABLED" if record.installed else "NOT INSTALLED"
+            )
+            table.add_row(record.skill_id, state, record.description[:75])
+        if records:
+            table.move_cursor(row=min(cursor, len(records) - 1))
+        installed = sum(record.installed for record in records)
+        enabled = sum(record.enabled for record in records)
+        self.query_one("#skills-status", Static).update(
+            f"Installed: {installed}/{len(records)} · Enabled: {enabled} · "
+            "Relevant enabled references are selected per AI request (max 3)."
+        )
+
+    def action_toggle(self) -> None:
+        table = self.query_one("#skills-table", DataTable)
+        try:
+            skill_id = str(table.get_row_at(table.cursor_row)[0])
+            record = next(item for item in self.store.list_skills() if item.skill_id == skill_id)
+            self.store.set_enabled(skill_id, not record.enabled)
+        except (IndexError, StopIteration, ValueError) as exc:
+            self.notify(str(exc) or "Select a skill first.", severity="warning")
+            return
+        self._reload()
+
+    def on_data_table_row_selected(self, _event: DataTable.RowSelected) -> None:
+        self.action_toggle()
+
+    def action_import_bundle(self) -> None:
+        if self._syncing:
+            return
+        self._syncing = True
+        self.query_one("#skills-status", Static).update(
+            "Importing pinned skill markdown from GitHub… no scripts will be installed."
+        )
+        self._download_bundle()
+
+    @work(thread=True)
+    def _download_bundle(self) -> None:
+        try:
+            count = self.store.install_pinned_bundle()
+        except Exception as exc:
+            self.call_from_thread(self._finish_import, 0, str(exc))
+            return
+        self.call_from_thread(self._finish_import, count, None)
+
+    def _finish_import(self, count: int, error: str | None) -> None:
+        self._syncing = False
+        if not self.is_mounted:
+            return
+        if error:
+            self.notify(f"Skill import failed: {error}", severity="error")
+        else:
+            self.notify(f"Imported {count} local analysis skills; existing toggles retained.")
+        self._reload()
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "skills-import":
+            self.action_import_bundle()
+        elif event.button.id == "skills-close":
+            self.action_close()
+
+    def action_close(self) -> None:
+        self.dismiss()
+
+
 class SaarthiDashboard(App[None]):
     CSS_PATH = "styles.tcss"
     TITLE = "Saarthi OPS"
@@ -5080,6 +5216,7 @@ class SaarthiDashboard(App[None]):
         ("v", "run_validation", "Validate"),
         ("V", "run_validation_dump", "Validate+dump"),
         ("a", "ai_analyze", "AI analyze"),
+        ("s", "skills", "Skills"),
         ("h", "help", "Help"),
     ]
 
@@ -5439,11 +5576,14 @@ class SaarthiDashboard(App[None]):
     def action_focus_executions(self) -> None:
         self.query_one("#executions-table", DataTable).focus()
 
+    def action_skills(self) -> None:
+        self.push_screen(SkillsScreen())
+
     def action_help(self) -> None:
         self.notify(
             "R refresh · U focus URL (Enter = full assessment) · "
             "V run nuclei+sqlmap (Shift+V = +1-row dump) · A AI analyze · "
-            "P phases · T tools · E evidence · Q quit. "
+            "S skills · P phases · T tools · E evidence · Q quit. "
             "AI also analyzes automatically during the run.",
             timeout=7,
         )

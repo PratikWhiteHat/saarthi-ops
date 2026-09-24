@@ -118,6 +118,29 @@ contains the full result JSON.
 
 Default local model: `qwen3.5:9b` (configurable in `.env`).
 
+### Operator-controlled AI skills
+
+Press **S** in the TUI to open **Skills**. Choose **Import 83 skills** once to
+download the markdown reference material from a pinned revision of
+[Claude-BugHunter](https://github.com/elementalsouls/Claude-BugHunter/tree/main/skills),
+then select a row and press **Space** to enable or disable it. All skills start
+disabled. Saarthi stores the imported references and toggle state under
+`~/.saarthi/skills` (override with `SAARTHI_SKILLS_DIR`). Import requires
+internet access; subsequent local AI analysis does not.
+
+Enabled skills provide bounded, topic-matched reference excerpts to the local
+Ollama model. This is **not model fine-tuning** and does not retrain weights.
+Skills cannot change authorization, tool execution, or evidence requirements;
+Saarthi never executes upstream scripts. A maximum of three relevant enabled
+skills are included per model request. Imported documentation is attributed to
+its authors and licensed under [CC BY 4.0](https://github.com/elementalsouls/Claude-BugHunter/blob/main/LICENSE-CONTENT);
+the local `ATTRIBUTION.txt` records the pinned source revision.
+
+Saved three-pass AI quality analyses record which skill references were actually
+supplied in each pass, the summaries behind cited evidence IDs, missing evidence,
+and finding-disposition counts. An enabled skill is not necessarily selected,
+and a supplied skill is not proof that it caused a finding.
+
 ## Authorized use only
 
 Saarthi OPS is for **authorized** security testing — your own systems, or

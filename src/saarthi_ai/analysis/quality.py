@@ -155,13 +155,29 @@ class QualityFinding(BaseModel):
     remediation: str = ""
 
 
+class SkillUse(BaseModel):
+    """References supplied to one model pass, not proof of causal influence."""
+
+    pass_name: str
+    skill_ids: tuple[str, ...] = ()
+
+
+class SourceCitation(BaseModel):
+    reference_id: str
+    phase_code: str
+    source_type: str
+    summary: str
+
+
 class QualityAnalysisResult(BaseModel):
-    schema_version: str = "1.0"
+    schema_version: str = "1.1"
     orchestration_id: str | None
     target: str
     generated_at: str
     pass_count: int = 3
     source_reference_count: int
+    sources: tuple[SourceCitation, ...] = ()
+    skills_by_pass: tuple[SkillUse, ...] = ()
     facts: tuple[ExtractedFact, ...]
     findings: tuple[QualityFinding, ...]
     warnings: tuple[str, ...] = ()
@@ -259,12 +275,14 @@ async def _json_chat(
     system_prompt: str,
     prompt: str,
     num_predict: int,
+    skill_trace: list[str],
 ) -> dict[str, Any]:
     content, _thinking = await client.chat(
         [Message(role="user", content=prompt)],
         system_prompt=system_prompt,
         num_predict=num_predict,
         json_mode=True,
+        skill_trace=skill_trace,
     )
     return _normalize_common_model_variations(_extract_json_object(content))
 
@@ -525,6 +543,9 @@ async def analyze_run_quality(client: Any, digest: Any) -> QualityAnalysisResult
         for alias, matches in alias_candidates.items()
         if len(matches) == 1
     }
+    extractor_skills: list[str] = []
+    analyst_skills: list[str] = []
+    reviewer_skills: list[str] = []
 
     try:
         extraction = ExtractionEnvelope.model_validate(
@@ -533,6 +554,7 @@ async def analyze_run_quality(client: Any, digest: Any) -> QualityAnalysisResult
                 system_prompt=EXTRACTOR_SYSTEM_PROMPT,
                 prompt=_source_prompt(digest),
                 num_predict=700,
+                skill_trace=extractor_skills,
             )
         )
         facts, warnings = _normalize_facts(extraction, reference_aliases)
@@ -543,6 +565,7 @@ async def analyze_run_quality(client: Any, digest: Any) -> QualityAnalysisResult
                 system_prompt=ANALYST_QUALITY_SYSTEM_PROMPT,
                 prompt=_facts_prompt(digest, facts),
                 num_predict=900,
+                skill_trace=analyst_skills,
             )
         )
         candidates, candidate_warnings = _normalize_candidates(
@@ -558,6 +581,7 @@ async def analyze_run_quality(client: Any, digest: Any) -> QualityAnalysisResult
                 system_prompt=REVIEWER_SYSTEM_PROMPT,
                 prompt=_review_prompt(digest, facts, candidates),
                 num_predict=700,
+                skill_trace=reviewer_skills,
             )
         )
     except ValidationError as exc:
@@ -570,6 +594,20 @@ async def analyze_run_quality(client: Any, digest: Any) -> QualityAnalysisResult
         target=str(digest.target),
         generated_at=datetime.now(UTC).isoformat(),
         source_reference_count=len(references),
+        sources=tuple(
+            SourceCitation(
+                reference_id=item.reference_id,
+                phase_code=item.phase_code,
+                source_type=item.source_type,
+                summary=item.summary,
+            )
+            for item in references
+        ),
+        skills_by_pass=(
+            SkillUse(pass_name="extractor", skill_ids=tuple(extractor_skills)),
+            SkillUse(pass_name="analyst", skill_ids=tuple(analyst_skills)),
+            SkillUse(pass_name="reviewer", skill_ids=tuple(reviewer_skills)),
+        ),
         facts=facts,
         findings=_finalize_findings(
             candidates,
@@ -584,11 +622,32 @@ async def analyze_run_quality(client: Any, digest: Any) -> QualityAnalysisResult
 def render_quality_analysis(result: QualityAnalysisResult) -> str:
     """Render a concise, evidence-cited TUI view of the quality result."""
 
+    skill_by_pass = {
+        item.pass_name: item.skill_ids for item in result.skills_by_pass
+    }
+    source_lookup = {item.reference_id: item for item in result.sources}
+    dispositions = {
+        disposition: sum(
+            finding.final_disposition is disposition for finding in result.findings
+        )
+        for disposition in FinalDisposition
+    }
     lines = [
         "AI QUALITY ANALYSIS — extractor → analyst → critical reviewer",
         (
             f"Grounded facts: {len(result.facts)} | Findings: {len(result.findings)} | "
             f"Sources: {result.source_reference_count}"
+        ),
+        (
+            "Disposition: "
+            + ", ".join(
+                f"{item.value}={dispositions[item]}" for item in FinalDisposition
+            )
+        ),
+        "Skills supplied to model (not proof of influence): "
+        + "; ".join(
+            f"{name}={', '.join(skill_by_pass.get(name, ())) or 'none'}"
+            for name in ("extractor", "analyst", "reviewer")
         ),
     ]
     if not result.findings:
@@ -604,10 +663,25 @@ def render_quality_analysis(result: QualityAnalysisResult) -> str:
                 ),
                 finding.statement,
                 "Evidence: " + ", ".join(finding.evidence_refs),
+                "Skill context supplied: "
+                + ", ".join(
+                    dict.fromkeys(
+                        (*skill_by_pass.get("analyst", ()), *skill_by_pass.get("reviewer", ()))
+                    )
+                )
+                if skill_by_pass.get("analyst") or skill_by_pass.get("reviewer")
+                else "Skill context supplied: none",
                 f"Reviewer: {finding.review_disposition.value} — "
                 f"{finding.reviewer_rationale or 'no rationale returned'}",
             ]
         )
+        for reference_id in finding.evidence_refs:
+            source = source_lookup.get(reference_id)
+            if source is not None:
+                summary = re.sub(r"\s+", " ", source.summary).strip()[:180]
+                lines.append(
+                    f"  {reference_id} [{source.phase_code}/{source.source_type}]: {summary}"
+                )
         if finding.alternative_explanations:
             lines.append("Alternatives: " + "; ".join(finding.alternative_explanations))
         if finding.missing_evidence:
@@ -654,6 +728,22 @@ def persist_quality_analysis(
                 "fact_count": len(result.facts),
                 "finding_count": len(result.findings),
                 "warning_count": len(result.warnings),
+                "skill_ids_supplied": sorted({
+                    skill_id
+                    for use in result.skills_by_pass
+                    for skill_id in use.skill_ids
+                }),
+                "skill_ids_by_pass": {
+                    use.pass_name: list(use.skill_ids)
+                    for use in result.skills_by_pass
+                },
+                "disposition_counts": {
+                    disposition.value: sum(
+                        finding.final_disposition is disposition
+                        for finding in result.findings
+                    )
+                    for disposition in FinalDisposition
+                },
             },
         ),
         actor=actor,

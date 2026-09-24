@@ -15,6 +15,7 @@ from saarthi_ai.analysis.quality import (
     SourceReference,
     analyze_run_quality,
     persist_quality_analysis,
+    render_quality_analysis,
 )
 from saarthi_ai.persistence.database import SaarthiDatabase
 from saarthi_ai.persistence.models import EvidenceType, ExecutionCreate
@@ -41,6 +42,42 @@ class FakeClient:
     async def chat(self, messages, **kwargs):
         self.calls.append((messages, kwargs))
         return next(self.responses), None
+
+
+@pytest.mark.asyncio
+async def test_quality_result_records_actual_skill_context_by_pass_and_citations():
+    class TraceClient(FakeClient):
+        async def chat(self, messages, **kwargs):
+            pass_number = len(self.calls)
+            if pass_number == 1:
+                kwargs["skill_trace"].append("hunt-sqli")
+            if pass_number == 2:
+                kwargs["skill_trace"].append("triage-validation")
+            return await super().chat(messages, **kwargs)
+
+    client = TraceClient([
+        '{"facts":[{"fact_id":"F1","statement":"A response changed.",'
+        '"evidence_refs":["event-1"]}]}',
+        '{"findings":[{"finding_id":"C1","title":"Needs review",'
+        '"statement":"The change needs confirmation.",'
+        '"evidence_refs":["event-1"],"fact_ids":["F1"],'
+        '"missing_evidence":["Independent confirmation."]}]}',
+        '{"reviews":[{"finding_id":"C1","disposition":"partial",'
+        '"supported_evidence_refs":["event-1"],'
+        '"missing_evidence":["Independent confirmation."]}]}',
+    ])
+
+    result = await analyze_run_quality(client, _digest())
+
+    assert [item.skill_ids for item in result.skills_by_pass] == [
+        (), ("hunt-sqli",), ("triage-validation",)
+    ]
+    assert result.sources[0].reference_id == "event-1"
+    view = render_quality_analysis(result)
+    assert "Skills supplied to model (not proof of influence)" in view
+    assert "hunt-sqli" in view
+    assert "event-1 [6C/finding_created]: id changed response" in view
+    assert "Missing evidence: Independent confirmation." in view
 
 
 @pytest.mark.asyncio
@@ -298,3 +335,8 @@ def test_quality_result_is_persisted_as_hash_linked_evidence(tmp_path):
     assert record.sha256
     assert record.size_bytes and record.size_bytes > 0
     assert json.loads(Path(record.path).read_text())["pass_count"] == 3
+    assert record.metadata["skill_ids_supplied"] == []
+    assert record.metadata["skill_ids_by_pass"] == {
+        "extractor": [], "analyst": [], "reviewer": [],
+    }
+    assert record.metadata["disposition_counts"]["confirmed"] == 0
