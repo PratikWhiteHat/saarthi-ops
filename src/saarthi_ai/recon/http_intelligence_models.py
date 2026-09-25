@@ -34,6 +34,7 @@ class HttpIntelligenceRecord(BaseModel):
     status_code: int | None = None
     title: str | None = None
     technologies: list[str] = Field(default_factory=list)
+    cpes: list[str] = Field(default_factory=list)
     webserver: str | None = None
     content_length: int | None = None
     ip: str | None = None

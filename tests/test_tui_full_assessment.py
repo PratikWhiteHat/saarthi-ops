@@ -12,7 +12,10 @@ from types import SimpleNamespace
 import pytest
 from textual.widgets import Input
 
-from saarthi_ai.automation.auto_validation import AutomaticValidationResult
+from saarthi_ai.automation.auto_validation import (
+    AutoValidationConfig,
+    AutomaticValidationResult,
+)
 from saarthi_ai.execution.tool_runner import ToolOutputEvent
 from saarthi_ai.orchestration.models import OrchestrationContext
 from saarthi_ai.persistence.database import SaarthiDatabase
@@ -25,7 +28,7 @@ def _init_db(tmp_path):
     return path
 
 
-def _install_stubs(monkeypatch, calls, captured):
+def _install_stubs(monkeypatch, calls, captured, *, cve_evidence=False):
     context = OrchestrationContext(
         orchestration_id="orchestration-tui-adhoc",
         parent_execution_id="execution-adhoc-1",
@@ -45,7 +48,19 @@ def _install_stubs(monkeypatch, calls, captured):
             phase=SimpleNamespace(value="3A"),
             outcome=SimpleNamespace(value="completed"),
         )
-        return SimpleNamespace(context=ctx, phase_results=[phase])
+        return SimpleNamespace(
+            context=ctx, phase_results=[phase],
+            http_intelligence=SimpleNamespace(
+                evidence_path="/tmp/fake-http-intelligence.json" if cve_evidence else None
+            ),
+        )
+
+    def fake_cve(database, ctx, source, **kwargs):
+        calls.append("run_cve_intelligence")
+        return SimpleNamespace(
+            observed_cpes=1, candidates=2, catalog_cves=100,
+            refresh_status="fresh", online_status="complete", online_queried_cpes=1,
+        )
 
     async def fake_chain(database, ctx, **kwargs):
         calls.append("run_phase6_safe_chain")
@@ -55,7 +70,14 @@ def _install_stubs(monkeypatch, calls, captured):
         calls.append("build_config")
         captured["confirmed_poc"] = kwargs.get("confirmed_poc")
         return SimpleNamespace(
-            config=SimpleNamespace(),
+            config=AutoValidationConfig(
+                target_url="https://app.example.com/item?id=1",
+                allowed_hosts=("app.example.com",),
+                authorized=True,
+                active_testing=True,
+                intrusive_testing=True,
+                approved=True,
+            ),
             target_url="https://app.example.com/item?id=1",
             sqlmap_parameters=("id",),
         )
@@ -102,6 +124,28 @@ def _install_stubs(monkeypatch, calls, captured):
         "saarthi_ai.automation.auto_validation.run_automatic_validation",
         fake_run,
     )
+    monkeypatch.setattr("saarthi_ai.cve.workflow.run_cve_intelligence", fake_cve)
+
+
+@pytest.mark.asyncio
+async def test_authorized_tui_run_chains_cve_intelligence(tmp_path, monkeypatch):
+    path = _init_db(tmp_path)
+    calls: list[str] = []
+    captured: dict = {}
+    _install_stubs(monkeypatch, calls, captured, cve_evidence=True)
+
+    app = SaarthiDashboard(database_path=path)
+    async with app.run_test() as pilot:
+        app._ai_live_enabled = False
+        app.query_one("#target-url-input", Input).value = "https://app.example.com/item?id=1"
+        await pilot.click("#authorize-button")
+        await pilot.pause()
+        await pilot.press("y")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert calls.index("run_assessment_pipeline") < calls.index("run_cve_intelligence")
+        assert calls.index("run_cve_intelligence") < calls.index("run_phase6_safe_chain")
+        assert "2 candidates" in "\n".join(app._live_validation_lines)
 
 
 @pytest.mark.asyncio

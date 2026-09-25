@@ -368,7 +368,9 @@ def test_phase_rows_marks_4d_done() -> None:
 
     assert row_map["4C"][3] == "DONE"
     assert row_map["4D"][3] == "DONE"
-    assert row_map["5A"][3] == "NEXT"
+    # 4E (bible coverage) now sits between 4D and 5A, so it is NEXT.
+    assert row_map["4E"][3] == "NEXT"
+    assert row_map["5A"][3] == "PLANNED"
 
 
 def test_phase_rows_cover_complete_product_workflow() -> None:
@@ -377,8 +379,10 @@ def test_phase_rows_cover_complete_product_workflow() -> None:
     rows = phase_rows("6C — LOW-RISK ATTACK VALIDATORS")
     row_map = {row[1]: row for row in rows}
 
-    assert len(rows) == 23
+    assert len(rows) == 25
+    assert row_map["4E"][2] == "Bible Coverage (AI)"
     assert row_map["5A"][2] == "Assessment Planner"
+    assert row_map["5E"][2] == "CVE Intelligence"
     assert row_map["6A"][2] == "Attack Hypothesis Engine"
     assert row_map["6C"][3] == "DONE"
     assert row_map["6D"][3] == "NEXT"
@@ -404,7 +408,7 @@ def test_orchestration_summary_shows_validator_coverage() -> None:
     assert "Phase 6C Safe Chain" in rendered
     assert "0/9 complete" in rendered
     assert "Nuclei / SQLmap" in rendered
-    assert "APPROVAL REQUIRED" in rendered
+    assert "ENABLED" in rendered
 
 
 def test_activity_text_styles_without_interpreting_markup() -> None:
@@ -497,10 +501,10 @@ def test_phase6_chain_status_tracks_permissions_and_validators() -> None:
         len(PHASE6_SAFE_ACTIONS)
     )
     assert status["nuclei"] == "PREVIEW READY"
-    assert status["sqlmap"] == "APPROVAL REQUIRED"
+    assert status["sqlmap"] == "ENABLED"
     assert status["browser_attack_surface_validation"] == "DONE"
     assert status["server_parser_surface_validation"] == "DONE"
-    assert status["injection_surface_validation"] == "APPROVAL"
+    assert status["injection_surface_validation"] == "ENABLED"
     assert phase_execution_label(
         json.loads(rows[1]["metadata_json"])
     ) == "6C Browser"
@@ -639,7 +643,7 @@ def test_tui_uses_dynamic_phase6_tool_labels() -> None:
             "validator_completed": "9",
             "validator_total": "9",
             "nuclei": "PREVIEW READY",
-            "sqlmap": "APPROVAL REQUIRED",
+            "sqlmap": "ENABLED",
             "browser_attack_surface_validation": "DONE",
             "server_parser_surface_validation": "DONE",
         },
@@ -648,17 +652,17 @@ def test_tui_uses_dynamic_phase6_tool_labels() -> None:
 
     assert (
         "nuclei",
-        "Controlled Preview / Execution",
+        "Automatic bounded validation (full run)",
         "PREVIEW READY",
     ) in rows
     assert (
         "sqlmap",
-        "External Result Handoff / Import",
-        "APPROVAL REQUIRED",
+        "Automatic SQLi detection (full run)",
+        "ENABLED",
     ) in rows
     assert (
         "Saarthi 6B",
-        "Policy & Approval Gate",
+        "Workflow Authorization Gate",
         "DONE",
     ) in rows
     assert (
@@ -1923,7 +1927,7 @@ def test_scope_lines_without_controlled_evidence_remain_normal() -> None:
     assert "CONTROLLED NUCLEI PREVIEW" not in rendered
 
 
-def test_nuclei_tool_row_requires_approval() -> None:
+def test_nuclei_tool_row_shows_automatic_full_run() -> None:
     from saarthi_ai.tui.app import TOOLS
 
     nuclei_rows = [
@@ -1935,10 +1939,57 @@ def test_nuclei_tool_row_requires_approval() -> None:
     assert nuclei_rows == [
         (
             "nuclei",
-            "Controlled Preview / Execution",
-            "APPROVAL",
+            "Automatic bounded validation (full run)",
+            "ENABLED",
         )
     ]
+
+
+def test_completed_evidence_findings_bundle_maps_to_phase_6h() -> None:
+    assert (
+        infer_phase("completed", {"evidence_findings_bundle"})
+        == "6H — EVIDENCE & FINDINGS"
+    )
+
+
+def test_scope_lines_render_phase_6h_summary() -> None:
+    from dataclasses import replace
+
+    from saarthi_ai.tui.app import build_scope_lines, demo_snapshot
+
+    snapshot = replace(
+        demo_snapshot(),
+        evidence_findings_summary={
+            "evidence_id": "evidence-6h",
+            "evidence_sha256": "a" * 64,
+            "evidence_count": "12",
+            "verified_evidence_count": "11",
+            "rejected_evidence_count": "1",
+            "finding_count": "3",
+            "confirmed_count": "2",
+            "critical": "1",
+            "high": "1",
+            "classification": "findings_consolidated",
+        },
+    )
+
+    rendered = "\n".join(build_scope_lines(snapshot))
+
+    assert "PHASE 6H — EVIDENCE & FINDINGS" in rendered
+    assert "Verified / Rejected: 11 / 1" in rendered
+    assert "Findings / Confirmed: 3 / 2" in rendered
+    assert "Critical / High    : 1 / 1" in rendered
+    assert "findings_consolidated" in rendered
+
+
+def test_phase_6h_tool_row_is_enabled() -> None:
+    from saarthi_ai.tui.app import TOOLS
+
+    assert (
+        "Saarthi 6H",
+        "Evidence & Findings Consolidation",
+        "ENABLED",
+    ) in TOOLS
 
 
 def test_planned_nuclei_preparation_maps_to_phase_6c() -> None:
@@ -2971,13 +3022,13 @@ def test_scope_lines_render_linked_phase_6b_plan() -> None:
     assert "No validation request was sent" in rendered
 
 
-def test_phase_6b_policy_gate_tool_row_requires_approval() -> None:
+def test_phase_6b_workflow_authorization_gate_is_enabled() -> None:
     from saarthi_ai.tui.app import TOOLS
 
     assert (
         "Saarthi 6B",
-        "Policy & Approval Gate",
-        "APPROVAL",
+        "Workflow Authorization Gate",
+        "ENABLED",
     ) in TOOLS
 
 
@@ -3025,13 +3076,13 @@ def test_scope_lines_render_clickjacking_validator_summary() -> None:
     assert "Payload Generated  : false" in rendered
 
 
-def test_clickjacking_validator_tool_row_requires_approval() -> None:
+def test_clickjacking_validator_tool_row_is_enabled() -> None:
     from saarthi_ai.tui.app import TOOLS
 
     assert (
         "Saarthi 6C.2",
         "Clickjacking Header Validator",
-        "APPROVAL",
+        "ENABLED",
     ) in TOOLS
 
 
@@ -3084,13 +3135,13 @@ def test_scope_lines_render_parameter_surface_summary() -> None:
     assert "Payload Generated  : false" in rendered
 
 
-def test_parameter_surface_validator_tool_row_requires_approval() -> None:
+def test_parameter_surface_validator_tool_row_is_enabled() -> None:
     from saarthi_ai.tui.app import TOOLS
 
     assert (
         "Saarthi 6C.3",
         "HTTP Parameter Surface Validator",
-        "APPROVAL",
+        "ENABLED",
     ) in TOOLS
 
 
@@ -3143,13 +3194,13 @@ def test_scope_lines_render_session_cookie_summary() -> None:
     assert "Payload Generated  : false" in rendered
 
 
-def test_session_cookie_validator_tool_row_requires_approval() -> None:
+def test_session_cookie_validator_tool_row_is_enabled() -> None:
     from saarthi_ai.tui.app import TOOLS
 
     assert (
         "Saarthi 6C.4",
         "Session Cookie Attribute Validator",
-        "APPROVAL",
+        "ENABLED",
     ) in TOOLS
 
 
@@ -3206,13 +3257,13 @@ def test_scope_lines_render_csrf_surface_summary() -> None:
     assert "Request Body Sent  : false" in rendered
 
 
-def test_csrf_surface_validator_tool_row_requires_approval() -> None:
+def test_csrf_surface_validator_tool_row_is_enabled() -> None:
     from saarthi_ai.tui.app import TOOLS
 
     assert (
         "Saarthi 6C.2",
         "CSRF Protection Surface Validator",
-        "APPROVAL",
+        "ENABLED",
     ) in TOOLS
 
 
@@ -3265,13 +3316,13 @@ def test_scope_lines_render_api_exposure_summary() -> None:
     assert "Authentication Used: false" in rendered
 
 
-def test_api_exposure_validator_tool_row_requires_approval() -> None:
+def test_api_exposure_validator_tool_row_is_enabled() -> None:
     from saarthi_ai.tui.app import TOOLS
 
     assert (
         "Saarthi 6C.7",
         "API Data-Exposure Surface Validator",
-        "APPROVAL",
+        "ENABLED",
     ) in TOOLS
 
 
@@ -3491,43 +3542,43 @@ def test_scope_lines_render_upload_surface_summary() -> None:
     assert "Request Body Sent  : false" in rendered
 
 
-def test_upload_surface_validator_tool_row_requires_approval() -> None:
+def test_upload_surface_validator_tool_row_is_enabled() -> None:
     from saarthi_ai.tui.app import TOOLS
 
     assert (
         "Saarthi 6C.6",
         "File Upload Surface Validator",
-        "APPROVAL",
+        "ENABLED",
     ) in TOOLS
 
 
-def test_injection_surface_validator_tool_row_requires_approval() -> None:
+def test_injection_surface_validator_tool_row_is_enabled() -> None:
     from saarthi_ai.tui.app import TOOLS
 
     assert (
         "Saarthi 6C.1",
         "Injection Surface Validator",
-        "APPROVAL",
+        "ENABLED",
     ) in TOOLS
 
 
-def test_browser_surface_validator_tool_row_requires_approval() -> None:
+def test_browser_surface_validator_tool_row_is_enabled() -> None:
     from saarthi_ai.tui.app import TOOLS
 
     assert (
         "Saarthi 6C.2",
         "Browser Attack Surface Validator",
-        "APPROVAL",
+        "ENABLED",
     ) in TOOLS
 
 
-def test_server_parser_surface_tool_row_requires_approval() -> None:
+def test_server_parser_surface_tool_row_is_enabled() -> None:
     from saarthi_ai.tui.app import TOOLS
 
     assert (
         "Saarthi 6C.3",
         "Server/Parser Surface Validator",
-        "APPROVAL",
+        "ENABLED",
     ) in TOOLS
 
 
@@ -3551,24 +3602,26 @@ def test_tui_lists_all_official_validator_families() -> None:
     ]
 
     assert len(family_rows) == 7
+    # Counts/status come from the authoritative validator registry; 6C.5's nine
+    # authorization validators are partial (all require authenticated workflows).
     assert (
         "Saarthi 6C.5",
-        "Authorization & Access Control (0 ready, 0 partial, 9 total)",
-        "PLANNED",
+        "Authorization & Access Control (0 ready, 9 partial, 9 total)",
+        "IN PROGRESS",
     ) in family_rows
 
 
-def test_sqlmap_tui_row_shows_handoff_and_import() -> None:
+def test_sqlmap_tui_row_shows_automatic_full_run() -> None:
     from saarthi_ai.tui.app import TOOLS
 
     assert (
         "sqlmap",
-        "External Result Handoff / Import",
-        "6C.1 HANDOFF",
+        "Automatic SQLi detection (full run)",
+        "ENABLED",
     ) in TOOLS
 
 
-def test_worker_rows_do_not_claim_sqlmap_automatic_execution() -> None:
+def test_worker_rows_show_sqlmap_automatic_after_workflow_authorization() -> None:
     from saarthi_ai.tui.app import demo_snapshot, worker_rows
 
     snapshot = demo_snapshot()
@@ -3576,9 +3629,9 @@ def test_worker_rows_do_not_claim_sqlmap_automatic_execution() -> None:
 
     assert rows["sqlmap"] == (
         "sqlmap",
-        "External handoff + import",
-        "TUI approval",
-        "NO LAUNCHER",
+        "Automatic bounded local adapter",
+        "Workflow authorization",
+        "ENABLED",
     )
     assert rows["ffuf"][-1] == "Not configured"
     assert rows["callback"][-1] == "Not configured"
@@ -3597,7 +3650,7 @@ def test_worker_rows_show_approved_sqlmap_handoff_state() -> None:
 
     assert rows["sqlmap"] == (
         "sqlmap",
-        "External handoff + import",
+        "Automatic bounded local adapter",
         "Approved",
         "AWAITING RESULT · EXTERNAL",
     )

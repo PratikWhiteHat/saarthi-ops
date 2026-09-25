@@ -245,6 +245,57 @@ def create_phase_execution(
     )
 
 
+_COMPLETION_PATH: tuple[ExecutionState, ...] = (
+    ExecutionState.CREATED,
+    ExecutionState.VALIDATED,
+    ExecutionState.PLANNED,
+    ExecutionState.RUNNING,
+    ExecutionState.ANALYZING,
+    ExecutionState.COMPLETED,
+)
+
+_TERMINAL_STATES = frozenset(
+    {
+        ExecutionState.COMPLETED,
+        ExecutionState.FAILED,
+        ExecutionState.CANCELLED,
+    }
+)
+
+
+def complete_phase_execution(
+    database: SaarthiDatabase,
+    execution_id: str,
+    *,
+    actor: str,
+    reason: str = "Phase completed.",
+) -> ExecutionRecord:
+    """Walk a phase child from its current state to COMPLETED.
+
+    Phase children are created in CREATED; a tracked step records evidence but
+    does not advance state. This drives the canonical
+    CREATED->VALIDATED->PLANNED->RUNNING->ANALYZING->COMPLETED path so the phase
+    is recognized as done by the orchestration/TUI. Idempotent for terminal
+    states.
+    """
+
+    execution = database.get_execution(execution_id)
+    if execution.state in _TERMINAL_STATES:
+        return execution
+    try:
+        start = _COMPLETION_PATH.index(execution.state)
+    except ValueError:
+        return execution
+    for state in _COMPLETION_PATH[start + 1:]:
+        execution = database.transition_execution(
+            execution_id,
+            state,
+            actor=actor,
+            reason=reason,
+        )
+    return execution
+
+
 def _record_phase_failure(
     database: SaarthiDatabase,
     context: OrchestrationContext,

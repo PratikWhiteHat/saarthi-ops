@@ -37,6 +37,12 @@ From a single authorized URL, Saarthi orchestrates:
   - **6D** Authenticated Workflows — auto-login multiple accounts and replay
     requests across them to surface IDOR/BOLA, vertical privilege escalation,
     and tenant-isolation breaks, plus JWT/session-token hygiene.
+  - **6E–6H** evidence-only impact confirmation, offline post-exploitation
+    simulation, cleanup accounting, and hash-verified findings consolidation.
+
+Interrupted local runs are recovered automatically at the next TUI startup.
+Only `RUNNING` or `ANALYZING` records inactive for at least six hours are
+closed, and every recovery is recorded in the local audit trail.
 
 Throughout, an **AI co-pilot** watches each phase live, triages and ranks
 findings, cross-checks them with independent tools (e.g., ghauri confirming
@@ -84,7 +90,71 @@ uv run saarthi doctor           # environment diagnostics
 uv run saarthi authenticated run --config authenticated-sessions.json --approved
 ```
 
+### Local CVE intelligence
+
+The CVE catalog is separate from active testing. When an operator selects
+**Authorize & Run** in the TUI, Phase 3C collects CPE fingerprints and Phase 5E
+automatically refreshes the local NVD/CISA KEV cache when stale, queries the
+public NVD CVE API for observed CPEs, matches candidates, and writes hashed
+evidence. Online requests include product CPEs, but never the target URL or
+hostname. A feed/API outage does not stop the assessment; Phase 5E uses the
+existing cache and records the online status. Product/CPE matching does not
+confirm a vulnerability. The cache lives at `~/.saarthi/cve.db`.
+
+```bash
+uv run saarthi cve sync --days 7
+uv run saarthi cve status
+uv run saarthi cve match --cpe 'cpe:2.3:a:vendor:product:1.2:*:*:*:*:*:*:*'
+```
+
+For offline use, export official NVD API 2.0 and CISA KEV JSON files, then use
+`saarthi cve import-nvd FILE` and `saarthi cve import-kev FILE`. The sync command
+is an incremental modified-date import, not a full historical NVD mirror.
+Version-unknown and complex configuration matches require manual review. Online
+CPE lookup is bounded to five distinct CPEs and two API pages per CPE; evidence
+marks a partial result if those limits are reached. The TUI's Phase 5E activity
+line reports CPE/candidate counts and online status; the evidence catalog
+contains the full result JSON.
+
 Default local model: `qwen3.5:9b` (configurable in `.env`).
+
+### Operator-controlled AI skills
+
+Press **S** in the TUI to open **Skills**. Choose **Import 83 skills** once to
+download the markdown reference material from a pinned revision of
+[Claude-BugHunter](https://github.com/elementalsouls/Claude-BugHunter/tree/main/skills),
+then select a row and press **Space** to enable or disable it. All skills start
+disabled. Saarthi stores the imported references and toggle state under
+`~/.saarthi/skills` (override with `SAARTHI_SKILLS_DIR`). Import requires
+internet access; subsequent local AI analysis does not.
+
+Enabled skills provide bounded, topic-matched reference excerpts to the local
+Ollama model. This is **not model fine-tuning** and does not retrain weights.
+Skills cannot change authorization, tool execution, or evidence requirements;
+Saarthi never executes upstream scripts. AI quality analysis supplies up to 12
+enabled skill references to its analyst and reviewer passes within a bounded
+total context, even when condensed facts do not mention their topics. Chat
+requests remain topic-matched. An enabled skill is analysis guidance, not a
+reason to claim a finding or run a test. Imported documentation is attributed to
+its authors and licensed under [CC BY 4.0](https://github.com/elementalsouls/Claude-BugHunter/blob/main/LICENSE-CONTENT);
+the local `ATTRIBUTION.txt` records the pinned source revision.
+
+Saved AI quality analyses record which skill references were supplied in each
+pass and a separate, evidence-linked assessment for each selected enabled skill.
+The skill review uses small model requests and retries a failed group in smaller
+parts, so one malformed response does not erase other skills' results.
+They also disclose whether consolidated Nuclei/SQLmap evidence was verified,
+missing, or unverified. A missing scanner result is not treated as a negative
+test. The finding view names only skill references explicitly mentioned for
+that finding; a supplied or mentioned skill is not proof that it caused a finding.
+
+Press **F** in the TUI after an AI analysis has produced findings to review the
+latest saved analysis. Select a finding, inspect its cited evidence, enter a
+short reason, and mark it **Confirmed**, **False positive**, or **Needs evidence**.
+Each operator decision is appended to the local audit log; later decisions
+supersede earlier ones in the review display without changing the original AI
+analysis, scanner results, or tool execution. The review screen also shows
+aggregate latest-verdict counts across saved analyses.
 
 ## Authorized use only
 
@@ -95,10 +165,14 @@ systems you do not own or are not authorized to assess.
 
 ## Roadmap
 
-Phases 1–6D are implemented. Upcoming: **6E** Exploit Confirmation, **6F**
-Post-Exploitation Simulation, **6G** Cleanup & Rollback, **Phase 7** (attack
-chaining), **Phase 8** (reporting & remediation) — with explicit per-action
-approval for higher-risk steps.
+Phases 1–6H are implemented, including evidence-grounded AI review, verified
+Phase 6E impact confirmation, offline Phase 6F impact simulation, and Phase 6G
+cleanup accounting. Phase 6H verifies evidence integrity and consolidates
+redacted findings into a hash-linked bundle for the TUI and reports. Phase 6E
+confirms impact only from integrity-checked evidence already produced by the
+authorized workflow; it does not perform new exploitation or data extraction.
+Upcoming: **Phase 7** (attack chaining) and the remaining **Phase 8**
+reporting/remediation work, with policy controls for higher-risk actions.
 
 ## Author
 

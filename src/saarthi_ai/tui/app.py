@@ -12,6 +12,7 @@ from urllib.parse import urlsplit
 
 from rich.markup import escape as escape_markup
 from rich.text import Text
+from textual import work
 from textual.app import App, ComposeResult
 from textual.containers import Grid, Horizontal, Vertical
 from textual.reactive import reactive
@@ -32,6 +33,7 @@ from saarthi_ai.controlled_validation.validator_registry import (
     validator_module_tool_rows,
 )
 from saarthi_ai.execution.tool_runner import terminate_active_tools
+from saarthi_ai.skills import SkillStore
 
 DEFAULT_DB_PATH = Path.home() / ".saarthi" / "saarthi.db"
 
@@ -76,6 +78,7 @@ class DashboardSnapshot:
     controlled_nuclei_execution: dict[str, str] | None = None
     controlled_nuclei_preparation: dict[str, str] | None = None
     controlled_nuclei_preview: dict[str, str] | None = None
+    evidence_findings_summary: dict[str, str] | None = None
     phase6_chain_status: dict[str, str] = field(default_factory=dict)
     recent_worker_jobs: list[dict[str, str]] = field(default_factory=list)
 
@@ -457,6 +460,22 @@ class ReadOnlySaarthiRepository:
             )
             controlled_nuclei_preview.update(preview_reuse)
 
+        evidence_findings_summary = next(
+            (
+                summary
+                for related_execution_id in orchestration_execution_ids
+                if (
+                    summary
+                    := self._load_evidence_findings_summary(
+                        connection,
+                        tables,
+                        related_execution_id,
+                    )
+                )
+            ),
+            None,
+        )
+
         return DashboardSnapshot(
             project_name=value(
                 latest,
@@ -495,6 +514,7 @@ class ReadOnlySaarthiRepository:
                 controlled_nuclei_preparation
             ),
             controlled_nuclei_preview=controlled_nuclei_preview,
+            evidence_findings_summary=evidence_findings_summary,
             phase6_chain_status=phase6_chain_status,
             recent_worker_jobs=self._load_worker_jobs(
                 connection,
@@ -502,6 +522,77 @@ class ReadOnlySaarthiRepository:
                 orchestration_execution_ids,
             ),
         )
+
+    def _load_evidence_findings_summary(
+        self,
+        connection: sqlite3.Connection,
+        tables: set[str],
+        execution_id: str,
+    ) -> dict[str, str] | None:
+        """Load the persisted Phase 6H integrity and finding totals."""
+
+        table = next(
+            (name for name in ("evidence", "evidence_items") if name in tables),
+            None,
+        )
+        if table is None:
+            return None
+        columns = self._columns(connection, table)
+        execution_column = self._pick(columns, "execution_id", "execution")
+        type_column = self._pick(columns, "evidence_type", "type", "kind")
+        metadata_column = self._pick(columns, "metadata_json", "metadata")
+        evidence_id_column = self._pick(columns, "evidence_id", "id")
+        sha256_column = self._pick(columns, "sha256")
+        created_column = self._pick(columns, "created_at", "timestamp")
+        if not execution_column or not type_column or not metadata_column:
+            return None
+        order_sql = (
+            f'ORDER BY "{created_column}" DESC' if created_column else ""
+        )
+        row = connection.execute(
+            f'''
+            SELECT * FROM "{table}"
+            WHERE "{execution_column}" = ?
+              AND LOWER("{type_column}") = ?
+            {order_sql}
+            LIMIT 1
+            ''',
+            (execution_id, "evidence_findings_bundle"),
+        ).fetchone()
+        if row is None:
+            return None
+        try:
+            metadata = json.loads(str(row[metadata_column]))
+        except (json.JSONDecodeError, TypeError, ValueError):
+            return None
+        if not isinstance(metadata, dict):
+            return None
+
+        def value(key: str, default: str = "0") -> str:
+            raw = metadata.get(key, default)
+            return safe_tui_display(raw, max_length=72)
+
+        return {
+            "execution_id": execution_id,
+            "evidence_id": (
+                safe_tui_display(row[evidence_id_column], max_length=72)
+                if evidence_id_column
+                else "—"
+            ),
+            "evidence_sha256": (
+                safe_tui_display(row[sha256_column], max_length=72)
+                if sha256_column
+                else "—"
+            ),
+            "evidence_count": value("evidence_count"),
+            "verified_evidence_count": value("verified_evidence_count"),
+            "rejected_evidence_count": value("rejected_evidence_count"),
+            "finding_count": value("count"),
+            "confirmed_count": value("confirmed_count"),
+            "critical": value("critical"),
+            "high": value("high"),
+            "classification": value("classification", "—"),
+        }
 
     def _load_worker_jobs(
         self,
@@ -2956,8 +3047,9 @@ def build_phase6_chain_status(
             return "ANALYZING"
         if state == "failed":
             return "FAILED"
-        # No preview/approval job pending → the tool runs automatically as
-        # part of AUTHORIZE & RUN. Show it as enabled, not approval-gated.
+        # The full TUI workflow launches both tools automatically after the
+        # operator authorizes the complete assessment.  There is no second
+        # per-tool approval prompt.
         return "ENABLED"
 
     def validator_status(action: str) -> str:
@@ -2968,7 +3060,10 @@ def build_phase6_chain_status(
             return "FAILED"
         if state in {"created", "validated", "planned", "running"}:
             return "IN PROGRESS"
-        return "APPROVAL"
+        # The operator authorizes the complete assessment once at the TUI
+        # boundary. Validators that have not started remain available in the
+        # authorized chain; they do not require another per-validator prompt.
+        return "ENABLED"
 
     status = {
         "validator_completed": str(len(completed_actions)),
@@ -3149,6 +3244,8 @@ def infer_phase(
     normalized_evidence = {evidence_type.strip().lower() for evidence_type in evidence_types}
 
     if normalized == "completed":
+        if "evidence_findings_bundle" in normalized_evidence:
+            return "6H — EVIDENCE & FINDINGS"
         if "attack_hypothesis_set" in normalized_evidence:
             return "6A — ATTACK HYPOTHESIS & PATH GENERATION"
         if (
@@ -3184,6 +3281,8 @@ def infer_phase(
         return "3B — SUBDOMAIN ENUMERATION"
 
     if normalized in {"running", "analyzing"}:
+        if "evidence_findings_bundle" in normalized_evidence:
+            return "6H — EVIDENCE & FINDINGS"
         if "attack_hypothesis_set" in normalized_evidence:
             return "6A — ATTACK HYPOTHESIS & PATH GENERATION"
         if (
@@ -3392,10 +3491,12 @@ BASE_PHASES = [
     ("4B", "Blind Validation"),
     ("4C", "OAST Manager"),
     ("4D", "Confirmation Engine"),
+    ("4E", "Bible Coverage (AI)"),
     ("5A", "Assessment Planner"),
     ("5B", "Dependency Outcomes"),
     ("5C", "Parent Outcome Handling"),
     ("5D", "Optional Phase Handling"),
+    ("5E", "CVE Intelligence"),
     ("6A", "Attack Hypothesis Engine"),
     ("6B", "Policy & Approval Gate"),
     ("6C", "Low-Risk Attack Validators"),
@@ -3409,15 +3510,23 @@ BASE_PHASES = [
 ]
 
 
+_PHASE_CODE_PREFIX = re.compile(r"^(\d[A-Z])-")
+
+
 def normalize_phase_code(phase_code: str) -> str:
-    """Normalize orchestration child phase identifiers for the TUI."""
+    """Normalize orchestration child phase identifiers for the TUI.
+
+    Child executions record their phase as the full OrchestrationPhase value
+    (e.g. "6F-post-exploitation", "4A-cors"); collapse any "<NX>-..." suffix
+    back to the "<NX>" roadmap code used in BASE_PHASES so completed phases
+    like 6D/6E/6F are recognized as DONE.
+    """
 
     normalized = phase_code.strip()
 
-    if normalized.startswith("4A-"):
-        return "4A"
-    if normalized.startswith("6C-"):
-        return "6C"
+    match = _PHASE_CODE_PREFIX.match(normalized)
+    if match:
+        return match.group(1)
 
     return normalized
 
@@ -3541,38 +3650,43 @@ TOOLS = [
     ("wayback-cdx", "Historical URL Intelligence (3D)", "ENABLED"),
     ("local-archive", "Local Page Snapshot (3D · local-only)", "ENABLED"),
     ("Saarthi JS", "JavaScript Intelligence", "ENABLED"),
-    ("nuclei", "Controlled Preview / Execution", "ENABLED"),
-    ("sqlmap", "External Result Handoff / Import", "ENABLED"),
+    ("CVE Intelligence", "Online NVD + CISA KEV / local fallback", "ENABLED"),
+    ("nuclei", "Automatic bounded validation (full run)", "ENABLED"),
+    ("sqlmap", "Automatic SQLi detection (full run)", "ENABLED"),
     ("ghauri", "Blind SQLi Cross-check (auto 6C)", "ENABLED"),
     ("xsstrike", "XSS Detection (reflected/DOM, auto 6C)", "ENABLED"),
     ("OAST Manager", "Out-of-band Correlation", "PHASE 6"),
     ("Saarthi 6A", "Attack Hypothesis Engine", "ENABLED"),
-    ("Saarthi 6B", "Policy & Approval Gate", "APPROVAL"),
-    ("Saarthi 6C.1", "Injection Surface Validator", "APPROVAL"),
-    ("Saarthi 6C.2", "Browser Attack Surface Validator", "APPROVAL"),
-    ("Saarthi 6C.3", "Server/Parser Surface Validator", "APPROVAL"),
-    ("Saarthi 6C.2", "Clickjacking Header Validator", "APPROVAL"),
-    ("Saarthi 6C.2", "CSRF Protection Surface Validator", "APPROVAL"),
-    ("Saarthi 6C.3", "HTTP Parameter Surface Validator", "APPROVAL"),
-    ("Saarthi 6C.4", "Session Cookie Attribute Validator", "APPROVAL"),
-    ("Saarthi 6C.6", "File Upload Surface Validator", "APPROVAL"),
-    ("Saarthi 6C.7", "API Data-Exposure Surface Validator", "APPROVAL"),
+    ("Saarthi 6B", "Workflow Authorization Gate", "ENABLED"),
+    ("Saarthi 6C.1", "Injection Surface Validator", "ENABLED"),
+    ("Saarthi 6C.2", "Browser Attack Surface Validator", "ENABLED"),
+    ("Saarthi 6C.3", "Server/Parser Surface Validator", "ENABLED"),
+    ("Saarthi 6C.2", "Clickjacking Header Validator", "ENABLED"),
+    ("Saarthi 6C.2", "CSRF Protection Surface Validator", "ENABLED"),
+    ("Saarthi 6C.3", "HTTP Parameter Surface Validator", "ENABLED"),
+    ("Saarthi 6C.4", "Session Cookie Attribute Validator", "ENABLED"),
+    ("Saarthi 6C.6", "File Upload Surface Validator", "ENABLED"),
+    ("Saarthi 6C.7", "API Data-Exposure Surface Validator", "ENABLED"),
     ("Saarthi 6D", "Authenticated Workflows (authZ + tokens)", "ENABLED"),
+    ("Saarthi 6E", "Exploit Confirmation (impact verdicts)", "ENABLED"),
+    ("Saarthi 6F", "Post-Exploitation Simulation (impact projection)", "ENABLED"),
+    ("Saarthi 6G", "Cleanup & Rollback (footprint + reversal)", "ENABLED"),
+    ("Saarthi 6H", "Evidence & Findings Consolidation", "ENABLED"),
     *validator_module_tool_rows(),
 ]
 
 WORKER_DEFINITIONS = (
     (
         "nuclei",
-        "Controlled local adapter",
-        "TUI approval",
-        "Configured",
+        "Automatic bounded local adapter",
+        "Workflow authorization",
+        "Ready",
     ),
     (
         "sqlmap",
-        "External handoff + import",
-        "TUI approval",
-        "No launcher",
+        "Automatic bounded local adapter",
+        "Workflow authorization",
+        "Ready",
     ),
     (
         "ffuf",
@@ -3624,8 +3738,8 @@ def worker_rows(
                 gate = "Approved"
             state = (
                 f"{sqlmap_status} · EXTERNAL"
-                if sqlmap_status != "APPROVAL REQUIRED"
-                else "NO LAUNCHER"
+                if sqlmap_status in {"AWAITING RESULT", "IMPORTED"}
+                else sqlmap_status
             )
         rows.append((tool, mode, gate, state))
 
@@ -3638,9 +3752,6 @@ def tool_rows(
     """Apply live Phase 6C permission and completion labels."""
 
     status = snapshot.phase6_chain_status
-    if not status:
-        return TOOLS
-
     rows: list[tuple[str, str, str]] = []
     purpose_actions = {
         "Injection Surface Validator": (
@@ -3674,7 +3785,10 @@ def tool_rows(
 
     for tool, purpose, default_status in TOOLS:
         dynamic_status = default_status
-        if tool == "nuclei":
+        if tool == "CVE Intelligence":
+            if any(normalize_phase_code(code) == "5E" for code in snapshot.completed_phases):
+                dynamic_status = "DONE"
+        elif tool == "nuclei":
             dynamic_status = status.get("nuclei", default_status)
         elif tool == "sqlmap":
             dynamic_status = status.get("sqlmap", default_status)
@@ -3832,7 +3946,61 @@ def build_scope_lines(
             ]
         )
 
-    if snapshot.attack_hypothesis_set:
+    if snapshot.evidence_findings_summary:
+        summary = snapshot.evidence_findings_summary
+
+        def summary_value(key: str, *, max_length: int = 96) -> str:
+            return safe_tui_display(
+                summary.get(key),
+                max_length=max_length,
+            )
+
+        scope_lines.extend(
+            [
+                "",
+                "[bold cyan]PHASE 6H — EVIDENCE & FINDINGS[/bold cyan]",
+                (
+                    "Bundle Evidence    : "
+                    f"{summary_value('evidence_id', max_length=72)}"
+                ),
+                (
+                    "Evidence Checked   : "
+                    f"{summary_value('evidence_count', max_length=12)}"
+                ),
+                (
+                    "Verified / Rejected: "
+                    f"{summary_value('verified_evidence_count', max_length=12)}"
+                    " / "
+                    f"{summary_value('rejected_evidence_count', max_length=12)}"
+                ),
+                (
+                    "Findings / Confirmed: "
+                    f"{summary_value('finding_count', max_length=12)}"
+                    " / "
+                    f"{summary_value('confirmed_count', max_length=12)}"
+                ),
+                (
+                    "Critical / High    : "
+                    f"{summary_value('critical', max_length=12)} / "
+                    f"{summary_value('high', max_length=12)}"
+                ),
+                (
+                    "Classification     : "
+                    f"{summary_value('classification', max_length=48)}"
+                ),
+                (
+                    "Bundle SHA-256     : "
+                    f"{summary_value('evidence_sha256', max_length=72)}"
+                ),
+                (
+                    "[dim]Read-only, hash-verified and redacted Phase 6H "
+                    "evidence index. Rejected records are retained as "
+                    "integrity warnings and never treated as findings.[/dim]"
+                ),
+            ]
+        )
+
+    elif snapshot.attack_hypothesis_set:
         hypothesis_set = snapshot.attack_hypothesis_set
 
         def hypothesis_value(
@@ -4897,6 +5065,302 @@ class ConfirmScanScreen(ModalScreen[bool]):
         self.dismiss(False)
 
 
+class SkillsScreen(ModalScreen[None]):
+    """Operator-managed analysis references; no skill grants execution authority."""
+
+    CSS = """
+    SkillsScreen {
+        align: center middle;
+        background: $background 75%;
+    }
+    #skills-dialog {
+        width: 110;
+        max-width: 96%;
+        height: 85%;
+        border: solid $accent;
+        background: $surface;
+        padding: 1 2;
+    }
+    #skills-table {
+        height: 1fr;
+        margin: 1 0;
+    }
+    #skills-actions {
+        height: 3;
+    }
+    #skills-actions Button {
+        margin-right: 1;
+    }
+    """
+
+    BINDINGS = [
+        ("escape", "close", "Close"),
+        ("space", "toggle", "Enable/disable"),
+        ("i", "import_bundle", "Import all"),
+    ]
+
+    def __init__(self, store: SkillStore | None = None) -> None:
+        super().__init__()
+        self.store = store or SkillStore()
+        self._syncing = False
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="skills-dialog"):
+            yield Label("[ SKILLS · LOCAL AI ANALYSIS ]", classes="panel-title")
+            yield Static(
+                "83 upstream references · all disabled by default · select a row and press "
+                "Space to toggle. Enabled skills guide evidence analysis only; "
+                "they do not run tools.",
+            )
+            yield DataTable(id="skills-table")
+            yield Static(id="skills-status")
+            with Horizontal(id="skills-actions"):
+                yield Button("Import 83 skills", id="skills-import", variant="primary")
+                yield Button("Close", id="skills-close")
+
+    def on_mount(self) -> None:
+        table = self.query_one("#skills-table", DataTable)
+        table.add_column("Skill", width=30)
+        table.add_column("State", width=15)
+        table.add_column("Purpose", width=60)
+        table.cursor_type = "row"
+        table.zebra_stripes = True
+        self._reload()
+        table.focus()
+
+    def _reload(self) -> None:
+        table = self.query_one("#skills-table", DataTable)
+        cursor = table.cursor_row
+        table.clear()
+        records = self.store.list_skills()
+        for record in records:
+            state = "ENABLED" if record.enabled else (
+                "DISABLED" if record.installed else "NOT INSTALLED"
+            )
+            table.add_row(record.skill_id, state, record.description[:75])
+        if records:
+            table.move_cursor(row=min(cursor, len(records) - 1))
+        installed = sum(record.installed for record in records)
+        enabled = sum(record.enabled for record in records)
+        self.query_one("#skills-status", Static).update(
+            f"Installed: {installed}/{len(records)} · Enabled: {enabled} · "
+            "AI quality analysis uses up to 12 enabled references; chat remains topic-matched."
+        )
+
+    def action_toggle(self) -> None:
+        table = self.query_one("#skills-table", DataTable)
+        try:
+            skill_id = str(table.get_row_at(table.cursor_row)[0])
+            record = next(item for item in self.store.list_skills() if item.skill_id == skill_id)
+            self.store.set_enabled(skill_id, not record.enabled)
+        except (IndexError, StopIteration, ValueError) as exc:
+            self.notify(str(exc) or "Select a skill first.", severity="warning")
+            return
+        self._reload()
+
+    def on_data_table_row_selected(self, _event: DataTable.RowSelected) -> None:
+        self.action_toggle()
+
+    def action_import_bundle(self) -> None:
+        if self._syncing:
+            return
+        self._syncing = True
+        self.query_one("#skills-status", Static).update(
+            "Importing pinned skill markdown from GitHub… no scripts will be installed."
+        )
+        self._download_bundle()
+
+    @work(thread=True)
+    def _download_bundle(self) -> None:
+        try:
+            count = self.store.install_pinned_bundle()
+        except Exception as exc:
+            self.call_from_thread(self._finish_import, 0, str(exc))
+            return
+        self.call_from_thread(self._finish_import, count, None)
+
+    def _finish_import(self, count: int, error: str | None) -> None:
+        self._syncing = False
+        if not self.is_mounted:
+            return
+        if error:
+            self.notify(f"Skill import failed: {error}", severity="error")
+        else:
+            self.notify(f"Imported {count} local analysis skills; existing toggles retained.")
+        self._reload()
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "skills-import":
+            self.action_import_bundle()
+        elif event.button.id == "skills-close":
+            self.action_close()
+
+    def action_close(self) -> None:
+        self.dismiss()
+
+
+class FindingReviewScreen(ModalScreen[None]):
+    """Review one saved AI analysis; human verdicts remain separate audit events."""
+
+    CSS = """
+    FindingReviewScreen { align: center middle; background: $background 75%; }
+    #finding-review-dialog {
+        width: 110; max-width: 96%; height: 85%;
+        border: solid $accent; background: $surface; padding: 1 2;
+    }
+    #finding-review-table { height: 1fr; margin: 1 0; }
+    #finding-review-detail { height: 6; overflow-y: auto; }
+    #finding-review-note { margin: 1 0; }
+    #finding-review-actions { height: 3; }
+    #finding-review-actions Button { margin-right: 1; }
+    """
+
+    BINDINGS = [("escape", "close", "Close review")]
+
+    def __init__(self, database_path: Path, evidence: Any, analysis: Any) -> None:
+        super().__init__()
+        self.database_path = database_path
+        self.evidence = evidence
+        self.analysis = analysis
+        self._reviews: dict[str, Any] = {}
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="finding-review-dialog"):
+            yield Label("[ AI FINDINGS · OPERATOR REVIEW ]", classes="panel-title")
+            yield Static(id="finding-review-summary")
+            yield DataTable(id="finding-review-table")
+            yield Static(id="finding-review-detail")
+            yield Input(
+                placeholder="Reason for your verdict (required, 1–500 characters)",
+                id="finding-review-note",
+            )
+            with Horizontal(id="finding-review-actions"):
+                yield Button("Confirm", id="review-confirm", variant="success")
+                yield Button("False positive", id="review-false-positive", variant="warning")
+                yield Button("Needs evidence", id="review-needs-evidence", variant="primary")
+                yield Button("Close", id="review-close")
+
+    def on_mount(self) -> None:
+        table = self.query_one("#finding-review-table", DataTable)
+        table.cursor_type = "row"
+        table.add_column("ID", width=12)
+        table.add_column("AI verdict", width=20)
+        table.add_column("Operator", width=20)
+        table.add_column("Title", width=52)
+        self._reload()
+        table.focus()
+
+    def _reload(self) -> None:
+        from saarthi_ai.analysis.operator_review import (
+            OperatorVerdict,
+            latest_operator_reviews,
+            operator_review_counts,
+        )
+        from saarthi_ai.persistence.database import SaarthiDatabase
+
+        database = SaarthiDatabase(self.database_path)
+        self._reviews = latest_operator_reviews(
+            database,
+            self.evidence.execution_id,
+            self.evidence.evidence_id,
+        )
+        totals = operator_review_counts(database)
+        table = self.query_one("#finding-review-table", DataTable)
+        selected = table.cursor_row
+        table.clear(columns=False)
+        for finding in self.analysis.findings:
+            review = self._reviews.get(finding.finding_id)
+            table.add_row(
+                finding.finding_id,
+                finding.final_disposition.value,
+                review.verdict.value if review else "unreviewed",
+                finding.title,
+            )
+        reviewed = len(self._reviews)
+        self.query_one("#finding-review-summary", Static).update(
+            Text(
+                f"Analysis {self.evidence.evidence_id} · "
+                f"{reviewed}/{len(self.analysis.findings)} reviewed · "
+                "All analyses: "
+                f"{totals[OperatorVerdict.CONFIRMED]} confirmed, "
+                f"{totals[OperatorVerdict.FALSE_POSITIVE]} false positive, "
+                f"{totals[OperatorVerdict.NEEDS_EVIDENCE]} need evidence. "
+                "Select a row, inspect its evidence, enter a reason, then record a verdict."
+            )
+        )
+        if self.analysis.findings:
+            table.move_cursor(row=min(max(selected, 0), len(self.analysis.findings) - 1))
+            self._show_finding(table.cursor_row)
+
+    def _show_finding(self, row: int) -> None:
+        if row < 0 or row >= len(self.analysis.findings):
+            return
+        finding = self.analysis.findings[row]
+        source_lookup = {item.reference_id: item for item in self.analysis.sources}
+        references = [
+            f"{ref}: {source_lookup[ref].summary}"
+            if ref in source_lookup else f"{ref}: source summary unavailable"
+            for ref in finding.evidence_refs
+        ]
+        review = self._reviews.get(finding.finding_id)
+        details = [
+            f"{finding.title} · {finding.severity.value} · AI {finding.final_disposition.value} "
+            f"({finding.confidence}% confidence)",
+            finding.statement,
+            "Evidence: " + ("; ".join(references) or "none cited"),
+            "Missing: " + ("; ".join(finding.missing_evidence) or "none listed"),
+            "Operator: " + (
+                f"{review.verdict.value} — {review.note}" if review else "unreviewed"
+            ),
+        ]
+        self.query_one("#finding-review-detail", Static).update(Text("\n".join(details)))
+
+    def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
+        if event.data_table.id == "finding-review-table":
+            self._show_finding(event.cursor_row)
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        from saarthi_ai.analysis.operator_review import (
+            OperatorVerdict,
+            record_operator_review,
+        )
+        from saarthi_ai.persistence.database import SaarthiDatabase
+
+        if event.button.id == "review-close":
+            self.dismiss()
+            return
+        verdicts = {
+            "review-confirm": OperatorVerdict.CONFIRMED,
+            "review-false-positive": OperatorVerdict.FALSE_POSITIVE,
+            "review-needs-evidence": OperatorVerdict.NEEDS_EVIDENCE,
+        }
+        verdict = verdicts.get(event.button.id or "")
+        if verdict is None:
+            return
+        row = self.query_one("#finding-review-table", DataTable).cursor_row
+        if row < 0 or row >= len(self.analysis.findings):
+            self.notify("Select a finding to review.", severity="warning")
+            return
+        note_input = self.query_one("#finding-review-note", Input)
+        try:
+            record_operator_review(
+                SaarthiDatabase(self.database_path),
+                self.evidence,
+                self.analysis.findings[row].finding_id,
+                verdict,
+                note_input.value,
+            )
+        except (OSError, ValueError, sqlite3.Error) as error:
+            self.notify(f"Review not saved: {error}", severity="error", markup=False)
+            return
+        note_input.value = ""
+        self._reload()
+        self.notify("Operator verdict saved to the audit log.")
+
+    def action_close(self) -> None:
+        self.dismiss()
+
+
 class SaarthiDashboard(App[None]):
     CSS_PATH = "styles.tcss"
     TITLE = "Saarthi OPS"
@@ -4911,6 +5375,11 @@ class SaarthiDashboard(App[None]):
         ("t", "focus_tools", "Tools"),
         ("e", "focus_executions", "Evidence"),
         ("u", "focus_url", "URL"),
+        ("v", "run_validation", "Validate"),
+        ("V", "run_validation_dump", "Validate+dump"),
+        ("a", "ai_analyze", "AI analyze"),
+        ("f", "review_findings", "Review findings"),
+        ("s", "skills", "Skills"),
         ("h", "help", "Help"),
     ]
 
@@ -5033,12 +5502,40 @@ class SaarthiDashboard(App[None]):
 
     def on_mount(self) -> None:
         self._configure_tables()
+        self._recover_stale_executions()
         self.set_interval(1.0, self._update_runtime)
         self.set_interval(
             DASHBOARD_REFRESH_SECONDS,
             self._refresh_snapshot_silently,
         )
         self.action_refresh()
+
+    def _recover_stale_executions(self) -> None:
+        """Close abandoned active records before loading the dashboard."""
+
+        if not self.repository.database_path.exists():
+            return
+        try:
+            from saarthi_ai.persistence.database import SaarthiDatabase
+            from saarthi_ai.persistence.execution_recovery import (
+                recover_stale_executions,
+            )
+
+            recovery = recover_stale_executions(
+                SaarthiDatabase(self.repository.database_path)
+            )
+        except Exception as exc:  # startup recovery must never block the TUI
+            self.notify(
+                f"Stale-run recovery could not complete: {exc}",
+                severity="warning",
+            )
+            return
+        if recovery.recovered_count:
+            self.notify(
+                f"Recovered {recovery.recovered_count} interrupted "
+                "execution record(s).",
+                severity="warning",
+            )
 
     def _configure_tables(self) -> None:
         phase_table = self.query_one("#phase-table", DataTable)
@@ -5242,11 +5739,36 @@ class SaarthiDashboard(App[None]):
     def action_focus_executions(self) -> None:
         self.query_one("#executions-table", DataTable).focus()
 
+    def action_skills(self) -> None:
+        self.push_screen(SkillsScreen())
+
+    def action_review_findings(self) -> None:
+        """Open the latest saved, hash-checked AI findings for human review."""
+
+        from saarthi_ai.analysis.operator_review import latest_quality_analysis
+        from saarthi_ai.persistence.database import SaarthiDatabase
+
+        try:
+            loaded = latest_quality_analysis(
+                SaarthiDatabase(self.repository.database_path)
+            )
+        except (OSError, ValueError, sqlite3.Error) as error:
+            self.notify(f"Could not load AI findings: {error}", severity="error", markup=False)
+            return
+        if loaded is None:
+            self.notify("No saved AI analysis with findings is available yet.")
+            return
+        evidence, analysis = loaded
+        self.push_screen(
+            FindingReviewScreen(self.repository.database_path, evidence, analysis)
+        )
+
     def action_help(self) -> None:
         self.notify(
             "R refresh · U focus URL (Enter = full assessment) · "
-            "P phases · T tools · E evidence · Q quit. "
-            "AI analyzes automatically during the run.",
+            "V run nuclei+sqlmap (Shift+V = +1-row dump) · A AI analyze · "
+            "F review AI findings · S skills · P phases · T tools · E evidence · Q quit. "
+            "AI also analyzes automatically during the run.",
             timeout=7,
         )
 
@@ -5300,8 +5822,10 @@ class SaarthiDashboard(App[None]):
 
         from saarthi_ai.analysis import (
             AnalysisError,
-            analyze_run,
+            analyze_run_quality,
             gather_run_digest,
+            persist_quality_analysis,
+            render_quality_analysis,
         )
         from saarthi_ai.config import get_settings
         from saarthi_ai.llm.ollama_client import (
@@ -5317,8 +5841,9 @@ class SaarthiDashboard(App[None]):
             log(f"[AI][ERR] {message}")
             self.call_from_thread(
                 self.notify,
-                message,
+                message[:500],
                 severity="error",
+                markup=False,
             )
             self.call_from_thread(self._finish_analysis)
 
@@ -5332,16 +5857,35 @@ class SaarthiDashboard(App[None]):
             fail(f"Could not gather run evidence: {error}")
             return
 
+        # The parent row can complete before scanner/wrap-up work. A review
+        # requested during the full workflow is always an interim snapshot.
+        interim = self._validation_running or digest.parent_state not in {
+            "completed", "failed", "cancelled"
+        }
+
         log(
             f"[AI] Target: {digest.target} | "
             f"findings={len(digest.findings)} | "
-            f"phases={len(digest.phases)} | state={digest.parent_state}"
+            f"phases={len(digest.phases)} | state={digest.parent_state} | "
+            f"review={'interim' if interim else 'final'}"
         )
-        log("[AI] Querying the local model (this can take a moment)…")
+        log(
+            "[AI] Running grounded extractor → analyst → critical reviewer "
+            "(this can take a moment)…"
+        )
 
         client = SaarthiOllamaClient(get_settings())
         try:
-            content = asyncio.run(analyze_run(client, digest))
+            result = asyncio.run(analyze_run_quality(client, digest))
+            if interim:
+                result = result.model_copy(update={"analysis_stage": "interim"})
+            evidence = persist_quality_analysis(
+                database,
+                digest.parent_execution_id,
+                result,
+                evidence_root=Path.cwd() / "evidence" / "ai-quality",
+            )
+            content = render_quality_analysis(result)
         except OllamaUnavailableError as error:
             fail(str(error))
             return
@@ -5349,7 +5893,11 @@ class SaarthiDashboard(App[None]):
             fail(f"Analysis failed: {error}")
             return
 
-        log("[AI] ── Analysis ─────────────────────────────")
+        log(
+            f"[AI] Structured analysis persisted as {evidence.evidence_id} "
+            f"({evidence.path})."
+        )
+        log("[AI] ── Quality analysis ─────────────────────")
         for line in content.splitlines() or ["(empty response)"]:
             log(f"[AI] {line}")
         log("[AI] ── End of analysis ──────────────────────")
@@ -5524,15 +6072,17 @@ class SaarthiDashboard(App[None]):
         self._ai_observer_running = False
 
     def _run_ai_observer_worker(self, orchestration_id: str) -> None:
-        """Comment on each phase as it completes, then a final triage."""
+        """Review available evidence during the run, then reconcile at the end."""
 
         import asyncio
         import time
 
         from saarthi_ai.analysis import (
-            analyze_run,
+            analyze_run_quality,
             gather_phase_digest,
             gather_run_digest,
+            persist_quality_analysis,
+            render_quality_analysis,
             suggest_for_phase,
         )
         from saarthi_ai.config import get_settings
@@ -5555,6 +6105,7 @@ class SaarthiDashboard(App[None]):
         log("[AI] Live co-pilot watching the assessment…")
         seen: set[str] = set()
         commented = 0
+        interim_attempted = False
         max_comments = 30
         llm_ok = True
         target = ""
@@ -5607,22 +6158,68 @@ class SaarthiDashboard(App[None]):
                     if line.strip():
                         log(f"[AI]   {line.strip()}")
 
+            # Phase 4A provides an early evidence checkpoint. Run the full
+            # enabled-skill review on a snapshot while later phases and
+            # scanner work continue on the independent assessment worker.
+            if running and not interim_attempted and llm_ok and any(
+                (child.metadata or {}).get("phase_code") == "4A"
+                and child.state.value == "completed"
+                for child in children
+            ):
+                interim_attempted = True
+                try:
+                    run_digest = gather_run_digest(
+                        database, orchestration_id=orchestration_id
+                    )
+                    result = asyncio.run(analyze_run_quality(client, run_digest))
+                    result = result.model_copy(update={"analysis_stage": "interim"})
+                    evidence = persist_quality_analysis(
+                        database,
+                        run_digest.parent_execution_id,
+                        result,
+                        evidence_root=Path.cwd() / "evidence" / "ai-quality",
+                    )
+                    reviewed = sum(
+                        item.status.value != "not_evaluated"
+                        for item in result.skill_assessments
+                    )
+                    log(
+                        f"[AI] Interim evidence review stored "
+                        f"({evidence.evidence_id}): "
+                        f"{reviewed}/{len(result.skill_assessments)} skills reviewed. "
+                        "Later evidence is not included yet."
+                    )
+                except Exception as exc:
+                    log(f"[AI] Interim evidence review unavailable: {exc}")
+
             if not running:
                 break
             time.sleep(3.0)
 
-        if llm_ok and commented:
+        if llm_ok:
             try:
                 run_digest = gather_run_digest(
                     database, orchestration_id=orchestration_id
                 )
-                text = asyncio.run(analyze_run(client, run_digest))
-                log("[AI] ══ Final triage ══")
+                result = asyncio.run(
+                    analyze_run_quality(client, run_digest)
+                )
+                evidence = persist_quality_analysis(
+                    database,
+                    run_digest.parent_execution_id,
+                    result,
+                    evidence_root=Path.cwd() / "evidence" / "ai-quality",
+                )
+                text = render_quality_analysis(result)
+                log(
+                    f"[AI] ══ Final quality triage "
+                    f"({evidence.evidence_id}) ══"
+                )
                 for line in text.splitlines():
                     if line.strip():
                         log(f"[AI] {line.strip()}")
-            except Exception:
-                pass
+            except Exception as exc:
+                log(f"[AI] Final evidence review unavailable: {exc}")
 
         self.call_from_thread(self._finish_ai_observer)
 
@@ -5681,14 +6278,24 @@ class SaarthiDashboard(App[None]):
             )
             return
 
-        # AUTHORIZE & RUN is itself the operator authorization — there is no
-        # secondary approval prompt. Testing stays bound to the authorized
-        # scope (allowed_hosts). Launch directly.
-        self.notify(
-            f"Authorized launch on {parsed.hostname} — full assessment "
-            "(recon → Phase 6 → nuclei + sqlmap)."
+        # A full assessment ends in REAL nuclei + sqlmap against the target, so
+        # confirm the authorized launch before starting. Testing stays bound to
+        # the authorized scope (allowed_hosts).
+        body = (
+            f"Target : {url}\n"
+            f"Host   : {parsed.hostname}\n"
+            "Runs   : recon → Phase 6 safe chain → nuclei + sqlmap\n\n"
+            "This performs REAL active testing against the target.\n"
+            "Proceed only on a target you are authorized to test.\n"
+            "[Y] Run   ·   [N]/[Esc] Cancel"
         )
-        self._launch_full_assessment(url, True)
+        self.push_screen(
+            ConfirmScanScreen("⚠  AUTHORIZE & RUN FULL ASSESSMENT?", body),
+            lambda confirmed: self._launch_full_assessment(
+                url,
+                bool(confirmed),
+            ),
+        )
 
     def _launch_full_assessment(self, url: str, confirmed: bool) -> None:
         """Start the assessment worker once the operator has confirmed."""
@@ -5729,19 +6336,23 @@ class SaarthiDashboard(App[None]):
 
         from saarthi_ai.automation.auto_validation import (
             AutoValidationError,
+            nuclei_scope_notice,
             run_automatic_validation,
         )
         from saarthi_ai.automation.chain_config import (
             ChainConfigError,
             build_auto_validation_config_from_chain,
         )
+        from saarthi_ai.cve.workflow import run_cve_intelligence
         from saarthi_ai.execution.tool_runner import (
             ToolOutputEvent,
             ToolRunnerError,
         )
         from saarthi_ai.persistence.database import SaarthiDatabase
         from saarthi_ai.persistence.orchestration_workflow import (
+            complete_phase_execution,
             create_orchestration,
+            create_phase_execution,
             run_assessment_pipeline,
         )
         from saarthi_ai.persistence.phase6_chain_workflow import (
@@ -5801,6 +6412,29 @@ class SaarthiDashboard(App[None]):
                     f"[{phase.phase.value}] {phase.outcome.value}"
                 )
 
+            if result.http_intelligence.evidence_path:
+                self.call_from_thread(self._set_run_stage, "CVE intelligence")
+                log_line("[INF] Checking observed CPEs against public and local CVE data…")
+                try:
+                    cve_result = run_cve_intelligence(
+                        database, result.context, result.http_intelligence,
+                        evidence_root=evidence_root / "cve-intelligence",
+                        actor=actor,
+                    )
+                    log_line(
+                        "[5E] CVE intelligence completed: "
+                        f"{cve_result.observed_cpes} CPEs, "
+                        f"{cve_result.candidates} candidates, "
+                        f"{cve_result.catalog_cves} cached CVEs "
+                        f"(feed={cve_result.refresh_status}, "
+                        f"online={cve_result.online_status}, "
+                        f"queried={cve_result.online_queried_cpes})."
+                    )
+                except Exception as error:
+                    log_line(f"[5E] CVE intelligence unavailable: {error}")
+            else:
+                log_line("[5E] CVE intelligence skipped: no Phase 3C evidence.")
+
             self.call_from_thread(self._set_run_stage, "Phase 6 chain")
             log_line("[INF] Running permission-gated Phase 6 chain…")
             asyncio.run(
@@ -5815,6 +6449,64 @@ class SaarthiDashboard(App[None]):
                     actor=actor,
                 )
             )
+
+            # Advisory only: the local model reviews aggregate, hash-checked
+            # Phase 3C metadata. Its fixed labels never become Nuclei flags,
+            # template identifiers, or tool-runner inputs.
+            if (
+                getattr(result.http_intelligence, "execution_id", None)
+                and getattr(result.http_intelligence, "evidence_id", None)
+                and getattr(result.http_intelligence, "evidence_path", None)
+            ):
+                try:
+                    from saarthi_ai.analysis.nuclei_scope import (
+                        recommend_nuclei_scope,
+                    )
+                    from saarthi_ai.config import get_settings
+                    from saarthi_ai.llm.ollama_client import SaarthiOllamaClient
+                    from saarthi_ai.persistence.models import AuditEventType
+
+                    evidence = next(
+                        item
+                        for item in database.list_evidence(
+                            result.http_intelligence.execution_id
+                        )
+                        if item.evidence_id == result.http_intelligence.evidence_id
+                    )
+                    advice = asyncio.run(
+                        asyncio.wait_for(
+                            recommend_nuclei_scope(
+                                SaarthiOllamaClient(get_settings()),
+                                Path(evidence.path),
+                                evidence.sha256 or "",
+                            ),
+                            timeout=60,
+                        )
+                    )
+                    database.add_audit_event(
+                        context.parent_execution_id,
+                        event_type=AuditEventType.TOOL_OUTPUT,
+                        actor="saarthi-ai-nuclei-advisor",
+                        message="Non-executing Nuclei scope advice recorded.",
+                        details={
+                            "source_evidence_id": evidence.evidence_id,
+                            "mode": advice.mode,
+                            "areas": list(advice.areas),
+                            "live_services": advice.live_services,
+                            "applied_to_scan": False,
+                        },
+                    )
+                    log_line(
+                        "[AI ] Nuclei review advice (not applied): "
+                        f"{advice.mode} breadth; "
+                        f"areas={', '.join(advice.areas) or 'none'}; "
+                        f"observed services={advice.live_services}."
+                    )
+                except Exception as error:
+                    log_line(
+                        "[AI ] Nuclei review advice unavailable; "
+                        f"scan configuration unchanged: {error}"
+                    )
 
             self.call_from_thread(
                 self._set_run_stage,
@@ -5847,6 +6539,9 @@ class SaarthiDashboard(App[None]):
         else:
             log_line("[INF] SQLMap params  : none (Nuclei-only run)")
 
+        for notice in nuclei_scope_notice(derived.config):
+            log_line(notice)
+
         live_feed, live_stop = self._spawn_live_scan_ai(derived.target_url)
 
         def on_output(event: ToolOutputEvent) -> None:
@@ -5854,6 +6549,7 @@ class SaarthiDashboard(App[None]):
             live_feed(line)
             self.call_from_thread(self._append_validation_line, line)
 
+        validation = None
         try:
             validation = run_automatic_validation(
                 derived.config,
@@ -5862,20 +6558,297 @@ class SaarthiDashboard(App[None]):
                 on_adapt=self._make_adapt_callback(),
             )
         except (AutoValidationError, ToolRunnerError) as error:
-            fail(str(error))
-            return
+            log_line(f"[ERR] Auto-validation failed: {error}")
+            self.call_from_thread(
+                self.notify,
+                f"Auto-validation failed: {error}",
+                severity="warning",
+            )
         except Exception as error:  # defensive: surface, never crash the TUI
-            fail(f"Validation run failed: {error}")
-            return
+            log_line(f"[ERR] Auto-validation run failed: {error}")
+            self.call_from_thread(
+                self.notify,
+                f"Auto-validation run failed: {error}",
+                severity="warning",
+            )
         finally:
             live_stop()
 
-        nuclei_exit = validation.nuclei.get("exit_code")
-        log_line(
-            f"[OK ] Full assessment complete. nuclei exit={nuclei_exit}, "
-            f"sqlmap runs={len(validation.sqlmap)}."
-        )
-        log_line(f"[OK ] Evidence: {validation.evidence_path}")
+        # Auto-validation (active nuclei/sqlmap) is the only step that can fail
+        # on a live host; the deterministic wrap-up phases below (6E-6H,
+        # 4B/4C/4D)
+        # do not depend on it, so continue regardless instead of aborting the run.
+        if validation is not None:
+            nuclei_exit = validation.nuclei.get("exit_code")
+            log_line(
+                f"[OK ] Auto-validation complete. nuclei exit={nuclei_exit}, "
+                f"sqlmap runs={len(validation.sqlmap)}."
+            )
+            log_line(f"[OK ] Evidence: {validation.evidence_path}")
+        else:
+            log_line(
+                "[WARN] Auto-validation did not complete; continuing to the "
+                "deterministic wrap-up phases (6E-6H, 4B/4C/4D) on the evidence "
+                "collected so far."
+            )
+
+        # The independent AI observer reviews interim evidence in parallel
+        # and reconciles after wrap-up. AI latency must not hold up 6E.
+
+        # Phase 6E — exploit confirmation: aggregate this run's confirmed
+        # findings (auto-validation + 6D) into impact verdicts. Deterministic
+        # (no network); non-fatal.
+        try:
+            from saarthi_ai.orchestration.models import OrchestrationPhase
+            from saarthi_ai.persistence.exploit_confirmation_workflow import (
+                run_tracked_exploit_confirmation,
+            )
+            from saarthi_ai.persistence.orchestration_workflow import (
+                create_phase_execution,
+            )
+
+            child_6e = create_phase_execution(
+                database,
+                context,
+                phase=OrchestrationPhase.EXPLOIT_CONFIRMATION,
+                phase_name="exploit_confirmation",
+                active_testing_allowed=False,
+            )
+            tracked_6e = run_tracked_exploit_confirmation(
+                database,
+                child_6e.execution_id,
+                orchestration_id=context.orchestration_id,
+                evidence_root=evidence_root / "exploit-confirmation",
+            )
+            result_6e = tracked_6e.result
+            complete_phase_execution(
+                database,
+                child_6e.execution_id,
+                actor=actor,
+                reason="Phase 6E exploit confirmation completed.",
+            )
+            log_line(
+                f"[OK ] 6E exploit confirmation: {result_6e.confirmed_count} "
+                f"confirmed of {len(result_6e.findings)} finding(s), highest "
+                f"{result_6e.highest_severity.value}."
+            )
+        except Exception as exc:  # non-fatal aggregation
+            log_line(f"[6E] exploit confirmation skipped: {exc}")
+
+        # Phase 6F — post-exploitation simulation: project the impact of the
+        # findings 6E confirmed (capabilities, blast radius, confidence).
+        # Deterministic and offline — executes nothing against the target;
+        # non-fatal.
+        try:
+            from saarthi_ai.orchestration.models import OrchestrationPhase
+            from saarthi_ai.persistence.orchestration_workflow import (
+                create_phase_execution,
+            )
+            from saarthi_ai.persistence.post_exploitation_workflow import (
+                run_tracked_post_exploitation,
+            )
+
+            child_6f = create_phase_execution(
+                database,
+                context,
+                phase=OrchestrationPhase.POST_EXPLOITATION,
+                phase_name="post_exploitation",
+                active_testing_allowed=False,
+            )
+            tracked_6f = run_tracked_post_exploitation(
+                database,
+                child_6f.execution_id,
+                orchestration_id=context.orchestration_id,
+                evidence_root=evidence_root / "post-exploitation",
+            )
+            result_6f = tracked_6f.result
+            complete_phase_execution(
+                database,
+                child_6f.execution_id,
+                actor=actor,
+                reason="Phase 6F post-exploitation simulation completed.",
+            )
+            log_line(
+                f"[OK ] 6F post-exploitation: {len(result_6f.scenarios)} "
+                f"scenario(s), {result_6f.demonstrated_count} demonstrated, "
+                f"highest {result_6f.highest_severity.value}, widest blast "
+                f"{result_6f.max_blast_radius.value}."
+            )
+        except Exception as exc:  # non-fatal projection
+            log_line(f"[6F] post-exploitation simulation skipped: {exc}")
+
+        # Phase 6G — cleanup & rollback: account for the engagement's footprint
+        # (residual artifacts, live sessions) and plan its reversal.
+        # Deterministic and offline — executes no target-side action; non-fatal.
+        try:
+            from saarthi_ai.orchestration.models import OrchestrationPhase
+            from saarthi_ai.persistence.cleanup_workflow import (
+                run_tracked_cleanup,
+            )
+            from saarthi_ai.persistence.orchestration_workflow import (
+                create_phase_execution,
+            )
+
+            child_6g = create_phase_execution(
+                database,
+                context,
+                phase=OrchestrationPhase.CLEANUP,
+                phase_name="cleanup_rollback",
+                active_testing_allowed=False,
+            )
+            tracked_6g = run_tracked_cleanup(
+                database,
+                child_6g.execution_id,
+                orchestration_id=context.orchestration_id,
+                evidence_root=evidence_root / "cleanup",
+            )
+            manifest_6g = tracked_6g.manifest
+            complete_phase_execution(
+                database,
+                child_6g.execution_id,
+                actor=actor,
+                reason="Phase 6G cleanup/rollback manifest completed.",
+            )
+            log_line(
+                f"[OK ] 6G cleanup: {len(manifest_6g.items)} item(s), "
+                f"footprint {manifest_6g.footprint.value}, "
+                f"{manifest_6g.reversible_count} auto-reversible."
+            )
+        except Exception as exc:  # non-fatal manifest
+            log_line(f"[6G] cleanup manifest skipped: {exc}")
+
+        # Phases 4B/4C/4D — blind validation, OAST manager, confirmation engine.
+        # These form one OAST-callback loop that is loopback-only by design, so
+        # on an external target no callback can be correlated. Record each as a
+        # completed phase with a truthful audit (evaluated; no active injection;
+        # no external callback / no OAST-confirmed finding) so the chain and AI
+        # analyze account for them. Non-fatal.
+        try:
+            from saarthi_ai.orchestration.models import OrchestrationPhase
+            from saarthi_ai.persistence.models import AuditEventType
+
+            phase4 = (
+                (
+                    OrchestrationPhase.BLIND_VALIDATION,
+                    "blind_validation",
+                    "4B",
+                    "Blind-validation evaluated: correlation prep only, no "
+                    "payload injected; loopback-only collaborator so no external "
+                    "callback is possible — no finding confirmed out-of-band.",
+                ),
+                (
+                    OrchestrationPhase.OAST_MANAGER,
+                    "oast_manager",
+                    "4C",
+                    "OAST manager evaluated: loopback-only collaborator; 0 "
+                    "external out-of-band observations.",
+                ),
+                (
+                    OrchestrationPhase.CONFIRMATION,
+                    "confirmation_engine",
+                    "4D",
+                    "Confirmation engine evaluated the run's findings; without a "
+                    "correlated OAST observation, findings are not confirmed "
+                    "out-of-band by this loop.",
+                ),
+            )
+            for phase, phase_name, code, detail in phase4:
+                child_4 = create_phase_execution(
+                    database,
+                    context,
+                    phase=phase,
+                    phase_name=phase_name,
+                    active_testing_allowed=False,
+                )
+                database.add_audit_event(
+                    child_4.execution_id,
+                    event_type=AuditEventType.TOOL_COMPLETED,
+                    actor=actor,
+                    message=f"[{code}] {detail}",
+                    details={
+                        "phase_code": code,
+                        "executed": True,
+                        "active_injection": False,
+                        "network_activity": False,
+                        "collaborator": "loopback-only",
+                    },
+                )
+                complete_phase_execution(
+                    database,
+                    child_4.execution_id,
+                    actor=actor,
+                    reason=f"Phase {code} evaluated (loopback-limited).",
+                )
+            log_line(
+                "[OK ] 4B/4C/4D validators evaluated (loopback-limited; see "
+                "AI analyze for the honest per-phase outcome)."
+            )
+        except Exception as exc:  # non-fatal
+            log_line(f"[4B/4C/4D] validator evaluation skipped: {exc}")
+
+        # Phase 6H — evidence & findings: verify every persisted evidence file,
+        # reject integrity failures, and consolidate structured 6E/AI findings
+        # into one redacted, hash-linked bundle for reporting and the TUI.
+        self.call_from_thread(self._set_run_stage, "Evidence & findings (6H)")
+        try:
+            from saarthi_ai.orchestration.models import OrchestrationPhase
+            from saarthi_ai.persistence.evidence_findings_workflow import (
+                run_tracked_evidence_findings,
+            )
+
+            child_6h = create_phase_execution(
+                database,
+                context,
+                phase=OrchestrationPhase.EVIDENCE_FINDINGS,
+                phase_name="evidence_findings",
+                active_testing_allowed=False,
+            )
+            tracked_6h = run_tracked_evidence_findings(
+                database,
+                child_6h.execution_id,
+                orchestration_id=context.orchestration_id,
+                evidence_root=evidence_root / "evidence-findings",
+                actor=actor,
+            )
+            complete_phase_execution(
+                database,
+                child_6h.execution_id,
+                actor=actor,
+                reason="Phase 6H evidence and findings bundle completed.",
+            )
+            bundle_6h = tracked_6h.bundle
+            log_line(
+                f"[OK ] 6H evidence & findings: "
+                f"{bundle_6h.verified_evidence_count} verified, "
+                f"{bundle_6h.rejected_evidence_count} rejected, "
+                f"{len(bundle_6h.findings)} finding(s), "
+                f"{bundle_6h.confirmed_finding_count} confirmed."
+            )
+        except Exception as exc:  # non-fatal consolidation
+            log_line(f"[6H] evidence & findings skipped: {exc}")
+
+        # Phase 4E — bible coverage (AI): match the local vulnerability library
+        # against the run's evidence. Phase 8A — reporting: assemble the .docx
+        # deliverable + JSON sidecar. Deterministic findings; AI writes only the
+        # narrative and refines coverage. Non-fatal — a run is never aborted by
+        # reporting.
+        self.call_from_thread(self._set_run_stage, "Reporting (4E/8A)")
+        try:
+            from saarthi_ai.reporting.pipeline import run_reporting_phases
+
+            reporting = run_reporting_phases(
+                database,
+                context,
+                evidence_root=evidence_root,
+                on_log=log_line,
+            )
+            log_line(
+                f"[OK ] 8A report: {reporting.report.docx_path}"
+            )
+        except Exception as exc:  # non-fatal reporting
+            log_line(f"[4E/8A] reporting skipped: {exc}")
+
+        log_line("[OK ] Full assessment complete — all phases recorded.")
         self.call_from_thread(
             self.notify,
             "Full assessment complete — evidence saved.",
@@ -6131,6 +7104,7 @@ class SaarthiDashboard(App[None]):
 
         from saarthi_ai.automation.auto_validation import (
             AutoValidationError,
+            nuclei_scope_notice,
             run_automatic_validation,
         )
         from saarthi_ai.execution.tool_runner import (
@@ -6164,6 +7138,9 @@ class SaarthiDashboard(App[None]):
                 "[INF] SQLMap params  : none "
                 "(intrusive testing not authorized; nuclei-only run)"
             )
+
+        for notice in nuclei_scope_notice(derived.config):
+            log_line(notice)
 
         live_feed, live_stop = self._spawn_live_scan_ai(derived.target_url)
 

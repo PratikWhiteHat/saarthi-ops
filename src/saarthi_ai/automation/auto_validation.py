@@ -346,6 +346,35 @@ def _nuclei_arguments(config: AutoValidationConfig) -> list[str]:
     return arguments
 
 
+def nuclei_scope_notice(config: AutoValidationConfig) -> tuple[str, ...]:
+    """Describe scan scope without selecting templates or invoking Nuclei.
+
+    This is operator-facing telemetry only. It never changes the runner's
+    arguments or converts analysis into executable template choices.
+    """
+
+    scope = (
+        "configured template path"
+        if config.nuclei_templates_path
+        else "all installed templates (default)"
+    )
+    return (
+        f"[Nuclei plan] Scope: {scope}.",
+        (
+            "[Nuclei plan] Limits: "
+            f"{config.nuclei_rate_limit} req/s, "
+            f"{config.nuclei_concurrency} concurrent, "
+            f"{config.nuclei_request_timeout_seconds}s/request, "
+            f"{config.nuclei_process_timeout_seconds}s/process."
+        ),
+        (
+            "[Nuclei plan] Runtime cannot be reliably estimated from these "
+            "limits alone; the full installed set may take a long time. "
+            "This notice does not select or run templates."
+        ),
+    )
+
+
 def _sqlmap_arguments(
     config: AutoValidationConfig,
     candidate: SqlmapCandidate,

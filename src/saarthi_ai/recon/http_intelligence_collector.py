@@ -176,6 +176,22 @@ def _extract_url(payload: dict[str, Any]) -> str | None:
     return None
 
 
+def _extract_cpes(payload: dict[str, Any]) -> list[str]:
+    """Accept current httpx CPE strings/objects, not inferred product names."""
+
+    raw = payload.get("cpe")
+    entries = raw if isinstance(raw, list) else [raw]
+    cpes: set[str] = set()
+    for entry in entries[:100]:
+        value = entry.get("cpe") if isinstance(entry, dict) else entry
+        if not isinstance(value, str):
+            continue
+        value = value.strip()
+        if value.startswith("cpe:2.3:") and len(value) <= 500:
+            cpes.add(value)
+    return sorted(cpes)
+
+
 def _parse_record(
     payload: dict[str, Any],
     domain: str,
@@ -264,6 +280,7 @@ def _parse_record(
         status_code=status_code,
         title=payload.get("title") if isinstance(payload.get("title"), str) else None,
         technologies=normalized_technologies,
+        cpes=_extract_cpes(payload),
         webserver=(
             payload.get("webserver")
             if isinstance(payload.get("webserver"), str)
@@ -367,6 +384,7 @@ def collect_http_intelligence(
             "-status-code",
             "-title",
             "-tech-detect",
+            "-cpe",
             "-content-length",
             "-ip",
             "-tls-grab",
