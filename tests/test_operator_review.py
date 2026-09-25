@@ -120,6 +120,23 @@ def test_review_requires_matching_finding_reason_and_digest(tmp_path):
     assert latest_quality_analysis(database) is None
 
 
+def test_interim_findings_are_not_offered_for_operator_verdict(tmp_path):
+    database, evidence = _saved_analysis(tmp_path)
+    result = load_quality_analysis(evidence).model_copy(
+        update={"analysis_stage": "interim"}
+    )
+    interim = persist_quality_analysis(
+        database,
+        evidence.execution_id,
+        result,
+        evidence_root=tmp_path / "ai-quality",
+    )
+    assert interim.metadata["analysis_stage"] == "interim"
+    assert interim.step_id == "live-ai-quality"
+    # The older final result is still the most recent reviewable result.
+    assert latest_quality_analysis(database)[0].evidence_id == evidence.evidence_id
+
+
 @pytest.mark.asyncio
 async def test_tui_review_screen_saves_operator_verdict(tmp_path):
     database, evidence = _saved_analysis(tmp_path)

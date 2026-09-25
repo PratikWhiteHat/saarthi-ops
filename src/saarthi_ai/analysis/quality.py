@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 from uuid import uuid4
 
 from pydantic import BaseModel, Field, ValidationError
@@ -202,6 +202,7 @@ class QualityAnalysisResult(BaseModel):
     target: str
     generated_at: str
     pass_count: int = 3
+    analysis_stage: Literal["interim", "final"] = "final"
     source_reference_count: int
     sources: tuple[SourceCitation, ...] = ()
     skills_by_pass: tuple[SkillUse, ...] = ()
@@ -959,7 +960,9 @@ def render_quality_analysis(result: QualityAnalysisResult) -> str:
         for disposition in FinalDisposition
     }
     lines = [
-        "AI QUALITY ANALYSIS — extractor → analyst → critical reviewer → skill review",
+        "AI QUALITY ANALYSIS "
+        f"({result.analysis_stage.upper()}) — extractor → analyst → "
+        "critical reviewer → skill review",
         (
             f"Grounded facts: {len(result.facts)} | Findings: {len(result.findings)} | "
             f"Sources: {result.source_reference_count}"
@@ -1058,11 +1061,15 @@ def persist_quality_analysis(
             sha256=digest,
             size_bytes=len(content),
             content_type="application/json",
-            step_id="pre-6e-ai-quality",
+            step_id=(
+                "live-ai-quality" if result.analysis_stage == "interim"
+                else "final-ai-quality"
+            ),
             tool_name="saarthi-local-ai",
             metadata={
                 "orchestration_id": result.orchestration_id,
                 "pass_count": result.pass_count,
+                "analysis_stage": result.analysis_stage,
                 "source_reference_count": result.source_reference_count,
                 "fact_count": len(result.facts),
                 "finding_count": len(result.findings),

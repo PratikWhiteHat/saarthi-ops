@@ -5857,17 +5857,17 @@ class SaarthiDashboard(App[None]):
             fail(f"Could not gather run evidence: {error}")
             return
 
-        if digest.parent_state not in {"completed", "failed", "cancelled"}:
-            fail(
-                "Assessment is still running. Wait for the workflow to finish "
-                "before starting final AI quality analysis."
-            )
-            return
+        # The parent row can complete before scanner/wrap-up work. A review
+        # requested during the full workflow is always an interim snapshot.
+        interim = self._validation_running or digest.parent_state not in {
+            "completed", "failed", "cancelled"
+        }
 
         log(
             f"[AI] Target: {digest.target} | "
             f"findings={len(digest.findings)} | "
-            f"phases={len(digest.phases)} | state={digest.parent_state}"
+            f"phases={len(digest.phases)} | state={digest.parent_state} | "
+            f"review={'interim' if interim else 'final'}"
         )
         log(
             "[AI] Running grounded extractor → analyst → critical reviewer "
@@ -5877,6 +5877,8 @@ class SaarthiDashboard(App[None]):
         client = SaarthiOllamaClient(get_settings())
         try:
             result = asyncio.run(analyze_run_quality(client, digest))
+            if interim:
+                result = result.model_copy(update={"analysis_stage": "interim"})
             evidence = persist_quality_analysis(
                 database,
                 digest.parent_execution_id,
@@ -6070,7 +6072,7 @@ class SaarthiDashboard(App[None]):
         self._ai_observer_running = False
 
     def _run_ai_observer_worker(self, orchestration_id: str) -> None:
-        """Comment on each phase as it completes, then a final triage."""
+        """Review available evidence during the run, then reconcile at the end."""
 
         import asyncio
         import time
@@ -6103,6 +6105,7 @@ class SaarthiDashboard(App[None]):
         log("[AI] Live co-pilot watching the assessment…")
         seen: set[str] = set()
         commented = 0
+        interim_attempted = False
         max_comments = 30
         llm_ok = True
         target = ""
@@ -6155,11 +6158,45 @@ class SaarthiDashboard(App[None]):
                     if line.strip():
                         log(f"[AI]   {line.strip()}")
 
+            # Phase 4A provides an early evidence checkpoint. Run the full
+            # enabled-skill review on a snapshot while later phases and
+            # scanner work continue on the independent assessment worker.
+            if running and not interim_attempted and llm_ok and any(
+                (child.metadata or {}).get("phase_code") == "4A"
+                and child.state.value == "completed"
+                for child in children
+            ):
+                interim_attempted = True
+                try:
+                    run_digest = gather_run_digest(
+                        database, orchestration_id=orchestration_id
+                    )
+                    result = asyncio.run(analyze_run_quality(client, run_digest))
+                    result = result.model_copy(update={"analysis_stage": "interim"})
+                    evidence = persist_quality_analysis(
+                        database,
+                        run_digest.parent_execution_id,
+                        result,
+                        evidence_root=Path.cwd() / "evidence" / "ai-quality",
+                    )
+                    reviewed = sum(
+                        item.status.value != "not_evaluated"
+                        for item in result.skill_assessments
+                    )
+                    log(
+                        f"[AI] Interim evidence review stored "
+                        f"({evidence.evidence_id}): "
+                        f"{reviewed}/{len(result.skill_assessments)} skills reviewed. "
+                        "Later evidence is not included yet."
+                    )
+                except Exception as exc:
+                    log(f"[AI] Interim evidence review unavailable: {exc}")
+
             if not running:
                 break
             time.sleep(3.0)
 
-        if llm_ok and commented:
+        if llm_ok:
             try:
                 run_digest = gather_run_digest(
                     database, orchestration_id=orchestration_id
@@ -6181,8 +6218,8 @@ class SaarthiDashboard(App[None]):
                 for line in text.splitlines():
                     if line.strip():
                         log(f"[AI] {line.strip()}")
-            except Exception:
-                pass
+            except Exception as exc:
+                log(f"[AI] Final evidence review unavailable: {exc}")
 
         self.call_from_thread(self._finish_ai_observer)
 
@@ -6555,51 +6592,8 @@ class SaarthiDashboard(App[None]):
                 "collected so far."
             )
 
-        # Advisory AI quality pass before 6E. The model reviews only the
-        # locally persisted, integrity-addressed evidence. Failure or absence
-        # of the local model never changes policy or blocks deterministic 6E.
-        try:
-            from saarthi_ai.analysis.engine import gather_run_digest
-            from saarthi_ai.analysis.quality import (
-                analyze_run_quality,
-                persist_quality_analysis,
-            )
-            from saarthi_ai.config import get_settings
-            from saarthi_ai.llm.ollama_client import SaarthiOllamaClient
-
-            self.call_from_thread(self._set_run_stage, "AI evidence review")
-            log_line(
-                "[AI ] Running grounded pre-6E evidence-quality review "
-                "(advisory; policy remains deterministic)…"
-            )
-            digest = gather_run_digest(
-                database,
-                orchestration_id=context.orchestration_id,
-            )
-            quality_result = asyncio.run(
-                analyze_run_quality(
-                    SaarthiOllamaClient(get_settings()),
-                    digest,
-                )
-            )
-            quality_evidence = persist_quality_analysis(
-                database,
-                digest.parent_execution_id,
-                quality_result,
-                evidence_root=Path.cwd() / "evidence" / "ai-quality",
-            )
-            log_line(
-                f"[AI ] Pre-6E review stored: "
-                f"facts={len(quality_result.facts)}, "
-                f"findings={len(quality_result.findings)}, "
-                f"warnings={len(quality_result.warnings)}, "
-                f"evidence={quality_evidence.evidence_id}."
-            )
-        except Exception as exc:  # advisory and deliberately non-fatal
-            log_line(
-                f"[AI ] Pre-6E review unavailable; deterministic 6E will "
-                f"continue: {exc}"
-            )
+        # The independent AI observer reviews interim evidence in parallel
+        # and reconciles after wrap-up. AI latency must not hold up 6E.
 
         # Phase 6E — exploit confirmation: aggregate this run's confirmed
         # findings (auto-validation + 6D) into impact verdicts. Deterministic

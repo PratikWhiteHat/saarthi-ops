@@ -62,7 +62,9 @@ def latest_quality_analysis(
             result = load_quality_analysis(evidence)
         except (OSError, ValueError):
             continue
-        if result.findings:
+        # Interim snapshots can be superseded by later evidence. Only final
+        # analyses are eligible for operator finding verdicts.
+        if result.analysis_stage == "final" and result.findings:
             return evidence, result
     return None
 
