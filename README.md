@@ -55,6 +55,19 @@ katana · Wayback CDX · local page archive · nuclei · sqlmap · ghauri ·
 XSStrike — alongside Saarthi's own JavaScript-intelligence,
 attack-hypothesis, and authenticated-workflow engines.
 
+### Phase-specific AI reviews
+
+Completed child phases trigger independent, role-specific local AI reviews
+(recon, direct checks, orchestration, validation, and reporting). Enabled
+skills can be supplied as analysis context; the review record identifies which
+ones were supplied, without treating them as evidence or proof of use. A
+central supervisor checks each response for local evidence citations, a
+FACT/INFERENCE label, and confidence, then records grounded, withheld,
+no-evidence, failed, or skipped status in
+`evidence/ai-agents/<orchestration-id>/supervisor.json`. A final run-level
+quality review remains separate. These AI workers review outcomes; the
+deterministic workflow and permission gates still control all tool execution.
+
 ![Workflow status and enabled tools](docs/screenshots/saarthi-ops-workflow.png)
 
 ## Design principle: autonomous yet accountable

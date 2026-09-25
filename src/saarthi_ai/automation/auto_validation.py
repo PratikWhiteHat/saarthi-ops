@@ -159,6 +159,12 @@ class AutoValidationConfig:
     # classify sqlmap) to label CONFIRMED / LIKELY / FALSE_POSITIVE.
     verify_findings: bool = False
 
+    # Which primary tools this pass runs. Defaults to all three so existing
+    # callers are unchanged; the AI hunt loop narrows it to focus one tool per
+    # iteration. ghauri is NOT selectable here — it stays a non-destructive
+    # cross-check that fires only when sqlmap flags a blind injection.
+    tools: tuple[str, ...] = ("nuclei", "sqlmap", "xsstrike")
+
 
 @dataclass(frozen=True)
 class AutomaticValidationResult:
@@ -171,6 +177,18 @@ class AutomaticValidationResult:
     nuclei: dict[str, Any]
     sqlmap: tuple[dict[str, Any], ...]
     verified_findings: tuple[dict[str, Any], ...] = ()
+
+
+# Primary tools that ``AutoValidationConfig.tools`` may select. ghauri is
+# intentionally excluded — it is a cross-check, not a primary scanner.
+KNOWN_VALIDATION_TOOLS = frozenset({"nuclei", "sqlmap", "xsstrike"})
+
+
+def _selected_tools(config: AutoValidationConfig) -> set[str]:
+    """Return the primary tools to run, defaulting to all when unset."""
+
+    selected = {tool for tool in config.tools if tool}
+    return selected or set(KNOWN_VALIDATION_TOOLS)
 
 
 def _normalize_host(host: str) -> str:
@@ -294,6 +312,13 @@ def _validate_config(config: AutoValidationConfig) -> None:
     if config.sqlmap_poc_single_row_dump and not config.sqlmap_confirmed_poc:
         raise AutoValidationError(
             "Single-row PoC dump requires confirmed-PoC mode to be enabled."
+        )
+
+    unknown_tools = {tool for tool in config.tools if tool} - KNOWN_VALIDATION_TOOLS
+    if unknown_tools:
+        raise AutoValidationError(
+            "Unknown validation tool(s) requested: "
+            f"{sorted(unknown_tools)}. Allowed: {sorted(KNOWN_VALIDATION_TOOLS)}."
         )
 
     for candidate in config.sqlmap_candidates:
@@ -638,21 +663,42 @@ def run_automatic_validation(
         exist_ok=False,
     )
 
-    nuclei_profile = NUCLEI_PROFILE.__class__(
-        name=NUCLEI_PROFILE.name,
-        executable_candidates=NUCLEI_PROFILE.executable_candidates,
-        timeout_seconds=config.nuclei_process_timeout_seconds,
-        max_output_bytes=NUCLEI_PROFILE.max_output_bytes,
-        max_arguments=NUCLEI_PROFILE.max_arguments,
-        max_argument_length=NUCLEI_PROFILE.max_argument_length,
-    )
+    selected_tools = _selected_tools(config)
 
-    emit_log("[Saarthi] Starting automatic Nuclei validation...")
+    # A no-op nuclei summary used when this pass does not select nuclei; keeps
+    # the evidence schema and downstream readers (analysis/verify) stable.
+    skipped_nuclei_summary: dict[str, Any] = {
+        "tool_name": "nuclei",
+        "skipped": True,
+        "exit_code": None,
+        "timed_out": False,
+        "stdout": "",
+        "stderr": "",
+    }
 
-    nuclei_result = run_or_adapt(
-        nuclei_profile,
-        _nuclei_arguments(config),
-    )
+    if "nuclei" in selected_tools:
+        nuclei_profile = NUCLEI_PROFILE.__class__(
+            name=NUCLEI_PROFILE.name,
+            executable_candidates=NUCLEI_PROFILE.executable_candidates,
+            timeout_seconds=config.nuclei_process_timeout_seconds,
+            max_output_bytes=NUCLEI_PROFILE.max_output_bytes,
+            max_arguments=NUCLEI_PROFILE.max_arguments,
+            max_argument_length=NUCLEI_PROFILE.max_argument_length,
+        )
+
+        emit_log("[Saarthi] Starting automatic Nuclei validation...")
+
+        nuclei_result = run_or_adapt(
+            nuclei_profile,
+            _nuclei_arguments(config),
+        )
+        nuclei_summary = _summarize_result(nuclei_result)
+        nuclei_stdout = nuclei_result.stdout
+    else:
+        emit_log("[Saarthi] Nuclei not selected for this action; skipping.")
+        nuclei_result = None
+        nuclei_summary = skipped_nuclei_summary
+        nuclei_stdout = ""
 
     sqlmap_results: list[dict[str, Any]] = []
     ghauri_cross_checks: list[dict[str, Any]] = []
@@ -667,12 +713,13 @@ def run_automatic_validation(
         max_argument_length=SQLMAP_PROFILE.max_argument_length,
     )
 
-    total_candidates = len(
-        config.sqlmap_candidates
+    sqlmap_candidates_to_run = (
+        config.sqlmap_candidates if "sqlmap" in selected_tools else ()
     )
+    total_candidates = len(sqlmap_candidates_to_run)
 
     for index, candidate in enumerate(
-        config.sqlmap_candidates,
+        sqlmap_candidates_to_run,
         start=1,
     ):
         emit_log(
@@ -728,9 +775,10 @@ def run_automatic_validation(
 
     # Auto XSS check (XSStrike) on the target URL when it carries parameters.
     # Gated on the same operator authorization; targeted + non-destructive.
-    xsstrike_check = _run_xsstrike_check(config, emit_log=emit_log)
-    if xsstrike_check is not None:
-        xsstrike_checks.append(xsstrike_check)
+    if "xsstrike" in selected_tools:
+        xsstrike_check = _run_xsstrike_check(config, emit_log=emit_log)
+        if xsstrike_check is not None:
+            xsstrike_checks.append(xsstrike_check)
 
     verified_findings: list[dict[str, Any]] = []
     if config.verify_findings:
@@ -745,7 +793,7 @@ def run_automatic_validation(
             )
 
         for finding in verify_findings(
-            nuclei_result.stdout,
+            nuclei_stdout,
             tuple(sqlmap_results),
             allowed_hosts=config.allowed_hosts,
             runner=run_tool,
@@ -833,9 +881,7 @@ def run_automatic_validation(
             "adaptive": config.adaptive,
             "allow_waf_bypass": config.allow_waf_bypass,
         },
-        "nuclei": _summarize_result(
-            nuclei_result
-        ),
+        "nuclei": nuclei_summary,
         "sqlmap": sqlmap_results,
         "ghauri": ghauri_cross_checks,
         "xsstrike": xsstrike_checks,

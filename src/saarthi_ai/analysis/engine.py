@@ -1040,14 +1040,22 @@ async def suggest_for_phase(
     digest: PhaseDigest,
     *,
     num_predict: int = MAX_PHASE_TOKENS,
+    system_prompt: str | None = None,
+    skill_trace: list[str] | None = None,
 ) -> str:
     """Ask the local model for live suggestions about one phase."""
 
     prompt = build_phase_prompt(digest)
+    chat_kwargs = {
+        "system_prompt": system_prompt or PHASE_ADVISOR_SYSTEM_PROMPT,
+        "num_predict": num_predict,
+    }
+    if skill_trace is not None:
+        chat_kwargs["include_enabled_skills"] = True
+        chat_kwargs["skill_trace"] = skill_trace
     content, _thinking = await client.chat(
         [Message(role="user", content=prompt)],
-        system_prompt=PHASE_ADVISOR_SYSTEM_PROMPT,
-        num_predict=num_predict,
+        **chat_kwargs,
     )
     reference_ids = {
         match

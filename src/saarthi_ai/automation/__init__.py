@@ -1,5 +1,10 @@
 """Automatic, permission-gated security validation workflows."""
 
+# NOTE: modules that depend on ``analysis.engine`` (``proposals``,
+# ``agent_loop``) are intentionally NOT re-exported here. ``analysis.engine``
+# imports ``automation.adaptive``, which runs this package ``__init__``; pulling
+# an analysis-dependent module in at that point creates a circular import.
+# Import those directly from their submodules instead.
 from saarthi_ai.automation.auto_validation import (
     AutomaticValidationResult,
     AutoValidationConfig,

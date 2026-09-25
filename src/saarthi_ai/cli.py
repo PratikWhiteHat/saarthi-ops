@@ -16,6 +16,7 @@ from saarthi_ai.analysis import (
     persist_quality_analysis,
     render_quality_analysis,
 )
+from saarthi_ai.analysis.engine import DEFAULT_ORCHESTRATION_EVIDENCE_ROOT
 from saarthi_ai.assessments.planner import build_assessment_plan
 from saarthi_ai.assessments.schemas import (
     AssessmentRequest,
@@ -28,6 +29,15 @@ from saarthi_ai.assessments.scope import (
 )
 from saarthi_ai.attack_hypothesis import (
     AttackHypothesisGenerationRequest,
+)
+from saarthi_ai.automation.agent_loop import (
+    DEFAULT_MAX_DRY_ROUNDS,
+    DEFAULT_MAX_ITERATIONS,
+    ITERATION_HARD_CEILING,
+    AgentAutonomy,
+    AgentLoopConfig,
+    default_action_runner,
+    run_agent_loop,
 )
 from saarthi_ai.automation.auto_validation import (
     AutoValidationError,
@@ -5269,6 +5279,214 @@ def workflow_run(
         f"SQLmap runs={len(validation.sqlmap)}."
     )
     console.print(f"Evidence: {validation.evidence_path}")
+
+
+@controlled_app.command("agent-loop")
+def controlled_agent_loop(
+    autonomy: Annotated[
+        AgentAutonomy,
+        typer.Option(
+            "--autonomy",
+            help=(
+                "yolo: run chosen active actions autonomously (single "
+                "--approved gate); gate: only auto-run safe actions and queue "
+                "the rest; propose: never execute, only queue for the operator."
+            ),
+        ),
+    ] = AgentAutonomy.YOLO,
+    max_iterations: Annotated[
+        int,
+        typer.Option(
+            "--max-iterations",
+            min=1,
+            max=ITERATION_HARD_CEILING,
+            help="Maximum autonomous tool iterations (hard-capped).",
+        ),
+    ] = DEFAULT_MAX_ITERATIONS,
+    max_minutes: Annotated[
+        float,
+        typer.Option(
+            "--max-minutes",
+            min=1.0,
+            max=240.0,
+            help="Wall-clock budget for the whole loop, in minutes.",
+        ),
+    ] = 60.0,
+    dry_rounds: Annotated[
+        int,
+        typer.Option(
+            "--dry-rounds",
+            min=1,
+            max=5,
+            help="Stop after this many rounds with no new evidence/actions.",
+        ),
+    ] = DEFAULT_MAX_DRY_ROUNDS,
+    orchestration_id: Annotated[
+        str | None,
+        typer.Option(
+            "--orchestration-id",
+            help="Target a specific orchestration; default is the latest.",
+        ),
+    ] = None,
+    confirmed_poc: Annotated[
+        bool,
+        typer.Option(
+            "--confirmed-poc/--no-confirmed-poc",
+            help="Allow read-only confirmed-PoC identity switches (no dump).",
+        ),
+    ] = True,
+    intrusive: Annotated[
+        bool,
+        typer.Option(
+            "--intrusive",
+            help=(
+                "Permit bounded WAF-bypass on detection (engagement must have "
+                "authorized intrusive testing; OS/SQL/file switches never)."
+            ),
+        ),
+    ] = False,
+    approved: Annotated[
+        bool,
+        typer.Option(
+            "--approved",
+            help=(
+                "REQUIRED to execute (yolo/gate): the single operator gate that "
+                "authorizes autonomous active testing for this engagement."
+            ),
+        ),
+    ] = False,
+) -> None:
+    """Run the autonomous AI hunt loop over the latest authorized chain.
+
+    The loop repeatedly reads the run's evidence, lets the local model pick the
+    next bounded, in-scope, non-destructive action from a FIXED menu, gates it
+    deterministically, runs it through the vetted pipeline, then re-observes --
+    until it converges, exhausts its iteration/time budget, or is stopped. Even
+    in ``--autonomy yolo`` the scope allowlist, engagement permissions,
+    non-destructive constraints, and adaptive rate limiting are always enforced.
+    """
+
+    executes = autonomy in {AgentAutonomy.YOLO, AgentAutonomy.GATE}
+    if executes and not approved:
+        console.print(
+            "[bold yellow]Approval required.[/bold yellow] "
+            f"--autonomy {autonomy.value} runs active tools autonomously "
+            "against the authorized target. Review scope, then rerun with "
+            "--approved. (Use --autonomy propose to queue actions without "
+            "running them.)"
+        )
+        raise typer.Exit(code=1)
+
+    database = SaarthiDatabase(DEFAULT_DATABASE_PATH)
+
+    def _emit_output(event: ToolOutputEvent) -> None:
+        console.print(
+            f"[{event.tool_name}:{event.stream}] {event.line}",
+            markup=False,
+            highlight=False,
+        )
+
+    def _emit_log(message: str) -> None:
+        console.print(message, markup=False, highlight=False)
+
+    def _base_provider():
+        return build_auto_validation_config_from_chain(
+            database,
+            approved=True,
+            orchestration_id=orchestration_id,
+            confirmed_poc=confirmed_poc,
+            single_row_dump=False,
+            adaptive=True,
+            allow_waf_bypass=intrusive,
+            evidence_root=DEFAULT_ORCHESTRATION_EVIDENCE_ROOT
+            / "auto-validation",
+        )
+
+    def _digest_provider(base):
+        return gather_run_digest(
+            database, orchestration_id=base.orchestration_id
+        )
+
+    # Fail fast (before any tool runs) if there is no authorized chain.
+    try:
+        first = _base_provider()
+    except ChainConfigError as exc:
+        console.print(
+            f"[bold red]Agent loop could not start:[/bold red] {exc}"
+        )
+        raise typer.Exit(code=1) from exc
+
+    console.print(f"Target: {first.target_url}")
+    console.print("Allowed hosts: " + ", ".join(first.allowed_hosts))
+    console.print(
+        f"Autonomy: {autonomy.value} · max-iterations={max_iterations} · "
+        f"budget={max_minutes:g}m · dry-rounds={dry_rounds}"
+    )
+
+    client = SaarthiOllamaClient(get_settings())
+    try:
+        health = asyncio.run(client.health())
+        if not health.get("model_available"):
+            console.print(
+                "[bold yellow]Note:[/bold yellow] configured model not found; "
+                "the loop will still run using deterministic action ordering."
+            )
+    except OllamaUnavailableError:
+        console.print(
+            "[bold yellow]Note:[/bold yellow] Ollama is unavailable; the loop "
+            "will fall back to deterministic action ordering (no AI ranking)."
+        )
+
+    config = AgentLoopConfig(
+        autonomy=autonomy,
+        max_iterations=max_iterations,
+        max_wall_seconds=max_minutes * 60.0,
+        max_dry_rounds=dry_rounds,
+        orchestration_id=orchestration_id,
+        confirmed_poc=confirmed_poc,
+    )
+
+    try:
+        result = asyncio.run(
+            run_agent_loop(
+                client,
+                _base_provider,
+                _digest_provider,
+                default_action_runner(
+                    on_output=_emit_output,
+                    on_log=_emit_log,
+                ),
+                config,
+                on_event=lambda item: (
+                    console.print(
+                        f"[loop #{item.index}] "
+                        f"{'RAN' if item.executed else 'skip'}: "
+                        f"{item.action_label}"
+                        + (f" — {item.note}" if item.note else ""),
+                        markup=False,
+                        highlight=False,
+                    )
+                    if not isinstance(item, str)
+                    else console.print(item, markup=False, highlight=False)
+                ),
+            )
+        )
+    except (AutoValidationError, ToolRunnerError) as exc:
+        console.print(f"[bold red]Agent loop failed:[/bold red] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    console.print()
+    console.print(
+        f"[bold green]Agent loop finished.[/bold green] "
+        f"Ran {result.executed_count} action(s) over "
+        f"{len(result.iterations)} iteration(s). Stop reason: "
+        f"{result.stop_reason}."
+    )
+    if result.queued:
+        console.print(
+            f"{len(result.queued)} action(s) queued for operator approval "
+            "(use --autonomy yolo --approved to run them autonomously)."
+        )
 
 
 @authenticated_app.command("run")

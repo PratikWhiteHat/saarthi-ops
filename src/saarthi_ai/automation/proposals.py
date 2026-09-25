@@ -17,6 +17,7 @@ from __future__ import annotations
 import dataclasses
 import json
 from dataclasses import dataclass
+from urllib.parse import urlsplit
 
 from saarthi_ai.analysis.engine import RunDigest
 from saarthi_ai.automation.auto_validation import SqlmapCandidate
@@ -24,14 +25,17 @@ from saarthi_ai.automation.chain_config import ChainDerivedValidation
 from saarthi_ai.llm.ollama_client import SaarthiOllamaClient
 from saarthi_ai.schemas.chat import Message
 
-# Only these action kinds can ever be proposed or executed.
-ALLOWED_KINDS = ("confirm_sqli", "rescan_nuclei")
+# Only these action kinds can ever be proposed or executed. Each maps to a
+# single focused primary tool so the AI hunt loop makes a distinct choice per
+# iteration (ghauri still auto-cross-checks a blind sqlmap hit inside a
+# confirm_sqli run; it is not a standalone action).
+ALLOWED_KINDS = ("confirm_sqli", "rescan_nuclei", "confirm_xss")
 
 # Techniques we allow a confirm action to use (subset of sqlmap's BEUSTQ).
 # Blind techniques only — fast to confirm and non-destructive.
 _SAFE_TECHNIQUES = {"B", "T", "BT"}
 
-MAX_ACTIONS = 6
+MAX_ACTIONS = 8
 
 
 @dataclass(frozen=True)
@@ -103,6 +107,24 @@ def enumerate_candidate_actions(
             )
         )
 
+    # Reflected/DOM XSS check (XSStrike) when the target URL carries query
+    # parameters and the engagement authorized intrusive testing. Targeted,
+    # single-URL, non-destructive (no blind XSS, no crawl) by adapter design.
+    if derived.config.intrusive_testing and urlsplit(derived.target_url).query:
+        actions.append(
+            ProposedAction(
+                kind="confirm_xss",
+                label=(
+                    "Confirm reflected/DOM XSS on the target URL "
+                    "(XSStrike, single URL, no blind/crawl)"
+                ),
+                rationale=(
+                    "The target URL carries query parameters — check them for "
+                    "reflected/DOM XSS with a targeted, non-destructive scan."
+                ),
+            )
+        )
+
     return actions[:MAX_ACTIONS]
 
 
@@ -140,17 +162,28 @@ def build_action_derived(
                 method="GET",
             ),
         )
+        # Focus this pass on sqlmap only (ghauri still auto-cross-checks a
+        # blind hit); no nuclei/xsstrike re-run wasted on a targeted confirm.
         new_config = dataclasses.replace(
             config,
             sqlmap_techniques=technique,
             sqlmap_candidates=(candidate,),
             sqlmap_poc_single_row_dump=False,
+            tools=("sqlmap",),
         )
-    else:  # rescan_nuclei — nuclei-only re-run, no sqlmap
+    elif action.kind == "confirm_xss":  # xsstrike-only, target URL
         new_config = dataclasses.replace(
             config,
             sqlmap_candidates=(),
             sqlmap_poc_single_row_dump=False,
+            tools=("xsstrike",),
+        )
+    else:  # rescan_nuclei — nuclei-only re-run, no sqlmap/xsstrike
+        new_config = dataclasses.replace(
+            config,
+            sqlmap_candidates=(),
+            sqlmap_poc_single_row_dump=False,
+            tools=("nuclei",),
         )
 
     return dataclasses.replace(base, config=new_config)
@@ -210,7 +243,8 @@ async def annotate_actions(
     prompt = (
         f"Target: {digest.target}\n"
         f"SQLMap summary: {digest.sqlmap_summary or '(none)'}\n"
-        f"Nuclei summary: {digest.nuclei_summary or '(none)'}\n\n"
+        f"Nuclei summary: {digest.nuclei_summary or '(none)'}\n"
+        f"XSStrike summary: {digest.xsstrike_summary or '(none)'}\n\n"
         f"Action menu:\n{menu}\n\n"
         "Select and order the worthwhile actions."
     )

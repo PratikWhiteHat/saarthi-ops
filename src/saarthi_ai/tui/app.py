@@ -5378,6 +5378,7 @@ class SaarthiDashboard(App[None]):
         ("v", "run_validation", "Validate"),
         ("V", "run_validation_dump", "Validate+dump"),
         ("a", "ai_analyze", "AI analyze"),
+        ("l", "ai_loop", "AI loop"),
         ("f", "review_findings", "Review findings"),
         ("s", "skills", "Skills"),
         ("h", "help", "Help"),
@@ -5766,10 +5767,11 @@ class SaarthiDashboard(App[None]):
     def action_help(self) -> None:
         self.notify(
             "R refresh · U focus URL (Enter = full assessment) · "
-            "V run nuclei+sqlmap (Shift+V = +1-row dump) · A AI analyze · "
+            "V run nuclei+sqlmap (Shift+V = +1-row dump) · "
+            "L autonomous AI loop (nuclei/sqlmap/XSStrike) · A AI analyze · "
             "F review AI findings · S skills · P phases · T tools · E evidence · Q quit. "
             "AI also analyzes automatically during the run.",
-            timeout=7,
+            timeout=9,
         )
 
     def action_quit(self) -> None:
@@ -6054,6 +6056,203 @@ class SaarthiDashboard(App[None]):
         action = self._ai_action_queue.pop(0)
         self._append_validation_line(f"[AI] Skipped → {action.label}")
 
+    def action_ai_loop(self) -> None:
+        """Run the autonomous AI hunt loop (propose→run→re-observe→repeat)."""
+
+        if self._validation_running:
+            self.notify(
+                "A run is already in progress.", severity="warning"
+            )
+            return
+
+        from saarthi_ai.automation.chain_config import ChainConfigError
+
+        try:
+            derived = self._derive_chain_validation(
+                confirmed_poc=True,
+                single_row_dump=False,
+            )
+        except ChainConfigError as error:
+            self._append_validation_line(f"[ERR] {error}")
+            self.notify(str(error), severity="error")
+            return
+        except Exception as error:  # defensive: surface, never crash
+            self._append_validation_line(
+                f"[ERR] Could not read the workflow chain: {error}"
+            )
+            self.notify("Could not read the workflow chain.", severity="error")
+            return
+
+        params = (
+            ", ".join(derived.sqlmap_parameters)
+            if derived.sqlmap_parameters
+            else "none (nuclei-only)"
+        )
+        # Show the tools the loop can actually pick for this chain: nuclei is
+        # always available; sqlmap needs derived params; XSStrike needs query
+        # params + authorized intrusive testing (ghauri auto-cross-checks a
+        # blind sqlmap hit inside a sqlmap pass).
+        intrusive = derived.config.intrusive_testing
+        has_query = bool(urlsplit(derived.target_url).query)
+        menu_tools = ["nuclei"]
+        if derived.sqlmap_parameters:
+            menu_tools.append("sqlmap")
+        if intrusive and has_query:
+            menu_tools.append("XSStrike (XSS)")
+        tools_line = " · ".join(menu_tools)
+        body = (
+            f"Target : {derived.target_url}\n"
+            f"Hosts  : {', '.join(derived.config.allowed_hosts)}\n"
+            f"SQLMap : {params}\n"
+            f"Menu   : {tools_line}\n"
+            "Mode   : AUTONOMOUS — the AI picks one bounded, in-scope tool per\n"
+            "         round and runs it repeatedly with no per-run approval.\n"
+            "Guards : scope allowlist · engagement permissions · non-\n"
+            "         destructive · adaptive rate limiting stay enforced.\n\n"
+            "This performs REAL, repeated active testing against the target.\n"
+            "Proceed only on a target you are authorized to test.\n"
+            "[Y] Run   ·   [N]/[Esc] Cancel"
+        )
+        self.push_screen(
+            ConfirmScanScreen("⚠  AUTHORIZE & RUN AUTONOMOUS AI LOOP?", body),
+            lambda confirmed: self._launch_agent_loop(
+                derived.target_url, bool(confirmed)
+            ),
+        )
+
+    def _launch_agent_loop(self, target_url: str, confirmed: bool) -> None:
+        """Start the autonomous loop worker once the operator confirms."""
+
+        if not confirmed:
+            self.notify("AI loop cancelled.")
+            return
+        if self._validation_running:
+            self.notify(
+                "A run is already in progress.", severity="warning"
+            )
+            return
+
+        self._validation_running = True
+        self._run_target = target_url
+        self._set_run_stage("AI loop")
+        self.notify("Launching autonomous AI hunt loop…")
+        self._append_validation_line(
+            f"[INF] Operator launched the autonomous AI loop for: {target_url}"
+        )
+        self.run_worker(
+            lambda: self._run_agent_loop_worker(target_url),
+            name="ai-agent-loop",
+            group="auto-validation",
+            thread=True,
+            exclusive=True,
+        )
+
+    def _run_agent_loop_worker(self, target_url: str) -> None:
+        """Drive run_agent_loop in a thread, streaming each iteration live."""
+
+        import asyncio
+
+        from saarthi_ai.analysis import gather_run_digest
+        from saarthi_ai.automation.agent_loop import (
+            AgentAutonomy,
+            AgentLoopConfig,
+            default_action_runner,
+            run_agent_loop,
+        )
+        from saarthi_ai.automation.chain_config import (
+            ChainConfigError,
+            build_auto_validation_config_from_chain,
+        )
+        from saarthi_ai.config import get_settings
+        from saarthi_ai.execution.tool_runner import ToolOutputEvent
+        from saarthi_ai.llm.ollama_client import SaarthiOllamaClient
+        from saarthi_ai.persistence.database import SaarthiDatabase
+
+        def log_line(line: str) -> None:
+            self.call_from_thread(self._append_validation_line, line)
+
+        def fail(message: str) -> None:
+            log_line(f"[ERR] {message}")
+            self.call_from_thread(self.notify, message, severity="error")
+            self.call_from_thread(self._finish_validation)
+
+        try:
+            database = SaarthiDatabase(self.repository.database_path)
+            client = SaarthiOllamaClient(get_settings())
+        except Exception as error:  # defensive
+            fail(f"AI loop could not start: {error}")
+            return
+
+        def base_provider():
+            return build_auto_validation_config_from_chain(
+                database,
+                approved=True,
+                confirmed_poc=True,
+                single_row_dump=False,
+                adaptive=True,
+                allow_waf_bypass=True,
+                evidence_root=Path.cwd() / "evidence" / "automatic-validation",
+            )
+
+        def digest_provider(base):
+            return gather_run_digest(
+                database, orchestration_id=base.orchestration_id
+            )
+
+        live_feed, live_stop = self._spawn_live_scan_ai(target_url)
+
+        def on_output(event: ToolOutputEvent) -> None:
+            line = f"[{event.tool_name}:{event.stream}] {event.line}"
+            live_feed(line)
+            self.call_from_thread(self._append_validation_line, line)
+
+        runner = default_action_runner(
+            on_output=on_output,
+            on_log=log_line,
+            on_adapt=self._make_adapt_callback(),
+        )
+
+        def on_event(item) -> None:
+            if isinstance(item, str):
+                log_line(item)
+                return
+            tag = "RAN " if item.executed else "skip"
+            suffix = f" — {item.note}" if item.note else ""
+            log_line(f"[LOOP #{item.index}] {tag}: {item.action_label}{suffix}")
+
+        config = AgentLoopConfig(autonomy=AgentAutonomy.YOLO)
+
+        try:
+            result = asyncio.run(
+                run_agent_loop(
+                    client,
+                    base_provider,
+                    digest_provider,
+                    runner,
+                    config,
+                    on_event=on_event,
+                )
+            )
+        except ChainConfigError as error:
+            fail(str(error))
+            return
+        except Exception as error:  # defensive: never crash the TUI
+            fail(f"AI loop failed: {error}")
+            return
+        finally:
+            live_stop()
+
+        log_line(
+            f"[OK ] AI loop finished: ran {result.executed_count} action(s) "
+            f"over {len(result.iterations)} iteration(s). "
+            f"Stop reason: {result.stop_reason}."
+        )
+        self.call_from_thread(
+            self.notify,
+            f"AI loop finished — {result.executed_count} action(s) run.",
+        )
+        self.call_from_thread(self._finish_validation)
+
     def _start_ai_observer(self, orchestration_id: str) -> None:
         """Start the live AI observer for a just-created orchestration."""
 
@@ -6083,7 +6282,12 @@ class SaarthiDashboard(App[None]):
             gather_run_digest,
             persist_quality_analysis,
             render_quality_analysis,
-            suggest_for_phase,
+        )
+        from saarthi_ai.analysis.phase_agents import (
+            PhaseAgentReview,
+            PhaseAgentSupervisor,
+            review_phase_agent,
+            role_for_phase,
         )
         from saarthi_ai.config import get_settings
         from saarthi_ai.llm.ollama_client import (
@@ -6103,6 +6307,11 @@ class SaarthiDashboard(App[None]):
             return
 
         log("[AI] Live co-pilot watching the assessment…")
+        supervisor = PhaseAgentSupervisor(orchestration_id)
+        supervisor_path = (
+            Path.cwd() / "evidence" / "ai-agents"
+            / orchestration_id / "supervisor.json"
+        )
         seen: set[str] = set()
         commented = 0
         interim_attempted = False
@@ -6132,37 +6341,79 @@ class SaarthiDashboard(App[None]):
                     children.append(execution)
 
             children.sort(key=lambda item: item.created_at)
+            processed = 0
+            changed = False
+            cycle_limit = 3 if running else len(children)
             for child in children:
                 if child.execution_id in seen:
                     continue
                 if child.state.value not in ("completed", "failed"):
                     continue
                 seen.add(child.execution_id)
+                processed += 1
+                changed = True
+                phase_code = str((child.metadata or {}).get("phase_code", "?"))
                 if not llm_ok or commented >= max_comments:
+                    role, _ = role_for_phase(phase_code)
+                    supervisor.record(PhaseAgentReview(
+                        child.execution_id, phase_code, role, "skipped",
+                        note="Local model unavailable or review budget reached.",
+                    ))
+                    if processed >= cycle_limit:
+                        break
                     continue
                 try:
                     digest = gather_phase_digest(
                         database, child, target=target
                     )
-                    text = asyncio.run(suggest_for_phase(client, digest))
+                    review = asyncio.run(review_phase_agent(
+                        client, child.execution_id, digest
+                    ))
                 except OllamaUnavailableError:
                     log("[AI] Ollama unavailable — live suggestions paused.")
+                    supervisor.record_failure(
+                        child.execution_id, phase_code, "Local model unavailable."
+                    )
                     llm_ok = False
+                    if processed >= cycle_limit:
+                        break
                     continue
-                except Exception:
+                except Exception as exc:
+                    supervisor.record_failure(
+                        child.execution_id, phase_code, str(exc)
+                    )
+                    if processed >= cycle_limit:
+                        break
                     continue
-                commented += 1
+                supervisor.record(review)
+                if review.status != "no_evidence":
+                    commented += 1
                 header = f"{digest.phase_code} {digest.phase_name}".strip()
-                log(f"[AI] ▸ {header}:")
-                for line in text.splitlines():
-                    if line.strip():
-                        log(f"[AI]   {line.strip()}")
+                log(
+                    f"[AI][{review.role}] ▸ {header}: {review.status} "
+                    f"(sources={len(review.evidence_refs)}, "
+                    f"skills supplied={len(review.skills_supplied)})"
+                )
+                if review.status == "grounded":
+                    for line in review.note.splitlines():
+                        if line.strip():
+                            log(f"[AI]   {line.strip()}")
+                elif review.status == "withheld":
+                    log("[AI]   Review withheld: source citation check failed.")
+                if processed >= cycle_limit:
+                    break
+
+            if changed:
+                try:
+                    supervisor.persist(supervisor_path)
+                except OSError as exc:
+                    log(f"[AI] Supervisor snapshot unavailable: {exc}")
 
             # Phase 4A provides an early evidence checkpoint. Run the full
             # enabled-skill review on a snapshot while later phases and
             # scanner work continue on the independent assessment worker.
             if running and not interim_attempted and llm_ok and any(
-                (child.metadata or {}).get("phase_code") == "4A"
+                str((child.metadata or {}).get("phase_code", "")).startswith("4A")
                 and child.state.value == "completed"
                 for child in children
             ):
@@ -6220,6 +6471,17 @@ class SaarthiDashboard(App[None]):
                         log(f"[AI] {line.strip()}")
             except Exception as exc:
                 log(f"[AI] Final evidence review unavailable: {exc}")
+
+        try:
+            supervisor.persist(supervisor_path)
+        except OSError as exc:
+            log(f"[AI] Supervisor snapshot unavailable: {exc}")
+        counts = supervisor.summary()
+        log(
+            "[AI] Phase-agent supervisor: "
+            + ", ".join(f"{key}={value}" for key, value in counts.items())
+            + f" · {supervisor_path}"
+        )
 
         self.call_from_thread(self._finish_ai_observer)
 
@@ -7067,11 +7329,15 @@ class SaarthiDashboard(App[None]):
                 if not fresh or comments >= max_comments:
                     continue
                 tail = fresh[-40:]
-                tool = (
-                    "sqlmap"
-                    if any("[sqlmap" in item for item in tail)
-                    else "nuclei"
-                )
+                # Label the live note by whichever tool is currently streaming
+                # (the loop focuses one tool per round: sqlmap/ghauri, xsstrike,
+                # or nuclei).
+                if any("[sqlmap" in item or "[ghauri" in item for item in tail):
+                    tool = "sqlmap"
+                elif any("[xsstrike" in item for item in tail):
+                    tool = "xsstrike"
+                else:
+                    tool = "nuclei"
                 try:
                     note = asyncio.run(
                         comment_on_live_output(

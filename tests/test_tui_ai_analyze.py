@@ -140,6 +140,7 @@ async def test_ai_analyze_uses_interim_snapshot_during_assessment(tmp_path, monk
 
 @pytest.mark.asyncio
 async def test_ai_observer_comments_per_phase(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
     from saarthi_ai.persistence.database import SaarthiDatabase
     from saarthi_ai.persistence.models import ExecutionCreate
 
@@ -160,7 +161,7 @@ async def test_ai_observer_comments_per_phase(tmp_path, monkeypatch):
             },
         )
     )
-    for code in ("3A", "3B", "4A"):
+    for code in ("3A", "3B", "4A-cors"):
         database.create_execution(
             ExecutionCreate(
                 assessment_name="Obs",
@@ -194,8 +195,15 @@ async def test_ai_observer_comments_per_phase(tmp_path, monkeypatch):
                     execution.execution_id, state, actor="test"
                 )
 
-    async def fake_phase(client, digest, **kwargs):
-        return f"- suggestion for {digest.phase_code}"
+    async def fake_phase_agent(client, execution_id, digest):
+        from saarthi_ai.analysis.phase_agents import PhaseAgentReview
+
+        return PhaseAgentReview(
+            execution_id, digest.phase_code, "recon", "grounded",
+            evidence_refs=("evidence-test",),
+            skills_supplied=("hunt-sqli",),
+            note=f"- suggestion for {digest.phase_code} [evidence-test]",
+        )
 
     run_stages = []
     async def fake_run(client, digest, **kwargs):
@@ -208,7 +216,10 @@ async def test_ai_observer_comments_per_phase(tmp_path, monkeypatch):
             ),
         )
 
-    monkeypatch.setattr("saarthi_ai.analysis.suggest_for_phase", fake_phase)
+    monkeypatch.setattr(
+        "saarthi_ai.analysis.phase_agents.review_phase_agent",
+        fake_phase_agent,
+    )
     monkeypatch.setattr(
         "saarthi_ai.analysis.analyze_run_quality", fake_run
     )
@@ -241,3 +252,5 @@ async def test_ai_observer_comments_per_phase(tmp_path, monkeypatch):
         assert "Final triage" in joined
         assert run_stages == ["analysis", "interim", "analysis", "final"]
         assert "Interim evidence review stored" in joined
+        assert "Phase-agent supervisor" in joined
+        assert (tmp_path / "evidence" / "ai-agents" / oid / "supervisor.json").exists()
