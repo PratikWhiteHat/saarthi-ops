@@ -1,0 +1,43 @@
+[project]
+name = "saarthi2"
+version = "0.1.0"
+description = "Saarthi 2.0 — a local-first, AI-native security workflow orchestration engine"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "pydantic>=2.10",
+    "pyyaml>=6.0",
+    "httpx>=0.28",
+    "ollama>=0.4",
+    "typer>=0.15",
+    "rich>=13.0",
+]
+
+[project.scripts]
+saarthi2 = "saarthi2.cli:app"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.25",
+    "ruff>=0.6",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/saarthi2"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]

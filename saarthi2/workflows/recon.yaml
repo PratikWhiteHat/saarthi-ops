@@ -1,0 +1,42 @@
+name: recon
+description: >
+  Subdomain discovery -> live-host probing -> AI triage. Demonstrates the tool,
+  foreach, and agentic llm step types. Requires subfinder + httpx on PATH.
+
+vars:
+  target: example.com
+
+steps:
+  - id: subs
+    name: Enumerate subdomains
+    uses: tool
+    with:
+      cmd: "subfinder -d {{ target }} -silent"
+      timeout: 180
+    register: subs
+
+  - id: probe
+    name: Probe live hosts
+    uses: tool
+    when: "{{ steps.subs.output }}"
+    loop: "{{ steps.subs.output }}"
+    continue_on_error: true
+    with:
+      cmd: "httpx -u {{ item }} -silent -status-code -title -tech-detect"
+      timeout: 60
+    register: probe
+
+  - id: triage
+    name: AI triage of the attack surface
+    uses: llm
+    with:
+      max_iterations: 4
+      tools: []          # summarize-only; give tools to let it run scans itself
+      prompt: |
+        You are a recon analyst for an authorized assessment of {{ target }}.
+        Here are the live hosts discovered:
+
+        {{ steps.probe.output }}
+
+        List the 3-5 most interesting hosts/endpoints to test next and why,
+        based only on the evidence above. Be concise.
