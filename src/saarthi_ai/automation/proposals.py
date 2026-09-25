@@ -22,6 +22,7 @@ from urllib.parse import urlsplit
 from saarthi_ai.analysis.engine import RunDigest
 from saarthi_ai.automation.auto_validation import SqlmapCandidate
 from saarthi_ai.automation.chain_config import ChainDerivedValidation
+from saarthi_ai.automation.fingerprint import map_technologies_to_nuclei_tags
 from saarthi_ai.llm.ollama_client import SaarthiOllamaClient
 from saarthi_ai.schemas.chat import Message
 
@@ -29,7 +30,7 @@ from saarthi_ai.schemas.chat import Message
 # single focused primary tool so the AI hunt loop makes a distinct choice per
 # iteration (ghauri still auto-cross-checks a blind sqlmap hit inside a
 # confirm_sqli run; it is not a standalone action).
-ALLOWED_KINDS = ("confirm_sqli", "rescan_nuclei", "confirm_xss")
+ALLOWED_KINDS = ("confirm_sqli", "rescan_nuclei", "confirm_xss", "targeted_nuclei")
 
 # Techniques we allow a confirm action to use (subset of sqlmap's BEUSTQ).
 # Blind techniques only — fast to confirm and non-destructive.
@@ -48,6 +49,8 @@ class ProposedAction:
     tier: str = "needs_approval"  # or "safe_auto" (never destructive)
     param: str | None = None
     technique: str | None = None
+    # For targeted_nuclei: the fixed-vocabulary nuclei tags to focus the scan on.
+    nuclei_tags: tuple[str, ...] = ()
 
     def describe(self) -> str:
         gate = "AUTO" if self.tier == "safe_auto" else "APPROVE"
@@ -125,6 +128,27 @@ def enumerate_candidate_actions(
             )
         )
 
+    # Tech-focused nuclei: when the target's stack is fingerprinted, run only
+    # the matching templates (via tags) instead of the full set. The final tag
+    # subset is AI-selected in the loop from this deterministic candidate set.
+    nuclei_tags = map_technologies_to_nuclei_tags(derived.technologies)
+    if nuclei_tags:
+        stack = ", ".join(derived.technologies[:4])
+        actions.append(
+            ProposedAction(
+                kind="targeted_nuclei",
+                label=(
+                    f"Run tech-focused nuclei for detected stack ({stack}) "
+                    f"— tags: {', '.join(nuclei_tags[:6])}"
+                ),
+                rationale=(
+                    "The target's technology stack is known; scan only the "
+                    "matching nuclei templates instead of the full set."
+                ),
+                nuclei_tags=nuclei_tags,
+            )
+        )
+
     return actions[:MAX_ACTIONS]
 
 
@@ -177,6 +201,14 @@ def build_action_derived(
             sqlmap_candidates=(),
             sqlmap_poc_single_row_dump=False,
             tools=("xsstrike",),
+        )
+    elif action.kind == "targeted_nuclei":  # nuclei-only, tech-focused tags
+        new_config = dataclasses.replace(
+            config,
+            sqlmap_candidates=(),
+            sqlmap_poc_single_row_dump=False,
+            tools=("nuclei",),
+            nuclei_tags=tuple(action.nuclei_tags),
         )
     else:  # rescan_nuclei — nuclei-only re-run, no sqlmap/xsstrike
         new_config = dataclasses.replace(

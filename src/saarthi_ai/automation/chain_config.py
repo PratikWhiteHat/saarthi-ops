@@ -24,6 +24,7 @@ from saarthi_ai.automation.auto_validation import (
     AutoValidationConfig,
     SqlmapCandidate,
 )
+from saarthi_ai.automation.fingerprint import detect_target_technologies
 from saarthi_ai.persistence.database import SaarthiDatabase
 from saarthi_ai.persistence.models import EvidenceType, ExecutionRecord
 
@@ -87,6 +88,9 @@ class ChainDerivedValidation:
     target_url: str
     allowed_hosts: tuple[str, ...]
     sqlmap_parameters: tuple[str, ...]
+    # Technologies detected on the in-scope target (Phase 3C httpx tech-detect),
+    # used to focus nuclei on the matching templates. Empty when unknown.
+    technologies: tuple[str, ...] = ()
 
 
 def _latest_orchestration_parent(
@@ -435,16 +439,24 @@ def build_auto_validation_config_from_chain(
         verify_findings=verify_findings,
     )
 
+    chain_orchestration_id = (
+        metadata.get("orchestration_id")
+        if isinstance(metadata.get("orchestration_id"), str)
+        else None
+    )
+    technologies = detect_target_technologies(
+        database,
+        orchestration_id=chain_orchestration_id,
+        allowed_hosts=allowed_hosts,
+    )
+
     return ChainDerivedValidation(
         config=config,
-        orchestration_id=(
-            metadata.get("orchestration_id")
-            if isinstance(metadata.get("orchestration_id"), str)
-            else None
-        ),
+        orchestration_id=chain_orchestration_id,
         source_execution_id=parent.execution_id,
         assessment_name=parent.assessment_name,
         target_url=target_url,
         allowed_hosts=allowed_hosts,
         sqlmap_parameters=sqlmap_parameters,
+        technologies=technologies,
     )

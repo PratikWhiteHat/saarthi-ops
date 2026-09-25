@@ -33,6 +33,7 @@ already-authorized engagement, exactly as the operator requested.
 
 from __future__ import annotations
 
+import dataclasses
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -40,6 +41,7 @@ from enum import StrEnum
 from saarthi_ai.analysis.engine import RunDigest
 from saarthi_ai.automation.auto_validation import AutomaticValidationResult
 from saarthi_ai.automation.chain_config import ChainDerivedValidation
+from saarthi_ai.automation.fingerprint import select_nuclei_tags
 from saarthi_ai.automation.proposals import (
     _SAFE_TECHNIQUES,
     ALLOWED_KINDS,
@@ -183,10 +185,15 @@ def gate_action(
     return None
 
 
-def _action_signature(action: ProposedAction) -> tuple[str, str, str]:
+def _action_signature(action: ProposedAction) -> tuple[str, str, str, str]:
     """Stable identity so the loop can detect it is repeating itself."""
 
-    return (action.kind, action.param or "", action.technique or "")
+    return (
+        action.kind,
+        action.param or "",
+        action.technique or "",
+        ",".join(sorted(action.nuclei_tags)),
+    )
 
 
 def _evidence_fingerprint(digest: RunDigest) -> tuple[int, int, int]:
@@ -231,7 +238,7 @@ async def run_agent_loop(
     started = now()
 
     iterations: list[AgentIteration] = []
-    executed_signatures: set[tuple[str, str, str]] = set()
+    executed_signatures: set[tuple[str, str, str, str]] = set()
     dry_rounds = 0
     stop_reason = "reached iteration budget"
     target = "unknown"
@@ -333,9 +340,23 @@ async def run_agent_loop(
             stop_reason = "gate mode: awaiting operator approval"
             break
 
+        # For a tech-focused nuclei action, let the model pick the final tag
+        # subset from the detected stack (falls back to the deterministic set;
+        # the result is always constrained to the allowed tag vocabulary).
+        run_action = action
+        if action.kind == "targeted_nuclei":
+            chosen = await select_nuclei_tags(
+                client, base.technologies, action.nuclei_tags
+            )
+            if chosen:
+                run_action = dataclasses.replace(action, nuclei_tags=chosen)
+                emit(
+                    f"[loop] tech-focused nuclei tags: {', '.join(chosen)}"
+                )
+
         before = _evidence_fingerprint(digest)
         try:
-            result = action_runner(action, base)
+            result = action_runner(run_action, base)
         except Exception as error:  # defensive: one bad run must not kill loop
             step = AgentIteration(
                 index=index,

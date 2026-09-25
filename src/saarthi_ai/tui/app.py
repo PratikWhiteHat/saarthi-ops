@@ -6094,19 +6094,25 @@ class SaarthiDashboard(App[None]):
         # blind sqlmap hit inside a sqlmap pass).
         intrusive = derived.config.intrusive_testing
         has_query = bool(urlsplit(derived.target_url).query)
-        menu_tools = ["nuclei"]
+        technologies = getattr(derived, "technologies", ()) or ()
+        menu_tools = ["nuclei (tech-focused)" if technologies else "nuclei"]
         if derived.sqlmap_parameters:
             menu_tools.append("sqlmap")
         if intrusive and has_query:
             menu_tools.append("XSStrike (XSS)")
         tools_line = " · ".join(menu_tools)
+        stack_line = (
+            f"Stack  : {', '.join(technologies[:6])}\n" if technologies else ""
+        )
         body = (
             f"Target : {derived.target_url}\n"
             f"Hosts  : {', '.join(derived.config.allowed_hosts)}\n"
+            f"{stack_line}"
             f"SQLMap : {params}\n"
             f"Menu   : {tools_line}\n"
             "Mode   : AUTONOMOUS — the AI picks one bounded, in-scope tool per\n"
             "         round and runs it repeatedly with no per-run approval.\n"
+            "         Nuclei is scoped to the detected stack's templates.\n"
             "Guards : scope allowlist · engagement permissions · non-\n"
             "         destructive · adaptive rate limiting stay enforced.\n\n"
             "This performs REAL, repeated active testing against the target.\n"

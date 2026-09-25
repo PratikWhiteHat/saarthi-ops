@@ -17,6 +17,7 @@ from saarthi_ai.automation.adaptive import (
     AdaptationEvent,
     run_tool_adaptively,
 )
+from saarthi_ai.automation.fingerprint import valid_nuclei_tags
 from saarthi_ai.automation.verification import (
     VerifiedFinding,
     verify_findings,
@@ -164,6 +165,12 @@ class AutoValidationConfig:
     # iteration. ghauri is NOT selectable here — it stays a non-destructive
     # cross-check that fires only when sqlmap flags a blind injection.
     tools: tuple[str, ...] = ("nuclei", "sqlmap", "xsstrike")
+
+    # Optional nuclei template TAGS to focus the scan on (e.g. the target's
+    # detected tech stack). Empty runs the full template set. When set, nuclei
+    # runs only templates carrying these tags; DANGEROUS_NUCLEI_TAGS is still
+    # excluded on top. Selected upstream from a fixed allowed vocabulary.
+    nuclei_tags: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -351,6 +358,13 @@ def _nuclei_arguments(config: AutoValidationConfig) -> list[str]:
         ",".join(DANGEROUS_NUCLEI_TAGS),
     ]
 
+    # Tech-aware focusing: run only templates carrying the selected tags. The
+    # dangerous-tag exclusion above still applies on top of the include list.
+    if config.nuclei_tags:
+        safe_tags = valid_nuclei_tags(tuple(config.nuclei_tags))
+        if safe_tags:
+            arguments.extend(["-tags", ",".join(safe_tags)])
+
     if config.nuclei_templates_path:
         template_path = Path(
             config.nuclei_templates_path
@@ -378,11 +392,13 @@ def nuclei_scope_notice(config: AutoValidationConfig) -> tuple[str, ...]:
     arguments or converts analysis into executable template choices.
     """
 
-    scope = (
-        "configured template path"
-        if config.nuclei_templates_path
-        else "all installed templates (default)"
-    )
+    safe_tags = valid_nuclei_tags(tuple(config.nuclei_tags))
+    if safe_tags:
+        scope = f"tech-focused templates (tags: {', '.join(safe_tags)})"
+    elif config.nuclei_templates_path:
+        scope = "configured template path"
+    else:
+        scope = "all installed templates (default)"
     return (
         f"[Nuclei plan] Scope: {scope}.",
         (

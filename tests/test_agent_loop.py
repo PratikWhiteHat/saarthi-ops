@@ -165,6 +165,16 @@ def test_gate_rejects_without_scope() -> None:
     assert reason is not None and "scope" in reason
 
 
+def test_gate_allows_targeted_nuclei_without_intrusive() -> None:
+    # nuclei is non-intrusive scanning; it only needs active-testing, not
+    # intrusive authorization.
+    action = ProposedAction(
+        kind="targeted_nuclei", label="tech nuclei", rationale="x",
+        nuclei_tags=("wordpress", "cve"),
+    )
+    assert gate_action(action, _base([], intrusive_testing=False)) is None
+
+
 # --- run_agent_loop: control flow -------------------------------------------
 
 
