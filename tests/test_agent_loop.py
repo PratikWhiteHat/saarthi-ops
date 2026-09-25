@@ -7,10 +7,16 @@ from collections.abc import Sequence
 
 from saarthi_ai.analysis.engine import RunDigest
 from saarthi_ai.automation.agent_loop import (
+    FAST_MAX_ITERATIONS,
+    FAST_NUCLEI_CONCURRENCY,
+    FAST_NUCLEI_PROCESS_TIMEOUT_SECONDS,
+    FAST_NUCLEI_RATE_LIMIT,
     ITERATION_HARD_CEILING,
     AgentAutonomy,
     AgentLoopConfig,
     AgentLoopResult,
+    _fast_filter_actions,
+    apply_fast_profile,
     gate_action,
     run_agent_loop,
 )
@@ -163,6 +169,59 @@ def test_gate_rejects_without_scope() -> None:
     )
     reason = gate_action(action, _base(["id"], allowed_hosts=()))
     assert reason is not None and "scope" in reason
+
+
+# --- fast profile ------------------------------------------------------------
+
+
+def test_apply_fast_profile_bumps_nuclei_knobs() -> None:
+    base = _base(["id"]).config
+    fast = apply_fast_profile(base)
+    assert fast.nuclei_rate_limit >= FAST_NUCLEI_RATE_LIMIT
+    assert fast.nuclei_concurrency >= FAST_NUCLEI_CONCURRENCY
+    assert fast.nuclei_process_timeout_seconds <= FAST_NUCLEI_PROCESS_TIMEOUT_SECONDS
+    # everything else (scope, permissions) is preserved
+    assert fast.allowed_hosts == base.allowed_hosts
+    assert fast.intrusive_testing == base.intrusive_testing
+
+
+def test_fast_filter_drops_rescan_and_broad_cve_tag() -> None:
+    actions = [
+        ProposedAction(kind="rescan_nuclei", label="full sweep", rationale="x"),
+        ProposedAction(
+            kind="targeted_nuclei", label="tech", rationale="x",
+            nuclei_tags=("cve", "nginx", "php"),
+        ),
+        ProposedAction(
+            kind="confirm_sqli", label="sqli", rationale="x",
+            param="id", technique="BT",
+        ),
+    ]
+    out = _fast_filter_actions(actions)
+    kinds = [a.kind for a in out]
+    assert "rescan_nuclei" not in kinds  # full sweep dropped
+    assert "confirm_sqli" in kinds  # non-nuclei actions untouched
+    targeted = next(a for a in out if a.kind == "targeted_nuclei")
+    assert "cve" not in targeted.nuclei_tags
+    assert set(targeted.nuclei_tags) == {"nginx", "php"}
+
+
+def test_fast_filter_keeps_cve_when_it_is_the_only_tag() -> None:
+    actions = [
+        ProposedAction(
+            kind="targeted_nuclei", label="t", rationale="x",
+            nuclei_tags=("cve",),
+        )
+    ]
+    out = _fast_filter_actions(actions)
+    # never leave the action tag-less; fall back to the original set
+    assert out[0].nuclei_tags == ("cve",)
+
+
+def test_fast_config_flag_defaults_off() -> None:
+    assert AgentLoopConfig().fast is False
+    assert AgentLoopConfig(fast=True).fast is True
+    assert FAST_MAX_ITERATIONS <= ITERATION_HARD_CEILING
 
 
 def test_gate_allows_targeted_nuclei_without_intrusive() -> None:

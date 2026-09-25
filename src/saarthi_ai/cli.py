@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 from pathlib import Path
 from typing import Annotated
 
@@ -33,9 +34,12 @@ from saarthi_ai.attack_hypothesis import (
 from saarthi_ai.automation.agent_loop import (
     DEFAULT_MAX_DRY_ROUNDS,
     DEFAULT_MAX_ITERATIONS,
+    FAST_MAX_ITERATIONS,
+    FAST_MAX_WALL_SECONDS,
     ITERATION_HARD_CEILING,
     AgentAutonomy,
     AgentLoopConfig,
+    apply_fast_profile,
     default_action_runner,
     run_agent_loop,
 )
@@ -5355,6 +5359,17 @@ def controlled_agent_loop(
             ),
         ),
     ] = False,
+    fast: Annotated[
+        bool,
+        typer.Option(
+            "--fast",
+            help=(
+                "Quick profile: higher nuclei rate/concurrency, shorter timeout, "
+                "drop the broad 'cve' tag and the full rescan, fewer iterations. "
+                "More load on the target — use on hosts that can take it."
+            ),
+        ),
+    ] = False,
 ) -> None:
     """Run the autonomous AI hunt loop over the latest authorized chain.
 
@@ -5389,8 +5404,12 @@ def controlled_agent_loop(
     def _emit_log(message: str) -> None:
         console.print(message, markup=False, highlight=False)
 
+    if fast:
+        max_iterations = min(max_iterations, FAST_MAX_ITERATIONS)
+        max_minutes = min(max_minutes, FAST_MAX_WALL_SECONDS / 60.0)
+
     def _base_provider():
-        return build_auto_validation_config_from_chain(
+        derived = build_auto_validation_config_from_chain(
             database,
             approved=True,
             orchestration_id=orchestration_id,
@@ -5401,6 +5420,11 @@ def controlled_agent_loop(
             evidence_root=DEFAULT_ORCHESTRATION_EVIDENCE_ROOT
             / "auto-validation",
         )
+        if fast:
+            derived = dataclasses.replace(
+                derived, config=apply_fast_profile(derived.config)
+            )
+        return derived
 
     def _digest_provider(base):
         return gather_run_digest(
@@ -5418,9 +5442,17 @@ def controlled_agent_loop(
 
     console.print(f"Target: {first.target_url}")
     console.print("Allowed hosts: " + ", ".join(first.allowed_hosts))
+    if first.technologies:
+        console.print("Detected stack: " + ", ".join(first.technologies[:8]))
     console.print(
         f"Autonomy: {autonomy.value} · max-iterations={max_iterations} · "
         f"budget={max_minutes:g}m · dry-rounds={dry_rounds}"
+        + (
+            f" · [bold]FAST[/bold] (rate={first.config.nuclei_rate_limit}/s, "
+            "no full-rescan, no 'cve' tag)"
+            if fast
+            else ""
+        )
     )
 
     client = SaarthiOllamaClient(get_settings())
@@ -5444,6 +5476,7 @@ def controlled_agent_loop(
         max_dry_rounds=dry_rounds,
         orchestration_id=orchestration_id,
         confirmed_poc=confirmed_poc,
+        fast=fast,
     )
 
     try:

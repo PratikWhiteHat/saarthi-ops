@@ -39,7 +39,10 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 
 from saarthi_ai.analysis.engine import RunDigest
-from saarthi_ai.automation.auto_validation import AutomaticValidationResult
+from saarthi_ai.automation.auto_validation import (
+    AutomaticValidationResult,
+    AutoValidationConfig,
+)
 from saarthi_ai.automation.chain_config import ChainDerivedValidation
 from saarthi_ai.automation.fingerprint import select_nuclei_tags
 from saarthi_ai.automation.proposals import (
@@ -59,6 +62,57 @@ DEFAULT_MAX_DRY_ROUNDS = 2
 # Hard ceiling: even if a caller passes a larger value, the loop never runs more
 # than this many autonomous tool iterations against a live target.
 ITERATION_HARD_CEILING = 25
+
+# --- Fast profile ------------------------------------------------------------
+# Trades coverage for speed: more load on the target (higher rate/concurrency,
+# still within the validator's 1-20 / 1-10 caps and adaptive throttle), a
+# shorter per-run timeout, no full-template rescan, and the broad high-volume
+# nuclei tags dropped so only stack-specific templates run.
+FAST_NUCLEI_RATE_LIMIT = 15
+FAST_NUCLEI_CONCURRENCY = 10
+FAST_NUCLEI_PROCESS_TIMEOUT_SECONDS = 600
+FAST_MAX_ITERATIONS = 3
+FAST_MAX_WALL_SECONDS = 900.0
+# Broad, high-volume tags dropped in fast mode (the stack-specific tags stay).
+_FAST_DROP_TAGS = frozenset({"cve", "cves"})
+
+
+def apply_fast_profile(config: AutoValidationConfig) -> AutoValidationConfig:
+    """Return a copy of the nuclei config tuned for a quick loop.
+
+    Raises the rate limit / concurrency (bounded by the validator's own caps and
+    still subject to adaptive throttling if the target pushes back) and shortens
+    the per-run process timeout so a slow scan gives up sooner.
+    """
+
+    return dataclasses.replace(
+        config,
+        nuclei_rate_limit=max(config.nuclei_rate_limit, FAST_NUCLEI_RATE_LIMIT),
+        nuclei_concurrency=max(config.nuclei_concurrency, FAST_NUCLEI_CONCURRENCY),
+        nuclei_process_timeout_seconds=min(
+            config.nuclei_process_timeout_seconds,
+            FAST_NUCLEI_PROCESS_TIMEOUT_SECONDS,
+        ),
+    )
+
+
+def _fast_filter_actions(
+    actions: list[ProposedAction],
+) -> list[ProposedAction]:
+    """Trim the menu for fast mode: drop the full rescan, shrink broad tags."""
+
+    trimmed: list[ProposedAction] = []
+    for action in actions:
+        if action.kind == "rescan_nuclei":
+            continue  # the full-template sweep is the slowest action
+        if action.kind == "targeted_nuclei" and action.nuclei_tags:
+            kept = tuple(t for t in action.nuclei_tags if t not in _FAST_DROP_TAGS)
+            # Keep the trimmed set only if something stack-specific remains;
+            # otherwise fall back to the original so the action still runs.
+            if kept and kept != action.nuclei_tags:
+                action = dataclasses.replace(action, nuclei_tags=kept)
+        trimmed.append(action)
+    return trimmed
 
 
 class AgentAutonomy(StrEnum):
@@ -86,6 +140,10 @@ class AgentLoopConfig:
     max_dry_rounds: int = DEFAULT_MAX_DRY_ROUNDS
     orchestration_id: str | None = None
     confirmed_poc: bool = True
+    # Fast profile: skip the full nuclei rescan and drop broad tags in the menu.
+    # The matching nuclei runtime tuning is applied to the base config by the
+    # caller via apply_fast_profile().
+    fast: bool = False
 
     def effective_max_iterations(self) -> int:
         """Clamp the requested iteration count to a safe, positive range."""
@@ -266,6 +324,8 @@ async def run_agent_loop(
         digest = digest_provider(base)
 
         candidates = enumerate_candidate_actions(base, digest)
+        if config.fast:
+            candidates = _fast_filter_actions(candidates)
         # Drop actions already executed this loop so the model always advances
         # to fresh work instead of re-proposing a completed step.
         fresh = [

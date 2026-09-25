@@ -5379,6 +5379,7 @@ class SaarthiDashboard(App[None]):
         ("V", "run_validation_dump", "Validate+dump"),
         ("a", "ai_analyze", "AI analyze"),
         ("l", "ai_loop", "AI loop"),
+        ("L", "ai_loop_fast", "AI loop (fast)"),
         ("f", "review_findings", "Review findings"),
         ("s", "skills", "Skills"),
         ("h", "help", "Help"),
@@ -5768,7 +5769,7 @@ class SaarthiDashboard(App[None]):
         self.notify(
             "R refresh · U focus URL (Enter = full assessment) · "
             "V run nuclei+sqlmap (Shift+V = +1-row dump) · "
-            "L autonomous AI loop (nuclei/sqlmap/XSStrike) · A AI analyze · "
+            "l autonomous AI loop (Shift+L = fast) · A AI analyze · "
             "F review AI findings · S skills · P phases · T tools · E evidence · Q quit. "
             "AI also analyzes automatically during the run.",
             timeout=9,
@@ -6059,6 +6060,16 @@ class SaarthiDashboard(App[None]):
     def action_ai_loop(self) -> None:
         """Run the autonomous AI hunt loop (propose→run→re-observe→repeat)."""
 
+        self._confirm_ai_loop(fast=False)
+
+    def action_ai_loop_fast(self) -> None:
+        """Run the AI loop in fast mode (fewer templates, quicker convergence)."""
+
+        self._confirm_ai_loop(fast=True)
+
+    def _confirm_ai_loop(self, *, fast: bool) -> None:
+        """Derive the chain, show the authorize dialog, then launch the loop."""
+
         if self._validation_running:
             self.notify(
                 "A run is already in progress.", severity="warning"
@@ -6104,12 +6115,23 @@ class SaarthiDashboard(App[None]):
         stack_line = (
             f"Stack  : {', '.join(technologies[:6])}\n" if technologies else ""
         )
+        speed_line = (
+            "Speed  : FAST — higher rate, no full rescan, no broad 'cve' tag\n"
+            if fast
+            else "Speed  : STANDARD — full coverage (slower)\n"
+        )
+        title = (
+            "⚠  AUTHORIZE & RUN AUTONOMOUS AI LOOP (FAST)?"
+            if fast
+            else "⚠  AUTHORIZE & RUN AUTONOMOUS AI LOOP?"
+        )
         body = (
             f"Target : {derived.target_url}\n"
             f"Hosts  : {', '.join(derived.config.allowed_hosts)}\n"
             f"{stack_line}"
             f"SQLMap : {params}\n"
             f"Menu   : {tools_line}\n"
+            f"{speed_line}"
             "Mode   : AUTONOMOUS — the AI picks one bounded, in-scope tool per\n"
             "         round and runs it repeatedly with no per-run approval.\n"
             "         Nuclei is scoped to the detected stack's templates.\n"
@@ -6120,13 +6142,15 @@ class SaarthiDashboard(App[None]):
             "[Y] Run   ·   [N]/[Esc] Cancel"
         )
         self.push_screen(
-            ConfirmScanScreen("⚠  AUTHORIZE & RUN AUTONOMOUS AI LOOP?", body),
+            ConfirmScanScreen(title, body),
             lambda confirmed: self._launch_agent_loop(
-                derived.target_url, bool(confirmed)
+                derived.target_url, bool(confirmed), fast=fast
             ),
         )
 
-    def _launch_agent_loop(self, target_url: str, confirmed: bool) -> None:
+    def _launch_agent_loop(
+        self, target_url: str, confirmed: bool, *, fast: bool = False
+    ) -> None:
         """Start the autonomous loop worker once the operator confirms."""
 
         if not confirmed:
@@ -6140,28 +6164,37 @@ class SaarthiDashboard(App[None]):
 
         self._validation_running = True
         self._run_target = target_url
-        self._set_run_stage("AI loop")
-        self.notify("Launching autonomous AI hunt loop…")
+        self._set_run_stage("AI loop (fast)" if fast else "AI loop")
+        self.notify(
+            "Launching autonomous AI hunt loop"
+            + (" (fast)…" if fast else "…")
+        )
         self._append_validation_line(
-            f"[INF] Operator launched the autonomous AI loop for: {target_url}"
+            "[INF] Operator launched the autonomous AI loop"
+            + (" (fast)" if fast else "")
+            + f" for: {target_url}"
         )
         self.run_worker(
-            lambda: self._run_agent_loop_worker(target_url),
+            lambda: self._run_agent_loop_worker(target_url, fast=fast),
             name="ai-agent-loop",
             group="auto-validation",
             thread=True,
             exclusive=True,
         )
 
-    def _run_agent_loop_worker(self, target_url: str) -> None:
+    def _run_agent_loop_worker(self, target_url: str, *, fast: bool = False) -> None:
         """Drive run_agent_loop in a thread, streaming each iteration live."""
 
         import asyncio
+        import dataclasses
 
         from saarthi_ai.analysis import gather_run_digest
         from saarthi_ai.automation.agent_loop import (
+            FAST_MAX_ITERATIONS,
+            FAST_MAX_WALL_SECONDS,
             AgentAutonomy,
             AgentLoopConfig,
+            apply_fast_profile,
             default_action_runner,
             run_agent_loop,
         )
@@ -6190,7 +6223,7 @@ class SaarthiDashboard(App[None]):
             return
 
         def base_provider():
-            return build_auto_validation_config_from_chain(
+            derived = build_auto_validation_config_from_chain(
                 database,
                 approved=True,
                 confirmed_poc=True,
@@ -6199,6 +6232,11 @@ class SaarthiDashboard(App[None]):
                 allow_waf_bypass=True,
                 evidence_root=Path.cwd() / "evidence" / "automatic-validation",
             )
+            if fast:
+                derived = dataclasses.replace(
+                    derived, config=apply_fast_profile(derived.config)
+                )
+            return derived
 
         def digest_provider(base):
             return gather_run_digest(
@@ -6226,7 +6264,16 @@ class SaarthiDashboard(App[None]):
             suffix = f" — {item.note}" if item.note else ""
             log_line(f"[LOOP #{item.index}] {tag}: {item.action_label}{suffix}")
 
-        config = AgentLoopConfig(autonomy=AgentAutonomy.YOLO)
+        config = (
+            AgentLoopConfig(
+                autonomy=AgentAutonomy.YOLO,
+                fast=True,
+                max_iterations=FAST_MAX_ITERATIONS,
+                max_wall_seconds=FAST_MAX_WALL_SECONDS,
+            )
+            if fast
+            else AgentLoopConfig(autonomy=AgentAutonomy.YOLO)
+        )
 
         try:
             result = asyncio.run(
