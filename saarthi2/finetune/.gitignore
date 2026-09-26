@@ -1,0 +1,7 @@
+# Third-party corpus + generated/large artifacts — reproduce with the Makefile.
+skills/
+data/
+adapters/
+fused-model/
+*.gguf
+repo.tar.gz

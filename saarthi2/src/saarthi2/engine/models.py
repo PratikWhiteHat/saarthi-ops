@@ -73,6 +73,7 @@ class RunResult(BaseModel):
     run_id: str
     workflow: str
     target: str | None = None
+    workspace: str | None = None
     status: StepStatus = StepStatus.PENDING
     steps: list[StepResult] = Field(default_factory=list)
 

@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# Virtualenv / uv
+.venv/
+venv/
+
+# Caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Local runtime state (default work dir is ~/.saarthi2, but ignore any local one)
+.saarthi2/
+*.db
+
+# OS
+.DS_Store

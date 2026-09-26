@@ -13,7 +13,7 @@ from saarthi2.engine.loader import (
     load_workflow_from_str,
 )
 
-_WORKFLOWS = Path(__file__).resolve().parent.parent / "workflows"
+_WORKFLOWS = Path(__file__).resolve().parent.parent / "src" / "saarthi2" / "workflows"
 
 
 def test_loads_sample_recon_workflow() -> None:
@@ -29,6 +29,13 @@ def test_loads_sample_recon_workflow() -> None:
 def test_list_workflows_finds_yaml() -> None:
     names = [p.stem for p in list_workflows(_WORKFLOWS)]
     assert "recon" in names
+    assert "general" in names
+
+
+def test_general_workflow_uses_new_step_types() -> None:
+    wf = load_workflow(_WORKFLOWS / "general.yaml")
+    uses = {s.uses for s in wf.steps}
+    assert {"function", "parallel", "llm"} <= uses
 
 
 def test_duplicate_step_id_rejected() -> None:

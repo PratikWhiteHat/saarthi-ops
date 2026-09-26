@@ -1,0 +1,61 @@
+name: passive-intel
+description: >
+  Passive-only external asset intel. Demonstrates the new stdlib functions
+  (apex_domain normalization) and adapters (chaos, asnmap, tlsx, waybackurls).
+  Read-only: no active scanning or exploitation.
+
+vars:
+  target: example.com
+  workdir: "~/.saarthi2/loot/{{ target_slug }}"
+
+steps:
+  - id: prep
+    uses: function
+    with: { func: create_folder, path: "{{ vars.workdir }}" }
+
+  - id: apex
+    name: Normalize target to its apex domain
+    uses: function
+    with: { func: apex_domain, text: "{{ target }}" }
+    register: apex
+
+  - id: passive
+    name: Passive discovery (parallel)
+    uses: parallel
+    with:
+      steps:
+        - id: chaos
+          uses: tool
+          continue_on_error: true
+          with: { tool: chaos, target: "{{ steps.apex.output }}" }
+          register: chaos
+        - id: asn
+          uses: tool
+          continue_on_error: true
+          with: { tool: asnmap, target: "{{ steps.apex.output }}" }
+          register: asn
+
+  - id: urls
+    name: Archived URLs (Wayback)
+    uses: tool
+    continue_on_error: true
+    with:
+      tool: waybackurls
+      target: "{{ steps.apex.output }}"
+      output: "{{ vars.workdir }}/urls.txt"
+    register: urls
+
+  - id: triage
+    name: AI summary of the external footprint
+    uses: llm
+    with:
+      max_iterations: 2
+      tools: []
+      prompt: |
+        Passive external intel for {{ steps.apex.output }} (authorized).
+        Chaos subdomains:
+        {{ steps.chaos.output }}
+        ASN ranges:
+        {{ steps.asn.output }}
+        Summarize the external footprint and the most interesting assets.
+        Base your answer only on the evidence above.

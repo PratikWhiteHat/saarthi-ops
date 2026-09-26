@@ -47,17 +47,30 @@ def _validate(workflow: Workflow) -> None:
         raise WorkflowError("A workflow must define at least one step.")
 
     seen: set[str] = set()
-    from saarthi2.steps import STEP_TYPES  # local import avoids an import cycle
+    from saarthi2.steps import KNOWN_USES  # local import avoids an import cycle
 
     for step in workflow.steps:
         if step.id in seen:
             raise WorkflowError(f"Duplicate step id: {step.id!r}")
         seen.add(step.id)
-        if step.uses not in STEP_TYPES:
+        if step.uses not in KNOWN_USES:
             raise WorkflowError(
                 f"Step {step.id!r} uses unknown type {step.uses!r}. "
-                f"Known types: {sorted(STEP_TYPES)}."
+                f"Known types: {sorted(KNOWN_USES)}."
             )
+
+
+def resolve_workflow(name: str, workflows_dir: str | Path) -> Path:
+    """Resolve a workflow by file path or by name within ``workflows_dir``."""
+
+    candidate = Path(name).expanduser()
+    if candidate.is_file():
+        return candidate
+    for suffix in (".yaml", ".yml"):
+        path = Path(workflows_dir).expanduser() / f"{name}{suffix}"
+        if path.is_file():
+            return path
+    raise WorkflowError(f"Workflow {name!r} not found in {workflows_dir}.")
 
 
 def list_workflows(directory: str | Path) -> list[Path]:

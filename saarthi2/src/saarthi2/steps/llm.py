@@ -35,6 +35,15 @@ async def handle_llm(step: Step, ctx: RunContext, deps: StepDeps) -> StepResult:
     tool_names = params.get("tools")  # None -> all tools; [] -> none
     max_iterations = int(params.get("max_iterations", 6))
 
+    # Optional RAG: ground the prompt in the relevant bug-hunting playbook(s).
+    # ``skills: true`` uses the prompt as the query; ``skills: "<query>"`` overrides it.
+    skills = params.get("skills")
+    if skills and getattr(deps, "skills", None) is not None and not deps.skills.is_empty:
+        query = skills if isinstance(skills, str) else prompt
+        context = deps.skills.context_for(query, k=int(params.get("skills_k", 3)))
+        if context:
+            prompt = f"{context}\n\n---\n\n{prompt}"
+
     result = await deps.agent.run(
         prompt,
         tool_names=tool_names,

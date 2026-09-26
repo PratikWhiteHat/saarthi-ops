@@ -1,0 +1,36 @@
+name: vuln
+description: >
+  Probe a host, run nuclei, normalize the findings, then notify. Shows the
+  tool-adapter, function (parse_nuclei), and notify steps. Needs httpx + nuclei.
+  Target may be a bare domain or a full URL.
+
+vars:
+  target: example.com
+  workdir: "~/.saarthi2/loot/{{ target_slug }}"
+
+steps:
+  - id: prep
+    uses: function
+    with: { func: create_folder, path: "{{ vars.workdir }}" }
+
+  - id: nuclei
+    name: Nuclei scan
+    uses: tool
+    with:
+      tool: nuclei
+      target: "{{ target_url }}"
+      args: ["-o", "{{ vars.workdir }}/nuclei.jsonl"]
+
+  - id: findings
+    name: Normalize findings
+    uses: function
+    with:
+      func: parse_nuclei
+      input: "{{ vars.workdir }}/nuclei.jsonl"
+      output: "{{ vars.workdir }}/findings.json"
+
+  - id: alert
+    name: Notify
+    uses: notify
+    with:
+      message: "Saarthi vuln scan of {{ target }} complete: {{ steps.findings.output }}"

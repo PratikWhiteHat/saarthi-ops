@@ -1,0 +1,16 @@
+# Import the fine-tuned model into Ollama:
+#   ollama create saarthi-bughunter -f Modelfile
+#
+# Prereq: fuse the trained LoRA into a standalone model first (see README):
+#   mlx_lm.fuse --model <BASE> --adapter-path adapters --save-path fused-model --de-quantize
+#
+# `FROM ./fused-model` imports the MLX/safetensors dir directly (Ollama supports
+# Qwen2/Llama/… archs). If your Ollama is older, convert to GGUF (see README) and
+# use `FROM ./saarthi-bughunter-q4_k_m.gguf` plus an explicit chat TEMPLATE.
+FROM ./fused-model
+
+SYSTEM """You are Saarthi, an expert bug-bounty and penetration-testing assistant operating strictly under explicit, authorized engagement. Give precise, practical hunting methodology: attack-surface signals, step-by-step procedures, payloads, detection, validation gates, and realistic impact. Only ever target assets the operator is authorized to test."""
+
+PARAMETER temperature 0.4
+PARAMETER top_p 0.9
+PARAMETER num_ctx 8192

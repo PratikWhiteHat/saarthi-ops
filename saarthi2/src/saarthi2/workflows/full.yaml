@@ -1,0 +1,53 @@
+name: full
+description: >
+  End-to-end: recon (parallel discovery) → normalize → scan → AI triage → notify.
+  Demonstrates every step type. Needs subfinder/assetfinder/httpx/nuclei.
+
+vars:
+  target: example.com
+  workdir: "~/.saarthi2/loot/{{ target_slug }}"
+
+steps:
+  - id: prep
+    uses: function
+    with: { func: create_folder, path: "{{ vars.workdir }}" }
+
+  - id: discover
+    name: Subdomain discovery (parallel)
+    uses: parallel
+    with:
+      steps:
+        - id: subfinder
+          uses: tool
+          with: { tool: subfinder, target: "{{ target }}" }
+          register: subfinder
+        - id: assetfinder
+          uses: tool
+          continue_on_error: true
+          with: { tool: assetfinder, target: "{{ target }}" }
+          register: assetfinder
+
+  - id: hosts
+    name: Extract unique hosts
+    uses: function
+    with:
+      func: extract_hosts
+      input: ""
+      output: "{{ vars.workdir }}/hosts.txt"
+
+  - id: triage
+    name: AI triage
+    uses: llm
+    with:
+      max_iterations: 3
+      tools: []
+      prompt: |
+        Authorized assessment of {{ target }}. Subdomains from subfinder:
+        {{ steps.subfinder.output }}
+        Summarize the attack surface and the 3 highest-value targets.
+
+  - id: alert
+    name: Notify
+    uses: notify
+    with:
+      message: "Saarthi full assessment of {{ target }} done.\n{{ steps.triage.output }}"

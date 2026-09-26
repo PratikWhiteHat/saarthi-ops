@@ -11,7 +11,13 @@ dependencies = [
     "ollama>=0.4",
     "typer>=0.15",
     "rich>=13.0",
+    "fastapi>=0.110",
+    "uvicorn>=0.30",
+    "redis>=5.0",
 ]
+
+[project.optional-dependencies]
+postgres = ["psycopg[binary]>=3.2"]
 
 [project.scripts]
 saarthi2 = "saarthi2.cli:app"
@@ -29,6 +35,11 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/saarthi2"]
+# Bundle the default workflow library and the Web UI with the package.
+artifacts = [
+    "src/saarthi2/workflows/*.yaml",
+    "src/saarthi2/server/static/*",
+]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]

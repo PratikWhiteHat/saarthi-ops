@@ -2,13 +2,21 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 
-from saarthi2.engine.context import RunContext, evaluate_when, resolve_items
+from saarthi2.engine.context import (
+    RunContext,
+    evaluate_when,
+    resolve_items,
+    resolve_vars,
+    target_slug,
+    target_url,
+)
 from saarthi2.engine.models import (
     RunResult,
     Step,
@@ -32,6 +40,8 @@ class StepDeps:
     agent: Any = None
     gate: Any = None
     store: Any = None
+    notifier: Any = None
+    skills: Any = None
     on_event: Callable[[str], None] | None = None
 
     def emit(self, message: str) -> None:
@@ -64,12 +74,25 @@ class WorkflowRunner:
         run_id = run_id or f"run-{uuid.uuid4().hex[:12]}"
         merged_vars = {**workflow.vars, **(extra_vars or {})}
         resolved_target = target or merged_vars.get("target")
-        ctx = RunContext(run_id=run_id, target=resolved_target, vars=merged_vars)
+        base_scope = {
+            "target": resolved_target or "",
+            "target_url": target_url(resolved_target or ""),
+            "target_slug": target_slug(resolved_target or ""),
+            "run_id": run_id,
+        }
+        resolved_vars = resolve_vars(merged_vars, base_scope)
+        ctx = RunContext(run_id=run_id, target=resolved_target, vars=resolved_vars)
 
+        workspace = (
+            str(resolved_vars.get("workspace"))
+            if resolved_vars.get("workspace")
+            else (target_slug(resolved_target) if resolved_target else None)
+        )
         result = RunResult(
             run_id=run_id,
             workflow=workflow.name,
             target=resolved_target,
+            workspace=workspace,
             status=StepStatus.RUNNING,
         )
         if self.deps.store is not None:
@@ -101,11 +124,50 @@ class WorkflowRunner:
             self.deps.emit(f"[skip] {label} (when=false)")
             return StepResult(step_id=step.id, status=StepStatus.SKIPPED)
 
+        if step.uses == "parallel":
+            return await self._run_parallel(step, ctx, label)
+
         if step.loop is not None:
             return await self._run_loop(step, ctx, label)
 
         self.deps.emit(f"[run ] {label} ({step.uses})")
         return await self._dispatch(step, ctx)
+
+    async def _run_parallel(self, step: Step, ctx: RunContext, label: str) -> StepResult:
+        raw = step.with_.get("steps") or []
+        try:
+            substeps = [Step.model_validate(item) for item in raw]
+        except Exception as exc:
+            return StepResult(
+                step_id=step.id,
+                status=StepStatus.FAILED,
+                error=f"invalid parallel sub-steps: {exc}",
+            )
+        self.deps.emit(f"[par ] {label}: {len(substeps)} branch(es)")
+
+        results = await asyncio.gather(
+            *[self._dispatch(sub, ctx) for sub in substeps]
+        )
+        for sub, sub_result in zip(substeps, results, strict=True):
+            ctx.record(sub.id, sub_result)
+            if sub.register and sub.register != sub.id:
+                ctx.steps[sub.register] = ctx.steps[sub.id]
+            if self.deps.store is not None:
+                self.deps.store.record_step(ctx.run_id, sub_result)
+
+        any_failed = any(r.status is StepStatus.FAILED for r in results)
+        status = (
+            StepStatus.FAILED
+            if any_failed and not step.continue_on_error
+            else StepStatus.COMPLETED
+        )
+        return StepResult(
+            step_id=step.id,
+            status=status,
+            output="\n".join(r.output for r in results if r.output),
+            data={"branches": len(substeps)},
+            iterations=list(results),
+        )
 
     async def _run_loop(self, step: Step, ctx: RunContext, label: str) -> StepResult:
         items = resolve_items(step.loop or "", ctx.scope())

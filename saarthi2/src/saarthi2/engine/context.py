@@ -96,6 +96,87 @@ def evaluate_when(expr: str, root: dict[str, Any]) -> bool:
     return str(render(expr, root)).strip().lower() not in _FALSY
 
 
+def target_url(target: str) -> str:
+    """Ensure the target has a scheme, without ever doubling an existing one.
+
+    ``example.com`` -> ``https://example.com``; a URL is returned unchanged.
+    """
+
+    target = (target or "").strip()
+    if not target:
+        return ""
+    return target if "://" in target else f"https://{target}"
+
+
+def resolve_vars(
+    variables: dict[str, Any], base: dict[str, Any], passes: int = 5
+) -> dict[str, Any]:
+    """Resolve inter-var / target references in workflow vars up front.
+
+    Interpolation is single-pass, so a var like ``workdir: ".../{{ target_slug }}"``
+    would leave the inner template literal when another step reads ``{{ vars.workdir }}``.
+    Rendering the vars to a fixpoint here (against ``target``/``target_slug``/other
+    vars) resolves those before any step runs.
+    """
+
+    resolved = dict(variables)
+    for _ in range(passes):
+        scope = {**base, "vars": resolved}
+        updated = {
+            key: (render(value, scope) if isinstance(value, str) else value)
+            for key, value in resolved.items()
+        }
+        if updated == resolved:
+            break
+        resolved = updated
+    return resolved
+
+
+def target_slug(target: str) -> str:
+    """A filesystem-safe slug of the target (scheme/host/path collapsed).
+
+    ``https://www.ex.com/a.php?id=7`` -> ``www_ex_com_a_php_id_7``. Safe to use
+    as a single directory name regardless of what the target looks like.
+    """
+
+    stripped = re.sub(r"^[a-zA-Z][a-zA-Z0-9+.-]*://", "", (target or "").strip())
+    slug = re.sub(r"[^a-zA-Z0-9]+", "_", stripped).strip("_").lower()
+    return slug[:120] or "target"
+
+
+# Second-level public suffixes so ``apex_domain`` keeps the registrable part
+# (e.g. ``a.b.co.uk`` -> ``b.co.uk``). Not the full PSL, but the common cases.
+_MULTI_TLDS = frozenset(
+    {
+        "co.uk", "org.uk", "gov.uk", "ac.uk", "me.uk",
+        "co.in", "net.in", "org.in", "gov.in", "ac.in",
+        "com.au", "net.au", "org.au", "gov.au",
+        "co.nz", "co.za", "co.jp", "or.jp", "ne.jp",
+        "com.br", "com.cn", "com.mx", "com.sg", "com.tr",
+    }
+)
+
+
+def host_of(value: str) -> str:
+    """Extract the bare hostname from a URL or host string (lowercased)."""
+
+    stripped = re.sub(r"^[a-zA-Z][a-zA-Z0-9+.-]*://", "", (value or "").strip())
+    return stripped.split("/")[0].split(":")[0].lower().rstrip(".")
+
+
+def apex_domain(value: str) -> str:
+    """Registrable apex domain of a host/URL (best-effort, PSL-lite)."""
+
+    host = host_of(value)
+    labels = host.split(".")
+    if len(labels) < 2:
+        return host
+    last_two = ".".join(labels[-2:])
+    if last_two in _MULTI_TLDS and len(labels) >= 3:
+        return ".".join(labels[-3:])
+    return last_two
+
+
 @dataclass
 class RunContext:
     """Mutable state threaded through a workflow run."""
@@ -109,8 +190,12 @@ class RunContext:
     def scope(self) -> dict[str, Any]:
         """The dict templates resolve against."""
 
+        target = self.target or ""
         return {
-            "target": self.target or "",
+            "target": target,
+            "target_url": target_url(target),
+            "target_slug": target_slug(target),
+            "run_id": self.run_id,
             "vars": self.vars,
             "steps": self.steps,
             "item": self.item,

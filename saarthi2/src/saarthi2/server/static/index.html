@@ -1,0 +1,630 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Saarthi 2.0</title>
+<style>
+  :root {
+    --bg:#f4f5f7; --panel:#ffffff; --panel2:#f0f2f5; --border:#d8dde3;
+    --fg:#1f2328; --muted:#6b7280; --accent:#2563eb; --accent-weak:#e8f0fe;
+    --ai:#7c3aed; --ai-weak:#f1eafe;
+    --ok:#1a7f37; --fail:#cf222e; --run:#9a6700; --skip:#6b7280;
+    --shadow:0 1px 3px rgba(27,31,36,.08), 0 6px 24px rgba(27,31,36,.06);
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; font:14px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+         background:var(--bg); color:var(--fg); }
+  code,pre,.mono { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; }
+  .app { display:grid; grid-template-columns:230px 1fr; height:100vh; }
+
+  /* sidebar */
+  .sidebar { background:var(--panel); border-right:1px solid var(--border); overflow-y:auto; padding:14px 10px; }
+  .brand { display:flex; align-items:center; gap:8px; padding:4px 8px 14px; }
+  .brand .logo { width:26px; height:26px; border-radius:7px; background:linear-gradient(135deg,#2563eb,#7c3aed); }
+  .brand .name { font-weight:800; letter-spacing:.5px; }
+  .brand .demo { font-size:10px; color:var(--muted); border:1px solid var(--border); border-radius:6px; padding:0 5px; }
+  .navgroup { color:var(--muted); font-size:10px; letter-spacing:1.2px; text-transform:uppercase;
+              margin:14px 8px 4px; }
+  .nav { display:flex; align-items:center; gap:9px; padding:7px 9px; border-radius:8px; cursor:pointer;
+         color:#2f3540; font-size:13px; }
+  .nav .ic { width:18px; text-align:center; opacity:.7; }
+  .nav:hover { background:var(--panel2); }
+  .nav.active { background:var(--accent-weak); color:var(--accent); font-weight:600; }
+  .nav.active .ic { opacity:1; }
+
+  /* content */
+  .content { overflow-y:auto; }
+  .topbar { position:sticky; top:0; z-index:5; background:var(--bg); display:flex; align-items:center;
+            gap:12px; padding:16px 22px 10px; border-bottom:1px solid var(--border); }
+  .topbar h1 { font-size:17px; margin:0; }
+  .topbar .desc { color:var(--muted); font-size:12px; }
+  .topbar .right { margin-left:auto; display:flex; gap:6px; align-items:center; flex-wrap:wrap; }
+  .view { padding:20px 22px 60px; }
+
+  h2 { font-size:13px; text-transform:uppercase; letter-spacing:.8px; color:var(--muted); margin:0 0 10px; }
+  .card { background:var(--panel); border:1px solid var(--border); border-radius:12px; box-shadow:var(--shadow); }
+  .pad { padding:14px 16px; }
+  .grid { display:grid; gap:14px; }
+  .stat-row { grid-template-columns:repeat(auto-fill,minmax(150px,1fr)); }
+  .stat { background:var(--panel); border:1px solid var(--border); border-radius:12px; padding:14px 16px; box-shadow:var(--shadow); }
+  .stat .n { font-size:26px; font-weight:800; }
+  .stat .l { color:var(--muted); font-size:12px; text-transform:uppercase; letter-spacing:.6px; }
+  .stat.crit .n{color:var(--fail)} .stat.high .n{color:#d1242f} .stat.medium .n{color:var(--run)}
+  .stat.low .n{color:var(--accent)} .stat.info .n{color:var(--muted)}
+
+  input,button,label,select,textarea { font:inherit; }
+  input[type=text],select,textarea { background:var(--panel); border:1px solid var(--border);
+    color:var(--fg); border-radius:8px; padding:8px 11px; }
+  input[type=text]{ flex:1; min-width:180px; }
+  textarea { width:100%; resize:vertical; min-height:90px; }
+  button { background:var(--accent); color:#fff; border:0; border-radius:8px; padding:8px 14px;
+    font-weight:600; cursor:pointer; }
+  button:hover { filter:brightness(1.05); }
+  button.secondary { background:var(--panel); color:var(--fg); border:1px solid var(--border); }
+  button.small { padding:4px 10px; font-size:12px; }
+  label.chk { color:var(--muted); display:flex; align-items:center; gap:5px; }
+  .row { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  th,td { text-align:left; padding:9px 12px; border-bottom:1px solid var(--border); vertical-align:top; word-break:break-word; }
+  th { color:var(--muted); font-weight:600; font-size:11px; text-transform:uppercase; letter-spacing:.5px; }
+  tr.click { cursor:pointer; }
+  tr.click:hover td { background:var(--panel2); }
+  .empty { color:var(--muted); font-size:13px; padding:14px 4px; }
+
+  .badge { padding:2px 9px; border-radius:20px; font-size:11px; font-weight:600; display:inline-block; }
+  .s-completed{ background:#e6f4ea; color:var(--ok); }
+  .s-failed{ background:#fbe9e9; color:var(--fail); }
+  .s-running{ background:#fdf3e0; color:var(--run); }
+  .s-skipped,.s-pending{ background:var(--panel2); color:var(--muted); }
+  .sev { padding:2px 9px; border-radius:20px; font-size:11px; font-weight:600; display:inline-block; }
+  .sev-critical{ background:#fbe4e4; color:#b91c1c; } .sev-high{ background:#fdeaea; color:var(--fail); }
+  .sev-medium{ background:#fbf1dd; color:var(--run); } .sev-low{ background:#e8f0fe; color:var(--accent); }
+  .sev-info,.sev-unknown{ background:var(--panel2); color:var(--muted); }
+  .chip { background:var(--panel2); border:1px solid var(--border); border-radius:20px; padding:1px 10px;
+          font-size:11px; color:var(--muted); }
+
+  .item { padding:11px 13px; border:1px solid var(--border); border-radius:10px; margin-bottom:8px;
+          cursor:pointer; background:var(--panel); }
+  .item:hover { border-color:var(--accent); }
+  .item.active { border-color:var(--accent); background:var(--accent-weak); }
+  .item .sub { color:var(--muted); font-size:12px; word-break:break-all; }
+
+  #diagram { background:var(--panel); border:1px solid var(--border); border-radius:12px; padding:14px;
+             min-height:120px; overflow:auto; box-shadow:var(--shadow); }
+  .out { background:#0d1117; border:1px solid #24292f; border-radius:8px; padding:10px; color:#d7dee7;
+         white-space:pre-wrap; word-break:break-word; font-size:12px; max-height:340px; overflow:auto;
+         margin:2px 0 10px; font-family:ui-monospace,SFMono-Regular,Menlo,monospace; }
+  .out-label { color:var(--muted); font-size:12px; margin:10px 0 3px; display:flex; align-items:center; gap:6px; }
+  .link { color:var(--accent); text-decoration:none; cursor:pointer; margin-left:auto; }
+  .sec-title { font-size:12px; text-transform:uppercase; letter-spacing:.7px; color:var(--muted); margin:16px 0 6px; }
+  .kv { display:grid; grid-template-columns:130px 1fr; gap:6px 14px; }
+  .kv .k { color:var(--muted); }
+
+  /* drawer */
+  .overlay { position:fixed; inset:0; background:rgba(27,31,36,.35); opacity:0; pointer-events:none;
+             transition:opacity .18s; z-index:20; }
+  .overlay.open { opacity:1; pointer-events:auto; }
+  .drawer { position:fixed; top:0; right:0; height:100vh; width:min(680px,92vw); background:var(--panel);
+            border-left:1px solid var(--border); box-shadow:-8px 0 40px rgba(27,31,36,.18); z-index:21;
+            transform:translateX(100%); transition:transform .2s ease; display:flex; flex-direction:column; }
+  .drawer.open { transform:translateX(0); }
+  .drawer-head { display:flex; align-items:center; gap:10px; padding:16px 20px; border-bottom:1px solid var(--border); }
+  .drawer-head .title { font-weight:700; }
+  .drawer-head .x { margin-left:auto; cursor:pointer; color:var(--muted); border:1px solid var(--border);
+                    border-radius:8px; width:30px; height:30px; display:flex; align-items:center; justify-content:center; }
+  .drawer-body { overflow-y:auto; padding:18px 20px; }
+  .ai-box { background:var(--ai-weak); border:1px solid #dcc9f7; border-radius:10px; padding:12px; margin-top:12px; }
+  .rep-box { background:var(--accent-weak); border:1px solid #cfe0fd; border-radius:10px; padding:12px; margin-top:12px; }
+  .ai-box .h { color:var(--ai); font-weight:700; margin-bottom:6px; }
+  .rep-box .h { color:var(--accent); font-weight:700; margin-bottom:6px; }
+  .ai-body { white-space:pre-wrap; word-break:break-word; font-size:12.5px; margin:0; max-height:420px; overflow:auto; }
+</style>
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar">
+    <div class="brand"><span class="logo"></span><span class="name">Saarthi</span><span class="demo">2.0</span></div>
+    <nav id="nav"></nav>
+  </aside>
+  <main class="content">
+    <div class="topbar">
+      <div>
+        <h1 id="page-title">Dashboard</h1>
+        <div class="desc" id="page-desc"></div>
+      </div>
+      <div class="right" id="topstats"></div>
+      <button id="new-scan">▷ New Scan</button>
+      <button class="secondary small" id="global-refresh">↻ Refresh</button>
+    </div>
+    <div class="view" id="view"></div>
+  </main>
+</div>
+
+<div class="overlay" id="overlay"></div>
+<aside class="drawer" id="drawer">
+  <div class="drawer-head"><span class="title" id="drawer-title"></span>
+    <span class="x" id="drawer-x">✕</span></div>
+  <div class="drawer-body" id="drawer-body"></div>
+</aside>
+
+<script type="module">
+import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
+mermaid.initialize({ startOnLoad:false, theme:'default', securityLevel:'loose' });
+
+const $ = (id) => document.getElementById(id);
+const state = { view:'dashboard', wf:null, run:null, wsFilter:'', pollTimer:null };
+
+async function api(path, opts) {
+  const res = await fetch(path, opts);
+  if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || res.statusText);
+  return res.json();
+}
+function el(tag, attrs, ...kids) {
+  const n = document.createElement(tag);
+  if (attrs) for (const [k, v] of Object.entries(attrs)) {
+    if (k === 'text') n.textContent = v;
+    else if (k === 'html') n.innerHTML = v;         // ONLY for engine-generated SVG
+    else if (k === 'class') n.className = v;
+    else if (k === 'on') n.onclick = v;
+    else n.setAttribute(k, v);
+  }
+  for (const c of kids) if (c != null) n.append(c);
+  return n;
+}
+const badge = (s) => el('span', { class: 'badge s-' + (s || 'pending'), text: s || '' });
+const sevPill = (s) => el('span', { class: 'sev sev-' + (s || 'info'), text: s || 'info' });
+
+function renderTable(cols, rows, empty, onRow) {
+  if (!rows || !rows.length) return el('div', { class: 'empty', text: empty || 'nothing here' });
+  const table = el('table');
+  const thr = el('tr'); for (const c of cols) thr.append(el('th', { text: c.label }));
+  table.append(el('thead', null, thr));
+  const tb = el('tbody');
+  for (const r of rows) {
+    const tr = el('tr', onRow ? { class: 'click', on: () => onRow(r) } : null);
+    for (const c of cols) tr.append(c.render ? el('td', null, c.render(r)) : el('td', { text: String(r[c.key] ?? '') }));
+    tb.append(tr);
+  }
+  table.append(tb);
+  return el('div', { class: 'card' }, table);
+}
+
+// ---- navigation -----------------------------------------------------------
+const NAV = [
+  { group: 'Overview', items: [{ id: 'dashboard', label: 'Dashboard', ic: '▦' }] },
+  { group: 'Scans', items: [{ id: 'runs', label: 'Runs', ic: '▷' }, { id: 'workflows', label: 'Workflows', ic: '⚙' }] },
+  { group: 'Inventory', items: [{ id: 'findings', label: 'Findings', ic: '⚑' }, { id: 'workspaces', label: 'Workspaces', ic: '▣' }] },
+  { group: 'Activity', items: [{ id: 'events', label: 'Events', ic: '≡' }] },
+  { group: 'Catalog', items: [
+    { id: 'cat:tools', label: 'Tools', ic: '⚒' }, { id: 'cat:functions', label: 'Functions', ic: 'ƒ' },
+    { id: 'cat:subagents', label: 'Sub-agents', ic: '☰' }, { id: 'cat:cloud', label: 'Cloud & Storage', ic: '☁' },
+    { id: 'cat:skills', label: 'Skills', ic: '📚' }, { id: 'cat:plugins', label: 'Plugins', ic: '⧉' }] },
+  { group: 'System', items: [{ id: 'llm', label: 'LLM Playground', ic: '🧠' }, { id: 'settings', label: 'Settings', ic: '⚙' }] },
+];
+const TITLES = {
+  dashboard: ['Dashboard', 'Overview of runs, findings, and activity'],
+  runs: ['Runs', 'Every workflow run — click one for details'],
+  workflows: ['Workflows', 'Pick a workflow, visualize it, and run it'],
+  findings: ['Findings', 'Vulnerabilities discovered across all runs'],
+  workspaces: ['Workspaces', 'Runs grouped per target'],
+  events: ['Events', 'Audit log of every action'],
+  'cat:tools': ['Tools', 'Tool adapters available to workflows'],
+  'cat:functions': ['Functions', 'Built-in data/glue functions'],
+  'cat:subagents': ['Sub-agents', 'External AI agent CLIs'],
+  'cat:cloud': ['Cloud & Storage', 'Provisioning + object-storage providers'],
+  'cat:skills': ['Skills', 'Bug-hunting playbooks (RAG) — search to preview'],
+  'cat:plugins': ['Plugins', 'Loaded extension plugins'],
+  llm: ['LLM Playground', 'Chat with the local model'],
+  settings: ['Settings', 'Runtime configuration (secrets redacted)'],
+};
+function buildNav() {
+  const nav = $('nav'); nav.replaceChildren();
+  for (const g of NAV) {
+    nav.append(el('div', { class: 'navgroup', text: g.group }));
+    for (const it of g.items) {
+      const n = el('div', { class: 'nav', on: () => navigate(it.id) },
+        el('span', { class: 'ic', text: it.ic }), el('span', { text: it.label }));
+      n.dataset.id = it.id;
+      nav.append(n);
+    }
+  }
+}
+function navigate(id) {
+  state.view = id;
+  if (state.pollTimer) { clearInterval(state.pollTimer); state.pollTimer = null; }
+  document.querySelectorAll('.nav').forEach(n => n.classList.toggle('active', n.dataset.id === id));
+  const [t, d] = TITLES[id] || [id, ''];
+  $('page-title').textContent = t; $('page-desc').textContent = d;
+  render();
+}
+
+async function render() {
+  const v = state.view, main = $('view');
+  main.replaceChildren(el('div', { class: 'empty', text: 'loading…' }));
+  try {
+    if (v === 'dashboard') return await renderDashboard(main);
+    if (v === 'runs') return await renderRuns(main);
+    if (v === 'workflows') return await renderWorkflows(main);
+    if (v === 'findings') return await renderFindings(main);
+    if (v === 'workspaces') return await renderWorkspaces(main);
+    if (v === 'events') return await renderEvents(main);
+    if (v === 'llm') return renderLLM(main);
+    if (v === 'settings') return await renderSettings(main);
+    if (v.startsWith('cat:')) return await renderCatalog(main, v.slice(4));
+  } catch (e) {
+    main.replaceChildren(el('div', { class: 'empty', text: 'error: ' + e.message }));
+  }
+}
+
+// ---- views ----------------------------------------------------------------
+async function renderDashboard(main) {
+  const [stats, runs] = await Promise.all([api('/api/stats'), api('/api/runs')]);
+  main.replaceChildren();
+  const cards = el('div', { class: 'grid stat-row' });
+  cards.append(statCard('Runs', stats.runs, ''), statCard('Findings', stats.findings, ''));
+  for (const sev of ['critical', 'high', 'medium', 'low', 'info']) {
+    const n = (stats.findings_by_severity || {})[sev] || 0;
+    if (n) cards.append(statCard(sev, n, sev));
+  }
+  main.append(cards);
+  const recentHead = el('div', { class: 'row', style: 'margin:18px 0 8px' },
+    el('h2', { style: 'margin:0', text: 'Recent runs' }),
+    el('button', { class: 'small', style: 'margin-left:auto', text: '▷ New Scan', on: () => openNewScanDrawer() }));
+  main.append(recentHead);
+  main.append(runsTable(runs.slice(0, 10)));
+}
+function statCard(label, n, cls) {
+  return el('div', { class: 'stat ' + cls }, el('div', { class: 'n', text: String(n) }), el('div', { class: 'l', text: label }));
+}
+
+async function renderRuns(main) {
+  const ws = await api('/api/workspaces').catch(() => []);
+  main.replaceChildren();
+  const bar = el('div', { class: 'row', style: 'margin-bottom:12px' });
+  const sel = el('select');
+  sel.append(el('option', { value: '', text: 'all workspaces' }));
+  for (const w of ws) sel.append(el('option', { value: w.workspace || '', text: `${w.workspace || '-'} (${w.runs})` }));
+  sel.value = state.wsFilter;
+  sel.onchange = () => { state.wsFilter = sel.value; renderRuns(main); };
+  bar.append(sel, el('button', { style: 'margin-left:auto', text: '▷ New Scan', on: () => openNewScanDrawer() }));
+  main.append(bar);
+  const runs = await api('/api/runs' + (state.wsFilter ? '?workspace=' + encodeURIComponent(state.wsFilter) : ''));
+  main.append(runsTable(runs));
+}
+function runsTable(runs) {
+  return renderTable([
+    { label: 'Workflow', key: 'workflow' },
+    { label: 'Status', render: r => badge(r.status) },
+    { label: 'Target', key: 'target' },
+    { label: 'Workspace', render: r => el('span', { class: 'chip', text: r.workspace || '-' }) },
+    { label: 'Run', key: 'run_id' },
+    { label: 'When', key: 'created_at' },
+  ], runs, 'no runs yet', r => openRunDrawer(r.run_id));
+}
+
+async function renderWorkflows(main) {
+  const list = await api('/api/workflows');
+  main.replaceChildren();
+  const wrap = el('div', { style: 'display:grid;grid-template-columns:260px 1fr;gap:18px' });
+  const left = el('div');
+  for (const w of list) {
+    const item = el('div', { class: 'item' + (w.name === state.wf ? ' active' : '') },
+      el('div', { text: w.name }), el('div', { class: 'sub', text: `${w.steps} step(s)` }));
+    item.onclick = () => selectWorkflow(w.name, right);
+    left.append(item);
+  }
+  const right = el('div');
+  wrap.append(left, right);
+  main.append(wrap);
+  if (state.wf) selectWorkflow(state.wf, right);
+  else right.append(el('div', { class: 'empty', text: 'select a workflow to view + run it' }));
+}
+async function selectWorkflow(name, right) {
+  state.wf = name;
+  document.querySelectorAll('#view .item').forEach(n => n.classList.toggle('active',
+    n.firstChild && n.firstChild.textContent === name));
+  right.replaceChildren(el('div', { class: 'empty', text: 'loading…' }));
+  const wf = await api('/api/workflows/' + encodeURIComponent(name));
+  right.replaceChildren();
+  right.append(el('h2', { text: wf.name }));
+  if (wf.description) right.append(el('div', { class: 'desc', style: 'margin-bottom:10px', text: wf.description }));
+  const bar = el('div', { class: 'row', style: 'margin-bottom:12px' });
+  const target = el('input', { type: 'text', placeholder: 'target (e.g. example.com)' });
+  const noai = el('input', { type: 'checkbox' });
+  const runBtn = el('button', { text: '▷ Run' });
+  runBtn.onclick = () => startRun(name, target.value, noai.checked).catch(e => alert(e.message));
+  bar.append(target, el('label', { class: 'chk' }, noai, el('span', { text: 'no-ai' })), runBtn);
+  right.append(bar);
+  const diagram = el('div', { id: 'diagram' });
+  right.append(diagram);
+  try {
+    const { svg } = await mermaid.render('g' + Math.floor(performance.now()), wf.mermaid);
+    diagram.innerHTML = svg;  // mermaid SVG is engine-generated
+  } catch (e) { diagram.replaceChildren(el('pre', { text: wf.mermaid })); }
+}
+async function startRun(workflow, target, noAi) {
+  const { run_id } = await api('/api/runs', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ workflow, target: target || null, no_ai: noAi }),
+  });
+  loadStats();
+  openRunDrawer(run_id);
+}
+
+async function renderFindings(main) {
+  const rows = await api('/api/findings');
+  main.replaceChildren(renderTable([
+    { label: 'Severity', render: f => sevPill(f.severity) },
+    { label: 'Tool', key: 'tool' }, { label: 'Rule', key: 'rule_id' },
+    { label: 'Message', key: 'message' }, { label: 'Location', key: 'location' },
+    { label: 'Run', key: 'run_id' },
+  ], rows, 'no findings recorded yet', f => openFindingDrawer(f)));
+}
+
+async function renderWorkspaces(main) {
+  const rows = await api('/api/workspaces');
+  main.replaceChildren(renderTable([
+    { label: 'Workspace', render: w => el('span', { class: 'chip', text: w.workspace || '-' }) },
+    { label: 'Runs', key: 'runs' }, { label: 'Last run', key: 'last_run' },
+  ], rows, 'no workspaces yet', w => { state.wsFilter = w.workspace || ''; navigate('runs'); }));
+}
+
+async function renderEvents(main) {
+  const rows = await api('/api/events?limit=200');
+  main.replaceChildren(renderTable([
+    { label: 'Time', key: 'ts' }, { label: 'Event', key: 'event' },
+    { label: 'Detail', render: e => { const { ts, event, ...rest } = e; return el('span', { class: 'mono', text: JSON.stringify(rest) }); } },
+  ], rows, 'no audit events yet'));
+}
+
+const CATALOGS = {
+  tools: { path: '/api/tools', cols: [{ label: 'Name', key: 'name' }, { label: 'Category', key: 'category' }, { label: 'Binary', key: 'binary' }, { label: 'Description', key: 'description' }] },
+  functions: { path: '/api/functions', cols: [{ label: 'Name', key: 'name' }, { label: 'Description', key: 'description' }] },
+  subagents: { path: '/api/subagents', cols: [{ label: 'Name', key: 'name' }, { label: 'Command', key: 'command' }] },
+  plugins: { path: '/api/plugins', cols: [{ label: 'Name', key: 'name' }, { label: 'Source', key: 'source' }, { label: 'Fns', key: 'functions' }, { label: 'Adapters', key: 'adapters' }, { label: 'Steps', key: 'steps' }] },
+};
+async function renderCatalog(main, kind) {
+  if (kind === 'skills') {
+    main.replaceChildren();
+    const bar = el('div', { class: 'row', style: 'margin-bottom:12px' });
+    const q = el('input', { type: 'text', placeholder: 'search playbooks (e.g. "idor api", "ssrf", "graphql")' });
+    const btn = el('button', { text: 'Search' });
+    const results = el('div', { style: 'margin-top:12px' });
+    const doSearch = async () => {
+      if (!q.value.trim()) return;
+      results.replaceChildren(el('div', { class: 'empty', text: 'searching…' }));
+      try {
+        const hits = await api('/api/skills/search?q=' + encodeURIComponent(q.value));
+        results.replaceChildren(renderTable([
+          { label: 'Skill', key: 'skill' }, { label: 'Section', key: 'heading' }, { label: 'Preview', key: 'preview' },
+        ], hits, 'no matches'));
+      } catch (e) { results.replaceChildren(el('div', { class: 'empty', text: e.message })); }
+    };
+    btn.onclick = doSearch; q.onkeydown = (e) => { if (e.key === 'Enter') doSearch(); };
+    bar.append(q, btn);
+    main.append(bar, results);
+    const list = await api('/api/skills');
+    if (!list.length) results.replaceChildren(el('div', { class: 'empty', text: 'No skills loaded. Run `saarthi2 skills fetch`.' }));
+    else results.replaceChildren(renderTable([
+      { label: 'Skill', key: 'name' }, { label: 'Sections', key: 'sections' }, { label: 'Description', key: 'description' },
+    ], list, 'none'));
+    return;
+  }
+  if (kind === 'cloud') {
+    const [providers, storage] = await Promise.all([api('/api/providers'), api('/api/storage')]);
+    const rows = [...providers.map(p => ({ ...p, type: 'compute' })), ...storage.map(p => ({ ...p, type: 'storage' }))];
+    main.replaceChildren(renderTable([
+      { label: 'Name', key: 'name' }, { label: 'Type', key: 'type' },
+      { label: 'CLI', key: 'cli' }, { label: 'Requires', key: 'requires' },
+    ], rows, 'none'));
+    return;
+  }
+  const c = CATALOGS[kind];
+  main.replaceChildren(renderTable(c.cols, await api(c.path), 'none'));
+}
+
+function renderLLM(main) {
+  main.replaceChildren();
+  const card = el('div', { class: 'card pad' });
+  const ta = el('textarea', { placeholder: 'Ask the local model anything (recon analysis, payload ideas, triage help)…' });
+  const send = el('button', { text: 'Send' });
+  const out = el('pre', { class: 'ai-body', style: 'margin-top:12px' });
+  send.onclick = async () => {
+    if (!ta.value.trim()) return;
+    out.textContent = 'thinking… (needs Ollama running)';
+    try {
+      const r = await api('/api/llm', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ prompt: ta.value }) });
+      out.textContent = r.answer || '(empty response)';
+    } catch (e) { out.textContent = 'LLM unavailable: ' + e.message + '\n\nStart Ollama (`ollama serve`) and pull the model.'; }
+  };
+  card.append(ta, el('div', { class: 'row', style: 'margin-top:10px' }, send), out);
+  main.append(card);
+}
+
+async function renderSettings(main) {
+  const s = await api('/api/settings');
+  const rows = Object.entries(s).map(([k, v]) => ({ key: k, value: String(v) }));
+  main.replaceChildren(renderTable([{ label: 'Key', key: 'key' }, { label: 'Value', key: 'value' }], rows, 'none'));
+}
+
+// ---- drawer ---------------------------------------------------------------
+function openDrawer(title) {
+  $('drawer-title').textContent = title;
+  $('drawer').classList.add('open'); $('overlay').classList.add('open');
+}
+function closeDrawer() {
+  $('drawer').classList.remove('open'); $('overlay').classList.remove('open');
+  if (state.pollTimer) { clearInterval(state.pollTimer); state.pollTimer = null; }
+  state.run = null;
+}
+$('drawer-x').onclick = closeDrawer;
+$('overlay').onclick = closeDrawer;
+
+async function openNewScanDrawer(presetWf) {
+  openDrawer('New Scan');
+  const body = $('drawer-body'); body.replaceChildren(el('div', { class: 'empty', text: 'loading workflows…' }));
+  let list;
+  try { list = await api('/api/workflows'); } catch (e) { body.replaceChildren(el('div', { class: 'empty', text: e.message })); return; }
+  body.replaceChildren();
+  const sel = el('select');
+  for (const w of list) sel.append(el('option', { value: w.name, text: `${w.name} — ${w.steps} step(s)` }));
+  if (presetWf) sel.value = presetWf;
+  const target = el('input', { type: 'text', placeholder: 'target — domain or full URL (e.g. example.com)' });
+  const noai = el('input', { type: 'checkbox' });
+  const run = el('button', { text: '▷ Run scan' });
+  const hint = el('div', { class: 'desc', style: 'margin-top:10px' });
+  const syncHint = () => {
+    const w = list.find(x => x.name === sel.value);
+    hint.textContent = w && w.description ? w.description : '';
+  };
+  sel.onchange = syncHint; syncHint();
+  run.onclick = async () => {
+    if (!sel.value) return;
+    run.disabled = true; run.textContent = 'starting…';
+    try {
+      const { run_id } = await api('/api/runs', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ workflow: sel.value, target: target.value || null, no_ai: noai.checked }),
+      });
+      loadStats();
+      openRunDrawer(run_id);           // swap the form for the live run
+      if (state.view === 'runs' || state.view === 'dashboard') render();
+    } catch (e) { alert(e.message); run.disabled = false; run.textContent = '▷ Run scan'; }
+  };
+  const form = el('div', { class: 'card pad' });
+  const grid = el('div', { class: 'kv' });
+  grid.append(el('div', { class: 'k', text: 'Workflow' }), sel);
+  grid.append(el('div', { class: 'k', text: 'Target' }), target);
+  grid.append(el('div', { class: 'k', text: 'AI' }), el('label', { class: 'chk' }, noai, el('span', { text: 'no-ai (skip the LLM steps)' })));
+  form.append(grid, hint, el('div', { class: 'row', style: 'margin-top:14px' }, run));
+  body.append(form);
+  setTimeout(() => target.focus(), 50);
+}
+
+function openFindingDrawer(f) {
+  openDrawer('Finding');
+  const body = $('drawer-body'); body.replaceChildren();
+  body.append(el('div', { class: 'row', style: 'margin-bottom:12px' }, sevPill(f.severity),
+    el('span', { class: 'chip', text: f.tool || 'tool' })));
+  const kv = el('div', { class: 'kv' });
+  const add = (k, v) => { kv.append(el('div', { class: 'k', text: k }), el('div', { text: v || '-' })); };
+  add('Rule', f.rule_id); add('Message', f.message); add('Location', f.location);
+  add('Run', f.run_id); add('Recorded', f.created_at);
+  body.append(kv);
+}
+
+function openRunDrawer(runId) {
+  state.run = runId;
+  openDrawer('Run ' + runId);
+  const body = $('drawer-body'); body.replaceChildren();
+  const head = el('div', { class: 'row', style: 'margin-bottom:6px' });
+  const live = el('div', { id: 'run-live' });
+  const analysis = el('div', { id: 'run-analysis' });
+  body.append(head, live, analysis);
+  head.append(
+    el('button', { class: 'secondary small', text: '📄 Report', on: () => showReport(runId, analysis) }),
+    el('button', { class: 'secondary small', text: '🧠 AI Analyze', on: () => aiAnalyze(runId, analysis) }));
+  if (state.pollTimer) clearInterval(state.pollTimer);
+  const tick = async () => {
+    if (state.run !== runId) return;
+    let d; try { d = await api('/api/runs/' + runId); } catch (e) { return; }
+    renderRunLive(live, d);
+    if (!d.running && state.pollTimer) { clearInterval(state.pollTimer); state.pollTimer = null; loadStats(); }
+  };
+  tick();
+  state.pollTimer = setInterval(tick, 1500);
+}
+
+function renderRunLive(live, d) {
+  live.replaceChildren();
+  const head = el('div', { class: 'row', style: 'margin:6px 0 10px' });
+  if (d.run) head.append(el('span', { style: 'font-weight:700', text: d.run.workflow }), badge(d.run.status));
+  if (d.run && d.run.workspace) head.append(el('span', { class: 'chip', text: d.run.workspace }));
+  if (d.run && d.run.target) head.append(el('span', { class: 'chip', text: d.run.target }));
+  live.append(head);
+
+  live.append(renderTable([
+    { label: 'Step', key: 'step_id' },
+    { label: 'Status', render: s => badge(s.status) },
+    { label: 'ms', key: 'duration_ms' },
+    { label: 'Detail', render: s => el('span', { text: s.error || (s.exit_code != null ? 'exit=' + s.exit_code : '') }) },
+  ], d.steps, 'starting…'));
+
+  const withOut = (d.steps || []).filter(s => s.output && s.output.trim());
+  live.append(el('div', { class: 'sec-title', text: 'Output' }));
+  if (!withOut.length) {
+    const done = d.run && d.run.status !== 'running' && !d.running;
+    live.append(el('div', { class: 'empty', text: done ? 'No output captured (re-run to capture).' : 'waiting for output…' }));
+  } else for (const s of withOut) {
+    const pre = el('pre', { class: 'out', text: s.output });
+    const label = el('div', { class: 'out-label' }, el('span', { text: s.step_id + ' ' }), badge(s.status));
+    if (s.evidence_path) {
+      const full = el('a', { class: 'link', text: '⤢ full' });
+      full.onclick = async () => { try { const r = await api(`/api/runs/${d.run.run_id}/steps/${encodeURIComponent(s.step_id)}/output`); if (r.output) pre.textContent = r.output; } catch (e) {} };
+      label.append(full);
+    }
+    live.append(label, pre);
+  }
+
+  if (d.findings && d.findings.length) {
+    live.append(el('div', { class: 'sec-title', text: `Findings (${d.findings.length})` }));
+    live.append(renderTable([
+      { label: 'Sev', render: f => sevPill(f.severity) }, { label: 'Tool', key: 'tool' },
+      { label: 'Rule', key: 'rule_id' }, { label: 'Message', key: 'message' }, { label: 'Location', key: 'location' },
+    ], d.findings, '', f => openFindingDrawer(f)));
+  }
+}
+
+async function showReport(runId, container) {
+  let box = container.querySelector('.rep-box');
+  if (!box) { box = el('div', { class: 'rep-box' }); container.append(box); }
+  box.replaceChildren(el('div', { class: 'h', text: '📄 Report' }), el('pre', { class: 'ai-body', text: 'loading…' }));
+  const body = box.querySelector('.ai-body');
+  try {
+    const r = await api(`/api/runs/${runId}/report`);
+    body.textContent = r.content;
+    const dl = el('a', { class: 'link', text: '⤓ download .md' });
+    dl.onclick = () => { const u = URL.createObjectURL(new Blob([r.content], { type: 'text/markdown' })); const a = el('a', { href: u, download: runId + '.md' }); document.body.append(a); a.click(); a.remove(); URL.revokeObjectURL(u); };
+    box.querySelector('.h').append(' ', dl);
+  } catch (e) { body.textContent = 'report unavailable: ' + e.message; }
+}
+
+async function aiAnalyze(runId, container) {
+  let box = container.querySelector('.ai-box');
+  if (!box) { box = el('div', { class: 'ai-box' }); container.append(box); }
+  box.replaceChildren(el('div', { class: 'h', text: '🧠 AI Analysis' }), el('pre', { class: 'ai-body', text: 'analyzing… (needs Ollama running)' }));
+  const body = box.querySelector('.ai-body');
+  let d; try { d = await api('/api/runs/' + runId); } catch (e) { body.textContent = e.message; return; }
+  const outputs = (d.steps || []).filter(s => s.output).map(s => `## ${s.step_id} (${s.status})\n${s.output}`).join('\n\n').slice(0, 12000);
+  const findings = (d.findings || []).map(f => `- [${f.severity}] ${f.tool} ${f.rule_id}: ${f.message} @ ${f.location}`).join('\n') || 'none recorded';
+  const prompt = `You are a security analyst reviewing an AUTHORIZED assessment of ${(d.run && d.run.target) || ''} ` +
+    `(workflow: ${(d.run && d.run.workflow) || ''}).\n\nTool outputs:\n${outputs}\n\nRecorded findings:\n${findings}\n\n` +
+    `Summarize the attack surface, the most notable results, and the 3-5 highest-value next steps. Base your answer only on the evidence. Be concise.`;
+  try {
+    const r = await api('/api/llm', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ prompt, skills: true }) });
+    body.textContent = r.answer || '(empty response)';
+  } catch (e) { body.textContent = 'AI analysis unavailable: ' + e.message + '\n\nStart Ollama and pull the model, then retry.'; }
+}
+
+// ---- header stats ---------------------------------------------------------
+async function loadStats() {
+  try {
+    const s = await api('/api/stats');
+    const strip = $('topstats');
+    strip.replaceChildren(el('span', { class: 'chip', text: `${s.runs} runs` }), el('span', { class: 'chip', text: `${s.findings} findings` }));
+    for (const sev of ['critical', 'high', 'medium', 'low']) {
+      const n = (s.findings_by_severity || {})[sev]; if (n) strip.append(el('span', { class: 'sev sev-' + sev, text: `${sev} ${n}` }));
+    }
+  } catch (e) { /* best effort */ }
+}
+
+$('new-scan').onclick = () => openNewScanDrawer(state.wf);
+$('global-refresh').onclick = () => { loadStats(); render(); };
+buildNav();
+navigate('dashboard');
+loadStats();
+</script>
+</body>
+</html>
