@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 import shlex
 from collections.abc import Callable
 from typing import Any
@@ -12,6 +13,14 @@ from saarthi2.config import Settings
 from saarthi2.engine.runner import StepDeps
 from saarthi2.policy import PermissiveGate
 from saarthi2.tools import default_tool_registry
+
+# Terminal control sequences many tools emit (colors, cursor moves). We strip them
+# so stored/displayed output is clean text and so the LLM isn't fed escape noise.
+_ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)")
+
+
+def strip_ansi(text: str) -> str:
+    return _ANSI_RE.sub("", text)
 
 
 def _expand_user_tokens(args: list[str]) -> list[str]:
@@ -116,8 +125,8 @@ async def run_command(
         return (-1, "", f"command timed out after {timeout}s")
     return (
         proc.returncode if proc.returncode is not None else -1,
-        out.decode("utf-8", "replace"),
-        err.decode("utf-8", "replace"),
+        strip_ansi(out.decode("utf-8", "replace")),
+        strip_ansi(err.decode("utf-8", "replace")),
     )
 
 

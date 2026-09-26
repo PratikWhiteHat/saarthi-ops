@@ -64,8 +64,11 @@ steps:
       max_iterations: 8
       tools: [search_skills, run_scan, http_get]
       prompt: |
-        You are an authorized bug-bounty hunter assessing {{ target }}.
-        Live hosts discovered (host · status · title · tech):
+        You are an authorized bug-bounty hunter. The target is {{ target }} and you
+        are authorized to test it — do NOT ask for the target or scope; it is given.
+        Act now using your tools.
+
+        Live hosts already discovered (host · status · title · tech):
 
         {{ steps.probe.output }}
 

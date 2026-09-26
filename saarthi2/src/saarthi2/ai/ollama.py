@@ -34,10 +34,14 @@ def _normalize(message: Any) -> dict:
 class OllamaChat:
     """Async chat client bound to one local model."""
 
-    def __init__(self, host: str, model: str) -> None:
+    def __init__(self, host: str, model: str, num_ctx: int = 8192) -> None:
         from ollama import AsyncClient
 
         self.model = model
+        # Ollama defaults to a small context (~2-4k), which truncates our
+        # skills+hosts+outputs prompts — the model then loses the target or returns
+        # empty. Request a larger window so the full prompt fits.
+        self.num_ctx = num_ctx
         self._client = AsyncClient(host=host)
 
     async def chat(
@@ -54,7 +58,7 @@ class OllamaChat:
                 model=self.model,
                 messages=messages,
                 tools=tools,
-                options={"temperature": 0.2, "num_predict": num_predict},
+                options={"temperature": 0.2, "num_predict": num_predict, "num_ctx": self.num_ctx},
             )
         except (ConnectionError, OSError, ResponseError) as exc:
             raise OllamaUnavailableError(

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 
-from saarthi2.runtime import _expand_user_tokens, resolve_tool_binary
+from saarthi2.runtime import _expand_user_tokens, resolve_tool_binary, strip_ansi
 
 
 def _write_exe(directory, name, body) -> str:
@@ -68,3 +68,13 @@ def test_dedupes_duplicate_path_entries(tmp_path) -> None:
 
 def test_expand_user_tokens_unchanged_for_plain_args() -> None:
     assert _expand_user_tokens(["nuclei", "-u", "https://x"]) == ["nuclei", "-u", "https://x"]
+
+
+def test_strip_ansi() -> None:
+    # httpx-style colored line -> plain text
+    colored = "\x1b[32m200\x1b[0m \x1b[36mManage Your Billing\x1b[0m \x1b[35mHSTS\x1b[0m"
+    assert strip_ansi(colored) == "200 Manage Your Billing HSTS"
+    # cursor/erase codes and OSC titles removed too
+    assert strip_ansi("a\x1b[2Kb\x1b[1;31mc\x1b[0m") == "abc"
+    # plain text untouched
+    assert strip_ansi("sub.example.com [200]") == "sub.example.com [200]"
