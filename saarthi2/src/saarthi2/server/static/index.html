@@ -52,6 +52,7 @@
   .stat .l { color:var(--muted); font-size:12px; text-transform:uppercase; letter-spacing:.6px; }
   .stat.crit .n{color:var(--fail)} .stat.high .n{color:#d1242f} .stat.medium .n{color:var(--run)}
   .stat.low .n{color:var(--accent)} .stat.info .n{color:var(--muted)}
+  .stat.confirmed .n{color:var(--ok)} .stat.suspected .n{color:var(--run)}
 
   input,button,label,select,textarea { font:inherit; }
   input[type=text],select,textarea { background:var(--panel); border:1px solid var(--border);
@@ -299,6 +300,9 @@ async function renderDashboard(main) {
   main.replaceChildren();
   const cards = el('div', { class: 'grid stat-row' });
   cards.append(statCard('Runs', stats.runs, ''), statCard('Findings', stats.findings, ''));
+  const byStatus = stats.findings_by_status || {};
+  if (byStatus.confirmed) cards.append(statCard('confirmed', byStatus.confirmed, 'confirmed'));
+  if (byStatus.suspected) cards.append(statCard('suspected', byStatus.suspected, 'suspected'));
   for (const sev of ['critical', 'high', 'medium', 'low', 'info']) {
     const n = (stats.findings_by_severity || {})[sev] || 0;
     if (n) cards.append(statCard(sev, n, sev));
@@ -685,6 +689,12 @@ async function openNewScanDrawer(presetWf) {
   if (presetWf) sel.value = presetWf;
   const target = el('input', { type: 'text', placeholder: 'target — domain or full URL (e.g. example.com)' });
   const noai = el('input', { type: 'checkbox' });
+  // Optional authenticated-scan credentials — sent as workflow vars (login_url,
+  // username, password), which the vuln-confirm workflow uses to log in first.
+  const loginUrl = el('input', { type: 'text', placeholder: 'login URL (optional, e.g. https://host/login.php)' });
+  const username = el('input', { type: 'text', placeholder: 'username (optional)' });
+  const password = el('input', { type: 'password', placeholder: 'password (optional)' });
+  const extraVars = el('textarea', { placeholder: 'extra vars — one key=value per line (optional)', rows: '3' });
   const run = el('button', { text: '▷ Run scan' });
   const hint = el('div', { class: 'desc', style: 'margin-top:10px' });
   const syncHint = () => {
@@ -692,13 +702,27 @@ async function openNewScanDrawer(presetWf) {
     hint.textContent = w && w.description ? w.description : '';
   };
   sel.onchange = syncHint; syncHint();
+  const collectVars = () => {
+    const vars = {};
+    if (loginUrl.value.trim()) vars.login_url = loginUrl.value.trim();
+    if (username.value.trim()) vars.username = username.value.trim();
+    if (password.value) vars.password = password.value;
+    for (const line of extraVars.value.split('\n')) {
+      const i = line.indexOf('=');
+      if (i > 0) vars[line.slice(0, i).trim()] = line.slice(i + 1).trim();
+    }
+    return vars;
+  };
   run.onclick = async () => {
     if (!sel.value) return;
     run.disabled = true; run.textContent = 'starting…';
     try {
       const { run_id } = await api('/api/runs', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ workflow: sel.value, target: target.value || null, no_ai: noai.checked }),
+        body: JSON.stringify({
+          workflow: sel.value, target: target.value || null,
+          no_ai: noai.checked, vars: collectVars(),
+        }),
       });
       loadStats();
       openRunDrawer(run_id);           // swap the form for the live run
@@ -710,7 +734,17 @@ async function openNewScanDrawer(presetWf) {
   grid.append(el('div', { class: 'k', text: 'Workflow' }), sel);
   grid.append(el('div', { class: 'k', text: 'Target' }), target);
   grid.append(el('div', { class: 'k', text: 'AI' }), el('label', { class: 'chk' }, noai, el('span', { text: 'no-ai (skip the LLM steps)' })));
-  form.append(grid, hint, el('div', { class: 'row', style: 'margin-top:14px' }, run));
+  form.append(grid, hint);
+  // Authenticated-scan section (used by vuln-confirm; harmless for other workflows).
+  const auth = el('details', { style: 'margin-top:12px' });
+  auth.append(el('summary', { text: 'Authenticated scan / vars (optional)' }));
+  const agrid = el('div', { class: 'kv', style: 'margin-top:10px' });
+  agrid.append(el('div', { class: 'k', text: 'Login URL' }), loginUrl);
+  agrid.append(el('div', { class: 'k', text: 'Username' }), username);
+  agrid.append(el('div', { class: 'k', text: 'Password' }), password);
+  agrid.append(el('div', { class: 'k', text: 'Vars' }), extraVars);
+  auth.append(agrid);
+  form.append(auth, el('div', { class: 'row', style: 'margin-top:14px' }, run));
   body.append(form);
   setTimeout(() => target.focus(), 50);
 }
