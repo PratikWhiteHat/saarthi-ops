@@ -160,6 +160,7 @@ def build_deps(
     """Wire the real StepDeps (subprocess, httpx, Ollama agent, permissive gate)."""
 
     agent = None
+    llm = None
     if use_ai:
         from saarthi2.ai import Agent, OllamaChat
 
@@ -169,6 +170,9 @@ def build_deps(
         # ``chat.stream`` powers live token/tool events for the Web UI; it is only
         # exercised when a caller passes ``on_event`` to ``Agent.run``.
         agent = Agent(chat.chat, default_tool_registry(), stream=chat.stream)
+        # The raw client is also handed to steps that need structured output
+        # (the vuln engine's COMPREHEND stage) rather than the tool-calling loop.
+        llm = chat
 
     from saarthi2.notify import Notifier
     from saarthi2.rag import SkillLibrary
@@ -181,5 +185,7 @@ def build_deps(
         store=store,
         notifier=Notifier.from_settings(settings, http_request),
         skills=SkillLibrary.from_dir(settings.skills_dir),
+        llm=llm,
+        config_dir=settings.config_dir,
         on_event=on_event,
     )

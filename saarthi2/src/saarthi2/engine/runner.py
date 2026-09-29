@@ -42,6 +42,11 @@ class StepDeps:
     store: Any = None
     notifier: Any = None
     skills: Any = None
+    # The raw chat client (OllamaChat) — exposes ``structured`` for the vuln
+    # engine's COMPREHEND stage. ``None`` when the run is started with --no-ai.
+    llm: Any = None
+    # Editable engine config dir (feature->vuln matrix + payloads).
+    config_dir: Any = None
     on_event: Callable[[str], None] | None = None
 
     def emit(self, message: str) -> None:

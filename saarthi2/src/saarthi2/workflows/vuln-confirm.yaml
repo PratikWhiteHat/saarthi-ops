@@ -1,0 +1,39 @@
+name: vuln-confirm
+description: >
+  The vulnerability identification engine — the back half of a run:
+  comprehend -> plan -> test -> verify -> report. Logs in (optional), crawls the
+  authenticated surface, builds a structured App Model, plans tasks from the
+  editable feature->vuln matrix, tests with templated payloads, and CONFIRMS with
+  a deterministic oracle (no LLM in the verify path). Ends in confirmed findings,
+  not a host list. Needs a running Ollama model for the App Model refinement and,
+  for reflected-XSS confirmation, Playwright chromium.
+
+vars:
+  # For DVWA: target http://localhost/dvwa/ with login_url http://localhost/dvwa/login.php
+  target: http://localhost/dvwa/
+  login_url: ""
+  username: ""
+  password: ""
+
+steps:
+  - id: engine
+    name: Vulnerability identification engine
+    uses: vuln_engine
+    with:
+      base_url: "{{ target }}"
+      # Omitted/blank login_url -> the crawl runs unauthenticated.
+      login:
+        url: "{{ vars.login_url }}"
+        username: "{{ vars.username }}"
+        password: "{{ vars.password }}"
+      use_llm: true
+      xss_browser: true
+      active_probe: true
+      max_pages: 40
+    register: engine
+
+  - id: alert
+    name: Notify
+    uses: notify
+    with:
+      message: "Saarthi vuln-confirm of {{ target }}:\n\n{{ steps.engine.output }}"

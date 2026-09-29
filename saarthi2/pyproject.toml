@@ -39,6 +39,7 @@ packages = ["src/saarthi2"]
 artifacts = [
     "src/saarthi2/workflows/*.yaml",
     "src/saarthi2/server/static/*",
+    "src/saarthi2/vulnengine/data/*.yaml",
 ]
 
 [tool.pytest.ini_options]

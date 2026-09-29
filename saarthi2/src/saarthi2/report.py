@@ -35,16 +35,24 @@ def findings_table(findings: list[dict]) -> str:
 
     if not findings:
         return "_No findings recorded._"
-    ordered = sorted(findings, key=lambda f: _sev_rank(str(f.get("severity", ""))))
+    # Confirmed first, then by severity — confirmed findings are the deliverable.
+    ordered = sorted(
+        findings,
+        key=lambda f: (
+            str(f.get("status", "")).lower() != "confirmed",
+            _sev_rank(str(f.get("severity", ""))),
+        ),
+    )
     lines = [
-        "| Severity | Tool | Rule | Message | Location |",
-        "| --- | --- | --- | --- | --- |",
+        "| Status | Severity | Class | Source | Message | Location |",
+        "| --- | --- | --- | --- | --- | --- |",
     ]
     for finding in ordered:
         cells = [
+            str(finding.get("status", "")).lower() or "-",
             str(finding.get("severity", "")).lower(),
-            str(finding.get("tool", "")),
-            str(finding.get("rule_id", "")),
+            str(finding.get("vuln_class") or finding.get("rule_id", "")),
+            str(finding.get("source", "")) or "-",
             str(finding.get("message", "")).replace("|", "\\|").replace("\n", " ")[:160],
             str(finding.get("location", "")).replace("|", "\\|")[:120],
         ]

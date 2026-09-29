@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -109,6 +110,47 @@ class OllamaChat:
                     "Ollama request failed. Confirm the service is running and the "
                     "model is installed."
                 ) from exc
+
+    async def structured(
+        self,
+        messages: list[dict],
+        schema: dict[str, Any],
+        *,
+        num_predict: int = 1024,
+    ) -> dict[str, Any]:
+        """Force a JSON reply matching ``schema`` (Ollama structured output).
+
+        Used by COMPREHEND to build the App Model — the model classifies against
+        grounded evidence and returns validated JSON, so there is nothing to parse
+        out of prose. Returns ``{}`` if the reply is not valid JSON.
+        """
+
+        from ollama import ResponseError
+
+        for attempt in range(1, _MAX_ATTEMPTS + 1):
+            try:
+                response = await self._client.chat(
+                    model=self.model,
+                    messages=messages,
+                    think=False,
+                    format=schema,
+                    options=self._options(num_predict),
+                )
+                content = getattr(response.message, "content", "") or ""
+                try:
+                    data = json.loads(content)
+                except (json.JSONDecodeError, TypeError):
+                    return {}
+                return data if isinstance(data, dict) else {}
+            except (ConnectionError, OSError, ResponseError) as exc:
+                if attempt < _MAX_ATTEMPTS:
+                    await asyncio.sleep(_BACKOFF_SECONDS * attempt)
+                    continue
+                raise OllamaUnavailableError(
+                    "Ollama structured request failed. Confirm the service is "
+                    "running and the model is installed."
+                ) from exc
+        return {}
 
     async def stream(
         self,

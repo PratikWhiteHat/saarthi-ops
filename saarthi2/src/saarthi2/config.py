@@ -62,6 +62,17 @@ class Settings:
         return self.work_dir / "plugins"
 
     @property
+    def config_dir(self) -> Path:
+        """Editable engine config (feature->vuln matrix, payload library).
+
+        Seeded on first use from the package's bundled defaults so the operator
+        can grow both from their own engagements. ``SAARTHI2_CONFIG_DIR`` overrides.
+        """
+
+        override = os.getenv("SAARTHI2_CONFIG_DIR", "").strip()
+        return Path(override).expanduser() if override else self.work_dir / "config"
+
+    @property
     def skills_dir(self) -> Path:
         """Bug-hunting skill corpus for RAG (``SAARTHI2_SKILLS_DIR`` overrides)."""
 

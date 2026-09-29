@@ -82,6 +82,10 @@
   .sev-critical{ background:#fbe4e4; color:#b91c1c; } .sev-high{ background:#fdeaea; color:var(--fail); }
   .sev-medium{ background:#fbf1dd; color:var(--run); } .sev-low{ background:#e8f0fe; color:var(--accent); }
   .sev-info,.sev-unknown{ background:var(--panel2); color:var(--muted); }
+  .st { padding:2px 9px; border-radius:20px; font-size:11px; font-weight:700; display:inline-block; }
+  .st-confirmed{ background:#e6f4ea; color:var(--ok); }
+  .st-suspected{ background:#fbf1dd; color:var(--run); }
+  .st-dropped,.st-unknown{ background:var(--panel2); color:var(--muted); }
   .chip { background:var(--panel2); border:1px solid var(--border); border-radius:20px; padding:1px 10px;
           font-size:11px; color:var(--muted); }
 
@@ -205,6 +209,7 @@ function el(tag, attrs, ...kids) {
 }
 const badge = (s) => el('span', { class: 'badge s-' + (s || 'pending'), text: s || '' });
 const sevPill = (s) => el('span', { class: 'sev sev-' + (s || 'info'), text: s || 'info' });
+const statusPill = (s) => el('span', { class: 'st st-' + (s || 'unknown'), text: s || 'unknown' });
 
 function renderTable(cols, rows, empty, onRow) {
   if (!rows || !rows.length) return el('div', { class: 'empty', text: empty || 'nothing here' });
@@ -386,8 +391,10 @@ async function startRun(workflow, target, noAi) {
 async function renderFindings(main) {
   const rows = await api('/api/findings');
   main.replaceChildren(renderTable([
+    { label: 'Status', render: f => statusPill(f.status) },
     { label: 'Severity', render: f => sevPill(f.severity) },
-    { label: 'Tool', key: 'tool' }, { label: 'Rule', key: 'rule_id' },
+    { label: 'Class', render: f => f.vuln_class || f.rule_id || '' },
+    { label: 'Source', key: 'source' },
     { label: 'Message', key: 'message' }, { label: 'Location', key: 'location' },
     { label: 'Run', key: 'run_id' },
   ], rows, 'no findings recorded yet', f => openFindingDrawer(f)));
@@ -711,13 +718,24 @@ async function openNewScanDrawer(presetWf) {
 function openFindingDrawer(f) {
   openDrawer('Finding');
   const body = $('drawer-body'); body.replaceChildren();
-  body.append(el('div', { class: 'row', style: 'margin-bottom:12px' }, sevPill(f.severity),
-    el('span', { class: 'chip', text: f.tool || 'tool' })));
+  body.append(el('div', { class: 'row', style: 'margin-bottom:12px' },
+    statusPill(f.status), sevPill(f.severity),
+    el('span', { class: 'chip', text: (f.source || f.tool || 'tool') })));
   const kv = el('div', { class: 'kv' });
   const add = (k, v) => { kv.append(el('div', { class: 'k', text: k }), el('div', { text: v || '-' })); };
-  add('Rule', f.rule_id); add('Message', f.message); add('Location', f.location);
+  add('Class', f.vuln_class || f.rule_id); add('Message', f.summary || f.message);
+  add('Location', f.location); add('Method', f.method); add('Source', f.source);
+  add('Confidence', f.confidence != null ? String(f.confidence) : '-');
   add('Run', f.run_id); add('Recorded', f.created_at);
   body.append(kv);
+  const blocks = [['Evidence', f.evidence], ['Request', f.request]];
+  for (const [label, data] of blocks) {
+    if (data && (typeof data !== 'object' || Object.keys(data).length)) {
+      body.append(el('div', { class: 'sec-title', text: label }));
+      const text = typeof data === 'string' ? data : JSON.stringify(data, null, 2);
+      body.append(el('pre', { class: 'out', text }));
+    }
+  }
 }
 
 function openRunDrawer(runId) {
@@ -776,8 +794,10 @@ function renderRunLive(live, d) {
   if (d.findings && d.findings.length) {
     live.append(el('div', { class: 'sec-title', text: `Findings (${d.findings.length})` }));
     live.append(renderTable([
-      { label: 'Sev', render: f => sevPill(f.severity) }, { label: 'Tool', key: 'tool' },
-      { label: 'Rule', key: 'rule_id' }, { label: 'Message', key: 'message' }, { label: 'Location', key: 'location' },
+      { label: 'Status', render: f => statusPill(f.status) },
+      { label: 'Sev', render: f => sevPill(f.severity) },
+      { label: 'Class', render: f => f.vuln_class || f.rule_id || '' },
+      { label: 'Message', key: 'message' }, { label: 'Location', key: 'location' },
     ], d.findings, '', f => openFindingDrawer(f)));
   }
 }

@@ -10,6 +10,7 @@ from saarthi2.steps.llm import handle_llm
 from saarthi2.steps.notify import handle_notify
 from saarthi2.steps.subagent import handle_subagent
 from saarthi2.steps.tool import handle_tool
+from saarthi2.steps.vuln_engine import handle_vuln_engine
 
 STEP_TYPES = {
     "tool": handle_tool,
@@ -18,6 +19,7 @@ STEP_TYPES = {
     "function": handle_function,
     "notify": handle_notify,
     "subagent": handle_subagent,
+    "vuln_engine": handle_vuln_engine,
 }
 
 # Valid `uses:` values, including runner-expanded types without a handler.
@@ -32,4 +34,5 @@ __all__ = [
     "handle_notify",
     "handle_subagent",
     "handle_tool",
+    "handle_vuln_engine",
 ]

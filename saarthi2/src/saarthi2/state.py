@@ -16,6 +16,7 @@ import sqlite3
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 from saarthi2.engine.models import RunResult, StepResult
 
@@ -51,9 +52,41 @@ CREATE TABLE IF NOT EXISTS findings (
     severity TEXT,
     message TEXT,
     location TEXT,
+    vuln_class TEXT,
+    status TEXT,
+    source TEXT,
+    confidence REAL,
+    url TEXT,
+    param TEXT,
+    method TEXT,
+    summary TEXT,
+    evidence TEXT,
+    request TEXT,
     created_at TEXT NOT NULL
 );
 """
+
+# Columns added after the original findings schema shipped; created lazily by
+# _migrate() on databases that predate the vulnerability-engine finding shape.
+_FINDINGS_EXTRA_COLUMNS = (
+    ("vuln_class", "TEXT"),
+    ("status", "TEXT"),
+    ("source", "TEXT"),
+    ("confidence", "REAL"),
+    ("url", "TEXT"),
+    ("param", "TEXT"),
+    ("method", "TEXT"),
+    ("summary", "TEXT"),
+    ("evidence", "TEXT"),
+    ("request", "TEXT"),
+)
+
+# Full column order used for INSERT/SELECT so old and new backends stay aligned.
+_FINDINGS_COLUMNS = (
+    "run_id", "tool", "rule_id", "severity", "message", "location",
+    "vuln_class", "status", "source", "confidence", "url", "param", "method",
+    "summary", "evidence", "request", "created_at",
+)
 
 
 _RUN_COLUMNS = "(run_id, workflow, target, workspace, status, created_at, updated_at)"
@@ -136,6 +169,10 @@ class Store:
         steps_cols = self._table_columns("steps")
         if "output" not in steps_cols:
             self._conn.execute("ALTER TABLE steps ADD COLUMN output TEXT")
+        findings_cols = self._table_columns("findings")
+        for name, sqltype in _FINDINGS_EXTRA_COLUMNS:
+            if name not in findings_cols:
+                self._conn.execute(f"ALTER TABLE findings ADD COLUMN {name} {sqltype}")
 
     def _table_columns(self, table: str) -> set[str]:
         if self._dialect.name == "sqlite":
@@ -195,47 +232,83 @@ class Store:
         )
         self._conn.commit()
 
+    @staticmethod
+    def _finding_row(run_id: str, f: dict, now: str) -> tuple:
+        """Flatten a finding dict (old scanner shape OR the rich engine shape)."""
+
+        def js(value: Any) -> str:
+            if isinstance(value, str):
+                return value[:8000]
+            return json.dumps(value or {}, default=str)[:8000]
+
+        vuln_class = str(f.get("vuln_class") or f.get("rule_id") or "")
+        source = str(f.get("source") or ("scanner" if f.get("tool") else ""))
+        summary = str(f.get("summary") or f.get("message") or "")
+        return (
+            run_id,
+            str(f.get("tool", "")),
+            str(f.get("rule_id") or vuln_class),
+            str(f.get("severity", "info")),
+            str(f.get("message") or summary)[:2000],
+            str(f.get("location", ""))[:500],
+            vuln_class[:100],
+            str(f.get("status") or "confirmed")[:20],
+            source[:20],
+            float(f.get("confidence") or 0.0),
+            str(f.get("url", ""))[:500],
+            str(f.get("param") or "")[:200],
+            str(f.get("method") or "")[:10],
+            summary[:4000],
+            js(f.get("evidence")),
+            js(f.get("request")),
+            now,
+        )
+
     def record_findings(self, run_id: str, findings: list[dict]) -> int:
         now = self._now()
         rows = [
-            (
-                run_id,
-                str(f.get("tool", "")),
-                str(f.get("rule_id", "")),
-                str(f.get("severity", "info")),
-                str(f.get("message", ""))[:1000],
-                str(f.get("location", ""))[:500],
-                now,
-            )
-            for f in findings
-            if isinstance(f, dict)
+            self._finding_row(run_id, f, now) for f in findings if isinstance(f, dict)
         ]
         if not rows:
             return 0
+        placeholders = ",".join(["?"] * len(_FINDINGS_COLUMNS))
+        cols = ", ".join(_FINDINGS_COLUMNS)
         cursor = self._conn.cursor()
-        cursor.executemany(self._q("INSERT INTO findings VALUES (?,?,?,?,?,?,?)"), rows)
+        cursor.executemany(
+            self._q(f"INSERT INTO findings ({cols}) VALUES ({placeholders})"), rows
+        )
         self._conn.commit()
         return len(rows)
 
+    @staticmethod
+    def _hydrate_finding(row: dict) -> dict:
+        """Parse JSON evidence/request back into structures for the caller."""
+
+        for key in ("evidence", "request"):
+            raw = row.get(key)
+            if isinstance(raw, str) and raw:
+                try:
+                    row[key] = json.loads(raw)
+                except json.JSONDecodeError:
+                    pass
+        return row
+
     def list_findings(self, run_id: str | None = None, limit: int = 500) -> list[dict]:
+        select = f"SELECT {', '.join(_FINDINGS_COLUMNS)} FROM findings "
         if run_id is None:
             cursor = self._conn.execute(
-                self._q(
-                    "SELECT run_id, tool, rule_id, severity, message, location, created_at "
-                    "FROM findings ORDER BY created_at DESC LIMIT ?"
-                ),
-                (limit,),
+                self._q(select + "ORDER BY created_at DESC LIMIT ?"), (limit,)
             )
         else:
             cursor = self._conn.execute(
-                self._q(
-                    "SELECT run_id, tool, rule_id, severity, message, location, created_at "
-                    "FROM findings WHERE run_id = ? ORDER BY created_at DESC LIMIT ?"
-                ),
+                self._q(select + "WHERE run_id = ? ORDER BY created_at DESC LIMIT ?"),
                 (run_id, limit),
             )
         cols = [c[0] for c in cursor.description]
-        return [dict(zip(cols, row, strict=True)) for row in cursor.fetchall()]
+        return [
+            self._hydrate_finding(dict(zip(cols, row, strict=True)))
+            for row in cursor.fetchall()
+        ]
 
     def save_evidence(self, run_id: str, name: str, content: bytes) -> tuple[str, str]:
         """Write bounded evidence to disk; return (path, sha256)."""
@@ -329,11 +402,18 @@ class Store:
         ).fetchall():
             findings_by_severity[str(severity)] = int(count)
 
+        findings_by_status: dict[str, int] = {}
+        for status, count in self._conn.execute(
+            "SELECT COALESCE(status, ''), COUNT(*) FROM findings GROUP BY status"
+        ).fetchall():
+            findings_by_status[str(status) or "unknown"] = int(count)
+
         return {
             "runs": sum(runs_by_status.values()),
             "runs_by_status": runs_by_status,
             "findings": sum(findings_by_severity.values()),
             "findings_by_severity": findings_by_severity,
+            "findings_by_status": findings_by_status,
         }
 
     def tail_audit(self, limit: int = 100) -> list[dict]:

@@ -1,0 +1,78 @@
+# Feature -> vulnerability matrix. EDITABLE: grow it from your own engagements.
+#
+# The engine COPIES this file to ~/.saarthi2/config/feature_vuln_matrix.yaml on
+# first use; edit that copy (or point SAARTHI2_CONFIG_DIR elsewhere). The mapping
+# from a feature to a vuln class is fixed *config* — the model may reorder the
+# resulting task list, but it never invents the class<->feature routing.
+#
+# surface_rules — two matching modes:
+#   * rule WITH `requires`: fires when those code-detected signals are ALL present
+#     on the surface (e.g. reflects_input, numeric_id, url_like_value,
+#     file_like_value, command_like, accepts_svg_html). `type` here is advisory
+#     documentation — routing is signal-driven so a reflecting numeric id still
+#     gets both idor_bola and xss/sqli.
+#   * rule WITHOUT `requires` (empty): fires on the surface's structural `type`
+#     (auth_field, file_upload) — these are shape, not signal.
+#   Higher `priority` tasks run first. Signals recognized:
+#     search|object_ref|url_param|file_upload|auth_field|redirect|generic.
+# app_rules: match the App Model's `app_type`; add classes on paramful surfaces.
+version: 1
+
+surface_rules:
+  - type: search
+    requires: [reflects_input]
+    vuln_classes: [xss, sqli]
+    priority: 80
+
+  - type: object_ref
+    requires: [numeric_id]
+    vuln_classes: [idor_bola]
+    priority: 70
+
+  - type: url_param
+    requires: [url_like_value]
+    vuln_classes: [ssrf, open_redirect]
+    priority: 75
+
+  - type: redirect
+    requires: [url_like_value]
+    vuln_classes: [open_redirect, ssrf]
+    priority: 78
+
+  - type: file_upload
+    requires: [accepts_svg_html]
+    vuln_classes: [stored_xss, ssrf]
+    priority: 65
+
+  - type: auth_field
+    requires: []
+    vuln_classes: [sqli, auth_bypass]
+    priority: 60
+
+  # --- extension rows (beyond the seed set) — deterministic-to-confirm classes
+  # that make an authenticated app scan land real findings. Remove if unwanted.
+  - type: generic
+    requires: [file_like_value]
+    vuln_classes: [lfi]
+    priority: 55
+
+  - type: url_param
+    requires: [file_like_value]
+    vuln_classes: [lfi]
+    priority: 55
+
+  - type: generic
+    requires: [command_like]
+    vuln_classes: [command_injection]
+    priority: 58
+
+  # Fallback: any surface that reflects input is worth XSS/SQLi even if untyped.
+  - type: generic
+    requires: [reflects_input]
+    vuln_classes: [xss, sqli]
+    priority: 40
+
+app_rules:
+  - app_type: ecommerce
+    vuln_classes: [coupon_logic, price_tamper, idor_bola]
+    priority: 50
