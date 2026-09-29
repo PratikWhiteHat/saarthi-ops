@@ -5,3 +5,6 @@ adapters/
 fused-model/
 *.gguf
 repo.tar.gz
+.venv/
+.venv-convert/
+llama.cpp/

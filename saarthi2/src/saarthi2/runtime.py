@@ -163,8 +163,12 @@ def build_deps(
     if use_ai:
         from saarthi2.ai import Agent, OllamaChat
 
-        chat = OllamaChat(settings.ollama_host, settings.ollama_model)
-        agent = Agent(chat.chat, default_tool_registry())
+        chat = OllamaChat(
+            settings.ollama_host, settings.ollama_model, num_ctx=settings.ollama_num_ctx
+        )
+        # ``chat.stream`` powers live token/tool events for the Web UI; it is only
+        # exercised when a caller passes ``on_event`` to ``Agent.run``.
+        agent = Agent(chat.chat, default_tool_registry(), stream=chat.stream)
 
     from saarthi2.notify import Notifier
     from saarthi2.rag import SkillLibrary

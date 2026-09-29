@@ -120,6 +120,36 @@
   .ai-box .h { color:var(--ai); font-weight:700; margin-bottom:6px; }
   .rep-box .h { color:var(--accent); font-weight:700; margin-bottom:6px; }
   .ai-body { white-space:pre-wrap; word-break:break-word; font-size:12.5px; margin:0; max-height:420px; overflow:auto; }
+
+  /* LLM playground: main pane + agent side pane */
+  .pg { display:grid; grid-template-columns:1fr 340px; gap:16px; align-items:start; }
+  @media (max-width:1024px){ .pg { grid-template-columns:1fr; } }
+  .tool-chk { display:flex; flex-wrap:wrap; gap:8px; }
+  .tool-chk label { display:flex; align-items:center; gap:6px; color:var(--fg); font-size:12px;
+    border:1px solid var(--border); border-radius:8px; padding:4px 9px; cursor:pointer; background:var(--panel); }
+  .tool-chk label:hover { border-color:var(--accent); }
+  .pg-answer { min-height:60px; }
+  .pg-log { background:#0d1117; color:#d7dee7; border:1px solid #24292f; border-radius:8px; padding:10px;
+    font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:12px; white-space:pre-wrap;
+    word-break:break-word; max-height:320px; overflow:auto; margin-top:8px; }
+  .pg-log .ln { display:block; padding:1px 0; }
+  .pg-log .ln.tool { color:#79c0ff; } .pg-log .ln.ok { color:#7ee787; } .pg-log .ln.err { color:#ff7b72; }
+  .pg-log .ln.info { color:#8b949e; } .pg-log .ln.think { color:#d2a8ff; }
+  .side .st-row { display:flex; justify-content:space-between; gap:10px; padding:5px 0; font-size:13px;
+    border-bottom:1px solid var(--border); }
+  .side .st-row:last-child { border-bottom:0; }
+  .side .st-row .k { color:var(--muted); } .side .st-row .v { font-weight:600; text-align:right; word-break:break-word; }
+  .dot { width:8px; height:8px; border-radius:50%; display:inline-block; margin-right:7px; vertical-align:middle; }
+  .dot.run { background:var(--run); animation:pulse 1s ease-in-out infinite; }
+  .dot.ok { background:var(--ok); } .dot.err { background:var(--fail); } .dot.idle { background:var(--muted); }
+  @keyframes pulse { 0%,100% { opacity:1; } 50% { opacity:.25; } }
+  .act-item { border:1px solid var(--border); border-left:3px solid var(--border); border-radius:8px;
+    padding:8px 10px; margin-bottom:8px; font-size:12px; background:var(--panel); }
+  .act-item.run { border-left-color:var(--run); } .act-item.ok { border-left-color:var(--ok); }
+  .act-item.err { border-left-color:var(--fail); }
+  .act-item .tname { font-weight:700; } .act-item .titer { color:var(--muted); font-size:11px; }
+  .act-item .targs { color:var(--muted); font-family:ui-monospace,Menlo,monospace; font-size:11px;
+    word-break:break-all; margin-top:3px; }
 </style>
 </head>
 <body>
@@ -216,7 +246,7 @@ const TITLES = {
   'cat:cloud': ['Cloud & Storage', 'Provisioning + object-storage providers'],
   'cat:skills': ['Skills', 'Bug-hunting playbooks (RAG) — search to preview'],
   'cat:plugins': ['Plugins', 'Loaded extension plugins'],
-  llm: ['LLM Playground', 'Chat with the local model'],
+  llm: ['LLM Playground', 'Live agent console — realtime tokens, tool calls, and activity'],
   settings: ['Settings', 'Runtime configuration (secrets redacted)'],
 };
 function buildNav() {
@@ -425,22 +455,197 @@ async function renderCatalog(main, kind) {
   main.replaceChildren(renderTable(c.cols, await api(c.path), 'none'));
 }
 
+const AI_TOOLS = [
+  { id: 'search_skills', label: 'search_skills', desc: 'look up a playbook (methodology/payloads) for a vuln class', on: true },
+  { id: 'http_get', label: 'http_get', desc: 'fetch a URL — map the app / simple GET probes', on: true },
+  { id: 'run_command', label: 'run_command', desc: 'run curl / any CLI — the MAIN testing tool (POST, headers, cookies, payloads)', on: true },
+  { id: 'browser_login', label: 'browser_login', desc: 'log in with a real headless browser (handles JS + CSRF tokens)', on: true },
+  { id: 'browser_open', label: 'browser_open', desc: 'open a page in the logged-in browser session (test behind login)', on: true },
+  { id: 'http_request', label: 'http_request', desc: 'structured HTTP request (optional; curl usually works better with this model)', on: false },
+  { id: 'run_scan', label: 'run_scan', desc: 'optional recon/scan tools (subfinder, httpx…)', on: false },
+];
+
 function renderLLM(main) {
   main.replaceChildren();
+  const wrap = el('div', { class: 'pg' });
+  const col = el('div');
+  const side = el('div', { class: 'side' });
+  wrap.append(col, side);
+  main.append(wrap);
+
+  // ---- input card ----------------------------------------------------------
   const card = el('div', { class: 'card pad' });
-  const ta = el('textarea', { placeholder: 'Ask the local model anything (recon analysis, payload ideas, triage help)…' });
+  const ta = el('textarea', { placeholder: 'Ask Saarthi to hunt, analyze, or plan — e.g. "recon example.com and summarize the attack surface". Enable tools below to let it act.' });
+  const toolWrap = el('div', { class: 'tool-chk', style: 'margin-top:10px' });
+  const toolBoxes = {};
+  for (const t of AI_TOOLS) {
+    const cb = el('input', { type: 'checkbox' });
+    cb.checked = !!t.on;
+    toolBoxes[t.id] = cb;
+    toolWrap.append(el('label', { title: t.desc }, cb, el('span', { text: t.label })));
+  }
+  const skillsCb = el('input', { type: 'checkbox' }); skillsCb.checked = true;
+  const iters = el('input', { type: 'text', value: '16', style: 'width:52px;min-width:0;flex:none' });
   const send = el('button', { text: 'Send' });
-  const out = el('pre', { class: 'ai-body', style: 'margin-top:12px' });
-  send.onclick = async () => {
-    if (!ta.value.trim()) return;
-    out.textContent = 'thinking… (needs Ollama running)';
+  const stop = el('button', { class: 'secondary small', text: '■ Stop' }); stop.disabled = true;
+  const ctrls = el('div', { class: 'row', style: 'margin-top:10px' },
+    el('label', { class: 'chk', title: 'Ground the agent in your ~/.saarthi2/skills playbooks as instructions' }, skillsCb, el('span', { text: 'use my skills' })),
+    el('label', { class: 'chk' }, el('span', { text: 'max steps' }), iters),
+    el('div', { style: 'margin-left:auto' }), stop, send);
+  card.append(ta, el('div', { class: 'desc', style: 'margin-top:10px', text: 'Tools the agent may call:' }), toolWrap, ctrls);
+  col.append(card);
+
+  // ---- answer + live log ---------------------------------------------------
+  const outCard = el('div', { class: 'card pad', style: 'margin-top:14px' });
+  outCard.append(el('div', { class: 'sec-title', style: 'margin-top:0', text: 'Answer' }));
+  const answer = el('pre', { class: 'ai-body pg-answer', text: '' });
+  outCard.append(answer);
+  outCard.append(el('div', { class: 'sec-title', text: 'Live log' }));
+  const logBox = el('div', { class: 'pg-log' });
+  logBox.append(el('span', { class: 'ln info', text: 'Ready. Type a prompt and hit Send to watch the agent work in realtime.' }));
+  outCard.append(logBox);
+  col.append(outCard);
+
+  // ---- side pane: agent status + activity ----------------------------------
+  const stModel = el('span', { class: 'v', text: '…' });
+  const stStatus = el('span', { class: 'v' });
+  const stIter = el('span', { class: 'v', text: '—' });
+  const stTool = el('span', { class: 'v' });
+  const stCalls = el('span', { class: 'v', text: '0' });
+  const stElapsed = el('span', { class: 'v', text: '0.0s' });
+  const strow = (k, v) => el('div', { class: 'st-row' }, el('span', { class: 'k', text: k }), v);
+  const agentCard = el('div', { class: 'card pad', style: 'margin-bottom:14px' });
+  agentCard.append(el('h2', { style: 'margin-top:0', text: 'Agent' }),
+    strow('Agent', el('span', { class: 'v', text: 'Saarthi' })),
+    strow('Model', stModel), strow('Status', stStatus), strow('Step', stIter),
+    strow('Running tool', stTool), strow('Tool calls', stCalls), strow('Elapsed', stElapsed));
+  const actCard = el('div', { class: 'card pad' });
+  actCard.append(el('h2', { style: 'margin-top:0', text: 'Activity' }));
+  const actList = el('div');
+  actCard.append(actList);
+  side.append(agentCard, actCard);
+  api('/api/settings').then(s => { stModel.textContent = s.ollama_model || '(unknown)'; }).catch(() => {});
+
+  // ---- runtime state -------------------------------------------------------
+  let controller = null, timer = null, t0 = 0, callCount = 0, liveBuf = '', pendingItem = null, hasActivity = false;
+  const setStatus = (cls, text) => stStatus.replaceChildren(el('span', { class: 'dot ' + cls }), el('span', { text }));
+  const setTool = (cls, text) => stTool.replaceChildren(el('span', { class: 'dot ' + cls }), el('span', { text }));
+  const logLine = (cls, text) => { logBox.append(el('span', { class: 'ln ' + (cls || ''), text })); logBox.scrollTop = logBox.scrollHeight; };
+  const clip = (s, n) => { s = String(s == null ? '' : s); return s.length > n ? s.slice(0, n) + '…' : s; };
+  const jargs = (a) => { try { return clip(JSON.stringify(a), 120); } catch { return ''; } };
+  const oneline = (s) => clip(String(s || '').replace(/\s+/g, ' ').trim(), 170);
+  const resetActivity = () => { hasActivity = false; actList.replaceChildren(el('div', { class: 'empty', text: 'no tool activity yet' })); };
+  const stopTimer = () => { if (timer) { clearInterval(timer); timer = null; } };
+
+  function handleEvent(ev) {
+    switch (ev.type) {
+      case 'start':
+        setStatus('run', 'running');
+        logLine('info', `▶ agent started — tools: ${ev.tools && ev.tools.length ? ev.tools.join(', ') : 'none'} · max ${ev.max_iterations} steps`);
+        break;
+      case 'iteration':
+        stIter.textContent = String(ev.n);
+        logLine('info', `— step ${ev.n} —`);
+        break;
+      case 'token':
+        liveBuf += ev.content; answer.textContent = liveBuf; answer.scrollTop = answer.scrollHeight;
+        break;
+      case 'note':
+        logLine('think', ev.message);
+        break;
+      case 'assistant':
+        break; // full turn text — already rendered live via tokens
+      case 'tool_call': {
+        if (liveBuf.trim()) logLine('think', '💭 ' + oneline(liveBuf));
+        liveBuf = ''; answer.textContent = '';
+        callCount++; stCalls.textContent = String(callCount);
+        setTool('run', ev.name);
+        logLine('tool', `🔧 ${ev.name}(${jargs(ev.arguments)})`);
+        if (!hasActivity) { actList.replaceChildren(); hasActivity = true; }
+        const dot = el('span', { class: 'dot run' });
+        const item = el('div', { class: 'act-item run' },
+          el('div', {}, dot, el('span', { class: 'tname', text: ev.name }), el('span', { class: 'titer', text: ` · step ${ev.iteration}` })),
+          el('div', { class: 'targs', text: jargs(ev.arguments) }));
+        actList.insertBefore(item, actList.firstChild);
+        pendingItem = { item, dot };
+        break;
+      }
+      case 'tool_result':
+        setTool('idle', '—');
+        logLine(ev.ok ? 'ok' : 'err', `${ev.ok ? '✓' : '✗'} ${ev.name}: ${oneline(ev.content)}`);
+        if (pendingItem) {
+          pendingItem.item.className = 'act-item ' + (ev.ok ? 'ok' : 'err');
+          pendingItem.dot.className = 'dot ' + (ev.ok ? 'ok' : 'err');
+          pendingItem.item.append(el('div', { class: 'targs', text: (ev.ok ? '→ ' : '⚠ ') + oneline(ev.content) }));
+          pendingItem = null;
+        }
+        break;
+      case 'final':
+        if (ev.answer) { liveBuf = ''; answer.textContent = ev.answer; }
+        setStatus('ok', 'done'); setTool('idle', '—');
+        logLine('ok', `✓ done — ${ev.stopped_reason} (${ev.iterations} step${ev.iterations === 1 ? '' : 's'})`);
+        break;
+      case 'error':
+        setStatus('err', 'error');
+        logLine('err', '✗ ' + ev.message);
+        if (!answer.textContent) answer.textContent = ev.message + '\n\nStart Ollama (`ollama serve`) and pull the model, then retry.';
+        break;
+    }
+  }
+
+  async function runStream() {
+    const prompt = ta.value.trim();
+    if (!prompt) return;
+    const tools = AI_TOOLS.filter(t => toolBoxes[t.id].checked).map(t => t.id);
+    const maxIter = Math.max(1, Math.min(40, parseInt(iters.value, 10) || 16));
+    answer.textContent = ''; logBox.replaceChildren(); resetActivity();
+    liveBuf = ''; callCount = 0; pendingItem = null;
+    stCalls.textContent = '0'; stIter.textContent = '—';
+    setStatus('run', 'running'); setTool('idle', '—');
+    if (!tools.length) logLine('err', '⚠ No tools enabled — the agent can only talk, not hunt. Tick run_scan / http_get / search_skills, then Send.');
+    send.disabled = true; stop.disabled = false;
+    t0 = performance.now();
+    timer = setInterval(() => { stElapsed.textContent = ((performance.now() - t0) / 1000).toFixed(1) + 's'; }, 100);
+    controller = new AbortController();
     try {
-      const r = await api('/api/llm', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ prompt: ta.value }) });
-      out.textContent = r.answer || '(empty response)';
-    } catch (e) { out.textContent = 'LLM unavailable: ' + e.message + '\n\nStart Ollama (`ollama serve`) and pull the model.'; }
-  };
-  card.append(ta, el('div', { class: 'row', style: 'margin-top:10px' }, send), out);
-  main.append(card);
+      const res = await fetch('/api/llm/stream', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt, tools, skills: skillsCb.checked, max_iterations: maxIter }),
+        signal: controller.signal,
+      });
+      if (!res.ok || !res.body) throw new Error('HTTP ' + res.status);
+      const reader = res.body.getReader();
+      const dec = new TextDecoder();
+      let buf = '';
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buf += dec.decode(value, { stream: true });
+        let sep;
+        while ((sep = buf.indexOf('\n\n')) >= 0) {
+          const frame = buf.slice(0, sep); buf = buf.slice(sep + 2);
+          const line = frame.split('\n').find(l => l.startsWith('data:'));
+          if (!line) continue;
+          let ev; try { ev = JSON.parse(line.slice(5).trim()); } catch { continue; }
+          if (ev.type !== 'done') handleEvent(ev);
+        }
+      }
+    } catch (e) {
+      if (e.name !== 'AbortError') {
+        setStatus('err', 'error'); logLine('err', 'stream error: ' + e.message);
+        if (!answer.textContent) answer.textContent = 'LLM unavailable: ' + e.message + '\n\nStart Ollama (`ollama serve`) and pull the model.';
+      }
+    } finally {
+      stopTimer(); setTool('idle', '—'); pendingItem = null;
+      send.disabled = false; stop.disabled = true; controller = null;
+      loadStats();
+    }
+  }
+
+  send.onclick = runStream;
+  stop.onclick = () => { if (controller) controller.abort(); setStatus('idle', 'stopped'); logLine('info', '■ stopped by user'); };
+  ta.onkeydown = (e) => { if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') runStream(); };
+  setStatus('idle', 'idle'); setTool('idle', '—'); resetActivity();
 }
 
 async function renderSettings(main) {

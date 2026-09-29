@@ -28,6 +28,7 @@ class ChatRequest(BaseModel):
     prompt: str
     tools: list[str] = Field(default_factory=list)
     skills: bool = False
+    max_iterations: int = 6
 
 
 class RunManager:
@@ -115,6 +116,85 @@ class RunManager:
                 prompt = f"{context}\n\n---\n\n{prompt}"
         result = await deps.agent.run(prompt, tool_names=tools or [], max_iterations=3)
         return getattr(result, "answer", str(result))
+
+    async def chat_stream(
+        self,
+        prompt: str,
+        *,
+        tools: list[str] | None = None,
+        skills: bool = False,
+        max_iterations: int = 6,
+    ):
+        """Stream the agent's live activity (tokens + tool events) for the Web UI.
+
+        Yields the event dicts emitted by :meth:`Agent.run` as they happen, so the
+        caller can forward them straight to the browser (Server-Sent Events).
+        """
+
+        deps = build_deps(self.settings, store=None, on_event=None, use_ai=True)
+        if deps.agent is None:
+            raise RuntimeError("AI agent is not available")
+
+        # Ground the agent in the operator's skill library: inject a directory of
+        # every playbook plus the sections most relevant to this task straight into
+        # the system prompt, so the model FOLLOWS them as instructions (not just as
+        # optional reference it might look up). The search_skills tool remains for
+        # pulling additional playbooks mid-hunt.
+        system_prompt: str | None = None
+        grounded: list[str] = []
+        library = getattr(deps, "skills", None)
+        if skills and library is not None and not library.is_empty:
+            from saarthi2.ai.agent import AGENT_SYSTEM_PROMPT
+
+            for chunk in library.retrieve(prompt, k=4):
+                base = chunk.skill.split("/")[0]
+                if base not in grounded:
+                    grounded.append(base)
+            blocks = [
+                AGENT_SYSTEM_PROMPT,
+                library.skill_index(),
+                library.instructions_for(prompt, k=4),
+            ]
+            system_prompt = "\n\n".join(block for block in blocks if block)
+
+        queue: asyncio.Queue = asyncio.Queue()
+
+        def on_event(event: dict) -> None:
+            queue.put_nowait(event)
+
+        if grounded:
+            yield {
+                "type": "note",
+                "message": f"📚 grounded in {len(grounded)} playbook(s): "
+                + ", ".join(grounded),
+            }
+
+        task = asyncio.create_task(
+            deps.agent.run(
+                prompt,
+                tool_names=tools or [],
+                max_iterations=max_iterations,
+                deps=deps,
+                on_event=on_event,
+                system_prompt=system_prompt,
+            )
+        )
+        try:
+            while True:
+                try:
+                    event = await asyncio.wait_for(queue.get(), timeout=0.25)
+                    yield event
+                except TimeoutError:
+                    if task.done():
+                        break
+            while not queue.empty():  # drain anything queued after the last wait
+                yield queue.get_nowait()
+            exc = task.exception()
+            if exc is not None:
+                yield {"type": "error", "message": str(exc)}
+        finally:
+            if not task.done():
+                task.cancel()
 
     async def execute_now(self, request: RunRequest) -> str:
         """Run to completion (used by tests / synchronous callers)."""

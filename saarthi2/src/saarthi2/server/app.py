@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, StreamingResponse
 
 from saarthi2.config import Settings, get_settings
 from saarthi2.engine import WorkflowError, list_workflows, load_workflow, to_mermaid
@@ -199,6 +200,7 @@ def create_app(
         return {
             "ollama_host": settings.ollama_host,
             "ollama_model": settings.ollama_model,
+            "ollama_num_ctx": settings.ollama_num_ctx,
             "work_dir": str(settings.work_dir),
             "workflows_dir": str(settings.workflows_dir),
             "redis_url": _redact(settings.redis_url),
@@ -240,6 +242,36 @@ def create_app(
         except Exception as exc:  # Ollama down / model missing / agent error
             raise HTTPException(status_code=503, detail=f"LLM unavailable: {exc}") from exc
         return {"answer": answer}
+
+    @api.post("/llm/stream")
+    async def llm_stream(request: ChatRequest) -> StreamingResponse:
+        """Live agent run over Server-Sent Events.
+
+        Streams the model's tokens and every tool call/result as they happen so the
+        Web UI can render realtime logs + an agent-activity pane. Each SSE frame is
+        one JSON event (see ``Agent.run`` for the shapes); a final ``{"type":"done"}``
+        marks the end of the stream.
+        """
+
+        async def event_source():
+            try:
+                async for event in manager.chat_stream(
+                    request.prompt,
+                    tools=request.tools,
+                    skills=request.skills,
+                    max_iterations=request.max_iterations,
+                ):
+                    yield f"data: {json.dumps(event)}\n\n"
+            except Exception as exc:  # Ollama down / model missing / agent error
+                payload = {"type": "error", "message": f"LLM unavailable: {exc}"}
+                yield f"data: {json.dumps(payload)}\n\n"
+            yield f"data: {json.dumps({'type': 'done'})}\n\n"
+
+        return StreamingResponse(
+            event_source(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
 
     @api.get("/tools")
     def tools() -> list[dict]:

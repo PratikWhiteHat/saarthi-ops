@@ -67,9 +67,34 @@ def test_run_scan_scope_lock() -> None:
     out, capture, _ = _run_scan({"tool": "nuclei", "target": "evil.com"}, target="ex.com")
     assert "out of scope" in out
     assert capture == []
-    # a subdomain of the authorized apex is allowed
+    # a subdomain of the authorized apex is allowed. httpx reads a host LIST from a
+    # file (-l), so the command points at a temp file and the host shows in output.
     ok, cap2, _ = _run_scan({"tool": "httpx", "target": "https://a.ex.com"}, target="https://ex.com/p")
-    assert cap2 and "a.ex.com" in cap2[0]
+    assert cap2 and cap2[0].startswith("httpx -l ") and "a.ex.com" in ok
+    assert "out of scope" not in ok
+
+
+def test_run_scan_httpx_uses_file_for_target() -> None:
+    # Regression: `httpx -l <host>` treats the host as a filename and fails. The
+    # tool must write host(s) to a real file so `-l` works and the apex is probed.
+    out, capture, _ = _run_scan({"tool": "httpx", "target": "app.ex.com"})
+    assert capture and capture[0].startswith("httpx -l ")
+    assert " app.ex.com " not in capture[0]  # host is in the file, not the flag
+    assert "# targets (1): app.ex.com" in out
+
+
+def test_run_scan_multiple_targets_written_to_file() -> None:
+    # The agent can feed a whole subfinder result into httpx via `targets`.
+    subs = ["a.ex.com", "b.ex.com", "c.ex.com"]
+    out, capture, _ = _run_scan({"tool": "httpx", "targets": subs})
+    assert capture and capture[0].startswith("httpx -l ")
+    assert "# targets (3): a.ex.com, b.ex.com, c.ex.com" in out
+
+
+def test_run_scan_single_host_tool_uses_target_flag() -> None:
+    # A per-host tool (nuclei) still renders `-u <host>`, no temp file involved.
+    out, capture, _ = _run_scan({"tool": "nuclei", "target": "app.ex.com"})
+    assert capture == ["nuclei -u app.ex.com -silent -jsonl"]
 
 
 def test_run_scan_blocks_destructive_args() -> None:
@@ -81,6 +106,31 @@ def test_run_scan_blocks_destructive_args() -> None:
 def test_run_scan_requires_target() -> None:
     out, _, _ = _run_scan({"tool": "nuclei"})
     assert "'target' is required" in out
+
+
+def test_http_request_tool_sends_method_headers_body() -> None:
+    captured: dict = {}
+
+    async def http_request(method, url, *, headers=None, body=None, timeout=20):
+        captured.update(method=method, url=url, headers=headers, body=body)
+        return SimpleNamespace(
+            status_code=200,
+            headers={"Server": "nginx", "Set-Cookie": "x=1", "X-Ignored": "z"},
+            text="hello world",
+        )
+
+    deps = SimpleNamespace(gate=None, http_request=http_request)
+    tool = default_tool_registry()["http_request"]
+    out = asyncio.run(
+        tool.run(
+            {"method": "post", "url": "http://t/api", "headers": {"Cookie": "s=1"}, "body": "a=b"},
+            None,
+            deps,
+        )
+    )
+    assert captured == {"method": "POST", "url": "http://t/api", "headers": {"Cookie": "s=1"}, "body": "a=b"}
+    assert "status=200" in out and "Server: nginx" in out and "hello world" in out
+    assert "X-Ignored" not in out  # only security-relevant headers surfaced
 
 
 def test_ai_hunt_workflow_validates() -> None:

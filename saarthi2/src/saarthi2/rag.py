@@ -19,6 +19,15 @@ _TOKEN = re.compile(r"[a-z0-9]{2,}")
 _K1 = 1.5
 _B = 0.75
 
+# Some skills embed CJK trigger-words (e.g. bug-bounty's "中文触发词：…"). Injected into
+# the prompt, that CJK text primes a small model to reply in Chinese. Strip CJK from
+# any skill text we feed the model so the assessment stays in English.
+_CJK = re.compile(r"[　-〿㐀-䶿一-鿿豈-﫿＀-￯]+")
+
+
+def _strip_cjk(text: str) -> str:
+    return _CJK.sub("", text)
+
 
 def _tokenize(text: str) -> list[str]:
     return _TOKEN.findall(text.lower())
@@ -148,7 +157,49 @@ class SkillLibrary:
             used += len(block)
             if used >= max_chars:
                 break
-        return "Relevant hunting playbooks (reference only):\n\n" + "\n\n".join(parts)
+        return _strip_cjk("Relevant hunting playbooks (reference only):\n\n" + "\n\n".join(parts))
+
+    def skill_index(self) -> str:
+        """A one-line directory of every loaded playbook by name.
+
+        Injected into the agent's system prompt so the model KNOWS which playbooks
+        exist and can pull any of them in full via the ``search_skills`` tool.
+        """
+
+        names = sorted(self.descriptions)
+        if not names:
+            return ""
+        return (
+            "Playbooks available to you — look any up in full with the "
+            "search_skills tool before testing that vuln class:\n" + ", ".join(names)
+        )
+
+    def instructions_for(self, query: str, k: int = 4, max_chars: int = 6000) -> str:
+        """Top-k skill sections for ``query``, framed as instructions to FOLLOW.
+
+        Unlike :meth:`context_for` (labelled "reference only" for tool output), this
+        presents the operator-provided playbooks as trusted methodology the agent
+        should apply — used to ground the system prompt of a live hunt.
+        """
+
+        hits = self.retrieve(query, k=k)
+        if not hits:
+            return ""
+        parts, used = [], 0
+        for ch in hits:
+            block = f"### {ch.skill} — {ch.heading}\n{ch.text}"
+            if used + len(block) > max_chars:
+                block = block[: max(0, max_chars - used)]
+            parts.append(block)
+            used += len(block)
+            if used >= max_chars:
+                break
+        return _strip_cjk(
+            "OPERATOR-PROVIDED PLAYBOOKS (trusted methodology — FOLLOW these). The "
+            "sections below are the most relevant to the current task; apply their "
+            "techniques, payloads, and validation steps as you hunt:\n\n"
+            + "\n\n".join(parts)
+        )
 
     def search(self, query: str, k: int = 5) -> list[dict]:
         """Search results for the API/CLI (skill, heading, preview)."""

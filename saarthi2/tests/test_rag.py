@@ -61,6 +61,69 @@ def test_context_for_formats_block(tmp_path) -> None:
     assert "hunt-idor" in ctx
 
 
+def test_instructions_for_frames_as_directives(tmp_path) -> None:
+    lib = _library(tmp_path)
+    instr = lib.instructions_for("idor object id swap", k=2)
+    assert "FOLLOW" in instr and "hunt-idor" in instr
+    # empty library -> empty string
+    assert SkillLibrary.from_dir(tmp_path / "nope").instructions_for("x") == ""
+
+
+def test_skill_index_lists_all_playbooks(tmp_path) -> None:
+    lib = _library(tmp_path)
+    idx = lib.skill_index()
+    assert "search_skills" in idx and "hunt-idor" in idx and "hunt-ssrf" in idx
+    assert SkillLibrary.from_dir(tmp_path / "nope").skill_index() == ""
+
+
+def test_chat_stream_grounds_system_prompt(tmp_path) -> None:
+    import os
+
+    from saarthi2.config import Settings
+    from saarthi2.server.run_manager import RunManager
+
+    _library(tmp_path)  # writes tmp_path/skills
+    os.environ["SAARTHI2_SKILLS_DIR"] = str(tmp_path / "skills")
+    captured: dict = {}
+
+    class _Agent:
+        async def run(self, prompt, *, tool_names=None, max_iterations=6,
+                      ctx=None, deps=None, on_event=None, system_prompt=None):
+            captured["system_prompt"] = system_prompt
+            from saarthi2.ai.agent import AgentResult
+            return AgentResult(answer="done", iterations=1)
+
+    async def _collect():
+        settings = Settings(work_dir=tmp_path / "work", workflows_dir=tmp_path)
+        mgr = RunManager(settings)
+        # inject a fake agent + real library via monkeypatching build_deps output
+        import saarthi2.server.run_manager as rm
+        from saarthi2.rag import SkillLibrary
+        real_build = rm.build_deps
+
+        def fake_build(*a, **k):
+            deps = real_build(*a, **k)
+            deps.agent = _Agent()
+            deps.skills = SkillLibrary.from_dir(tmp_path / "skills")
+            return deps
+
+        rm.build_deps = fake_build
+        try:
+            events = [ev async for ev in mgr.chat_stream("hunt idor on this api", skills=True)]
+        finally:
+            rm.build_deps = real_build
+        return events
+
+    try:
+        events = asyncio.run(_collect())
+    finally:
+        del os.environ["SAARTHI2_SKILLS_DIR"]
+
+    assert any(e.get("type") == "note" and "hunt-idor" in e.get("message", "") for e in events)
+    sp = captured["system_prompt"]
+    assert sp and "FOLLOW" in sp and "hunt-idor" in sp
+
+
 def test_search_and_empty(tmp_path) -> None:
     lib = _library(tmp_path)
     hits = lib.search("metadata 169.254", k=3)

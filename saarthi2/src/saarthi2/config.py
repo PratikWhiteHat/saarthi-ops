@@ -26,6 +26,9 @@ class Settings:
 
     ollama_host: str = "http://localhost:11434"
     ollama_model: str = "qwen3.5:9b"
+    # Model context window. Large enough for a skill-grounded prompt + accumulated
+    # tool outputs across a multi-step hunt; raise for very long hunts (costs memory).
+    ollama_num_ctx: int = 16384
     work_dir: Path = Path.home() / ".saarthi2"
     workflows_dir: Path = field(default_factory=_bundled_workflows_dir)
 
@@ -75,6 +78,7 @@ def get_settings() -> Settings:
     return Settings(
         ollama_host=env("SAARTHI2_OLLAMA_HOST", "http://localhost:11434"),
         ollama_model=env("SAARTHI2_OLLAMA_MODEL", "qwen3.5:9b"),
+        ollama_num_ctx=int(env("SAARTHI2_OLLAMA_NUM_CTX", "16384") or "16384"),
         work_dir=Path(work_dir).expanduser() if work_dir else Path.home() / ".saarthi2",
         workflows_dir=(
             Path(workflows_dir).expanduser() if workflows_dir else _bundled_workflows_dir()

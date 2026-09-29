@@ -63,6 +63,7 @@ steps:
     with:
       max_iterations: 8
       tools: [search_skills, run_scan, http_get]
+      skills: true
       prompt: |
         You are an authorized bug-bounty hunter. The target is {{ target }} and you
         are authorized to test it — do NOT ask for the target or scope; it is given.
